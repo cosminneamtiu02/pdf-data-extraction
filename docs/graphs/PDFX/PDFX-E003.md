@@ -3,7 +3,7 @@ type: epic
 id: PDFX-E003
 parent: PDFX
 title: PDF Parsing Layer
-status: not-started
+status: fully-detailed
 priority: 30
 dependencies: [PDFX-E001]
 ---

@@ -2,6 +2,7 @@
 type: project
 slug: PDFX
 title: PDF Data Extraction Microservice
+status: fully-detailed
 ---
 
 ## Short description

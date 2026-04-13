@@ -3,7 +3,7 @@ type: epic
 id: PDFX-E002
 parent: PDFX
 title: Skill System Foundation
-status: not-started
+status: fully-detailed
 priority: 20
 dependencies: [PDFX-E001]
 ---

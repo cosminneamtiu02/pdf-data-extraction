@@ -3,7 +3,7 @@ type: epic
 id: PDFX-E004
 parent: PDFX
 title: Intelligence & Extraction Orchestration
-status: not-started
+status: fully-detailed
 priority: 40
 dependencies: [PDFX-E002]
 ---

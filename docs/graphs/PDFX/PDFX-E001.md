@@ -3,7 +3,7 @@ type: epic
 id: PDFX-E001
 parent: PDFX
 title: Template Cleanup & Refactor Preparation
-status: not-started
+status: fully-detailed
 priority: 10
 dependencies: []
 ---

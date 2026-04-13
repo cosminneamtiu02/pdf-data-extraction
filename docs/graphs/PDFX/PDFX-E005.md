@@ -3,7 +3,7 @@ type: epic
 id: PDFX-E005
 parent: PDFX
 title: Coordinate Matching
-status: not-started
+status: fully-detailed
 priority: 50
 dependencies: [PDFX-E003, PDFX-E004]
 ---

@@ -3,7 +3,7 @@ type: epic
 id: PDFX-E007
 parent: PDFX
 title: Platform, Observability & Quality Gates
-status: not-started
+status: fully-detailed
 priority: 70
 dependencies: [PDFX-E006]
 ---

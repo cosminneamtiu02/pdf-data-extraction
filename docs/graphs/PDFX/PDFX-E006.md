@@ -3,7 +3,7 @@ type: epic
 id: PDFX-E006
 parent: PDFX
 title: API Surface & PDF Annotation
-status: not-started
+status: fully-detailed
 priority: 60
 dependencies: [PDFX-E002, PDFX-E003, PDFX-E004, PDFX-E005]
 ---
