@@ -32,7 +32,7 @@ dev = [
     "ruff>=0.15.10",
     "import-linter>=2.11",
     "pyright>=1.1.408",
-    "schemathesis>=3.39.0",
+    "schemathesis>=4.15.1",
 ]
 
 [tool.ruff]
