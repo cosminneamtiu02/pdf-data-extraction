@@ -170,11 +170,11 @@ Orchestrates the extraction pipeline. Single public method: `async extract(pdf_b
 2. `DocumentParser.parse(pdf_bytes, docling_config=skill.docling_config)` → `ParsedDocument`.
 3. `TextConcatenator.concatenate(parsed_document)` → `(concatenated_text, offset_index)`.
 4. `ExtractionEngine.extract(concatenated_text, skill, intelligence_provider)` → `list[RawExtraction]`.
-5. If `output_mode != PDF_ONLY`: `SpanResolver.resolve(raw_extractions, offset_index, parsed_document)` → `list[ExtractedField]`.
+5. `SpanResolver.resolve(raw_extractions, offset_index, parsed_document)` → `list[ExtractedField]`. **Runs for every output mode, unconditionally**, because both the JSON response body and the PDF annotator depend on `ExtractedField.bbox_refs`.
 6. If `output_mode != JSON_ONLY`: `PdfAnnotator.annotate(pdf_bytes, extracted_fields)` → `annotated_pdf_bytes`.
 7. Return `ExtractionResult(fields, annotated_pdf_bytes | None, metadata)`.
 
-Pipeline short-circuiting is expressed via two linear `if` guards. No nested conditionals, no strategy pattern.
+The only genuine short-circuit is step 6 — `PdfAnnotator` is skipped for `JSON_ONLY`. Everything else runs in every mode. The router layer (§5.1) decides which parts of `ExtractionResult` to serialize: `JSON_ONLY` emits the JSON body and discards `annotated_pdf_bytes` (which is `None` anyway), `PDF_ONLY` emits only the annotated bytes, and `BOTH` emits both in a `multipart/mixed` response. See the requirements spec FR-039 for the corresponding acceptance criteria.
 
 ### 5.3 Parsing layer (`parsing/`)
 
