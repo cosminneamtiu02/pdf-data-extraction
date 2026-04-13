@@ -59,7 +59,7 @@ tasks:
   check:errors:
     desc: Verify error contracts are in sync
     cmds:
-      - task: errors:generate -- --check
+      - task: errors:generate
       - task: errors:check
 
   # ── Testing ──────────────────────────────────────────────────
@@ -150,29 +150,15 @@ tasks:
     desc: Generate error classes from errors.yaml
     dir: packages/error-contracts
     cmds:
-      - uv run --with pyyaml python -c "
-        from pathlib import Path;
-        from scripts.generate import generate_python, generate_typescript, generate_required_keys;
-        p = Path('errors.yaml');
-        generate_python(p, Path('../../apps/backend/app/exceptions/_generated'));
-        generate_typescript(p, Path('src/generated.ts'));
-        generate_required_keys(p, Path('src/required-keys.json'));
-        print('Generated all error contract files')
-        "
+      - |
+        uv run --with pyyaml python -c "from pathlib import Path; from scripts.generate import generate_python, generate_typescript, generate_required_keys; p = Path('errors.yaml'); generate_python(p, Path('../../apps/backend/app/exceptions/_generated')); generate_typescript(p, Path('src/generated.ts')); generate_required_keys(p, Path('src/required-keys.json')); print('Generated all error contract files')"
 
   errors:check:
     desc: Validate translations against error contracts
     dir: packages/error-contracts
     cmds:
-      - uv run --with pyyaml python -c "
-        from pathlib import Path;
-        from scripts.validate_translations import validate;
-        errors = validate(Path('src/required-keys.json'), Path('../../apps/frontend/src/i18n/locales'));
-        if errors:
-            for e in errors: print(f'ERROR: {e}');
-            raise SystemExit(1);
-        print('All translations valid')
-        "
+      - |
+        uv run --with pyyaml python -c "from pathlib import Path; from scripts.validate_translations import validate; errors = validate(Path('src/required-keys.json'), Path('../../apps/frontend/src/i18n/locales')); print('ERROR: ' + '; '.join(str(e) for e in errors)) or __import__('sys').exit(1) if errors else print('All translations valid')"
 
   # ── Storybook ────────────────────────────────────────────────
   storybook:

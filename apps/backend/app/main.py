@@ -33,8 +33,8 @@ def create_app() -> FastAPI:
 
     is_prod = settings.app_env == "production"
     application = FastAPI(
-        title="Project Template API",
-        description="Backend API for the project template",
+        title="PDF Data Extraction API",
+        description="Backend API for PDF data extraction",
         version="0.1.0",
         lifespan=lifespan,
         docs_url=None if is_prod else "/docs",

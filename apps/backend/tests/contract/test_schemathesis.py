@@ -27,7 +27,7 @@ def test_openapi_spec_is_valid():
 
     spec = response.json()
     assert spec["openapi"].startswith("3.")
-    assert spec["info"]["title"] == "Project Template API"
+    assert spec["info"]["title"] == "PDF Data Extraction API"
 
     paths = spec["paths"]
 

@@ -18,10 +18,10 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Build backend Docker image
-        run: docker build -f infra/docker/backend.Dockerfile -t project-template-backend:${{ github.sha }} .
+        run: docker build -f infra/docker/backend.Dockerfile -t pdf-data-extraction-backend:${{ github.sha }} .
 
       - name: Build frontend Docker image
-        run: docker build -f infra/docker/frontend.Dockerfile -t project-template-frontend:${{ github.sha }} .
+        run: docker build -f infra/docker/frontend.Dockerfile -t pdf-data-extraction-frontend:${{ github.sha }} .
 
       - name: Push to registry
         run: |
