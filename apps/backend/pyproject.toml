@@ -31,7 +31,7 @@ dev = [
     "httpx>=0.28.1",
     "ruff>=0.11.0",
     "import-linter>=2.11",
-    "pyright>=1.1.400",
+    "pyright>=1.1.408",
     "schemathesis>=3.39.0",
 ]
 
