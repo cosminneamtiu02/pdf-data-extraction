@@ -329,11 +329,15 @@ New error codes added to `packages/error-contracts/errors.yaml` (generated via `
 | `SKILL_NOT_FOUND` | Skill name/version unknown to manifest | 404 |
 | `SKILL_VALIDATION_FAILED` | Startup-time schema/YAML error — container refuses to start | N/A (crash) |
 | `PDF_INVALID` | PyMuPDF/Docling cannot open the file | 400 |
+| `PDF_TOO_LARGE` | PDF byte size exceeds `Settings.max_pdf_bytes` | 413 |
+| `PDF_TOO_MANY_PAGES` | PDF page count exceeds `Settings.max_pdf_pages` | 413 |
 | `PDF_PASSWORD_PROTECTED` | Encrypted PDF | 400 |
 | `PDF_NO_TEXT_EXTRACTABLE` | Docling + OCR both produced empty text | 422 |
 | `INTELLIGENCE_UNAVAILABLE` | Ollama unreachable or connect timeout | 503 |
 | `INTELLIGENCE_TIMEOUT` | Per-request extraction budget exceeded | 504 |
 | `STRUCTURED_OUTPUT_FAILED` | Four attempts exhausted, still no valid output for any field | 502 |
+
+`PDF_TOO_LARGE` is raised in the router before the request hits `ExtractionService` — an early guard that rejects oversized uploads without allocating parsing resources. `PDF_TOO_MANY_PAGES` is raised inside `DoclingDocumentParser` as soon as the page count is known, before OCR or layout analysis runs.
 
 Partial field failures (some fields extracted, some failed) are **not errors** — they return `200 OK` with per-field status flags. Only catastrophic failures raise `DomainError` subclasses.
 
@@ -347,10 +351,12 @@ New `Settings` fields (pydantic-settings, mirrored in `.env.example`):
 - `ollama_base_url: str = "http://host.docker.internal:11434"`
 - `ollama_model: str = "<smallest Gemma 4 tag available via Ollama>"` — exact tag is a config value, never hardcoded in source
 - `ollama_timeout_seconds: float = 30.0`
-- `extraction_timeout_seconds: float = 120.0`
+- `extraction_timeout_seconds: float = 180.0`
 - `docling_ocr_default: str = "auto"`
 - `docling_table_mode_default: str = "fast"`
 - `structured_output_max_retries: int = 3`
+- `max_pdf_bytes: int = 50 * 1024 * 1024`   # 50 MB
+- `max_pdf_pages: int = 200`
 
 All existing DB-related settings (`database_url`, etc.) are removed.
 
@@ -456,7 +462,51 @@ These do not affect the architectural shape and can be resolved during implement
 - Exact correction prompt template wording for retries — tuned empirically.
 - Whether parser warnings (degraded OCR, etc.) are surfaced via `ExtractionMetadata.parser_warnings` or as a separate logging channel only.
 
-## 13. Out of Scope for v1 (Future Enhancements)
+## 14. Quality Attributes
+
+Non-functional targets and hard limits for v1. These are operational goals, not architectural gates. Measurements assume the service running on a modern developer machine (Apple Silicon or equivalent x86-64 workstation) with Ollama serving the smallest Gemma 4 variant locally.
+
+### 14.1 Hard limits (enforced programmatically)
+
+- **Max PDF file size:** 50 MB. Above this, the router rejects the upload with `PDF_TOO_LARGE` (413) before any parsing work is allocated. Configurable via `Settings.max_pdf_bytes`.
+- **Max PDF page count:** 200 pages. Above this, `DoclingDocumentParser` raises `PDF_TOO_MANY_PAGES` (413) as soon as the page count is known, before OCR or layout analysis runs. Configurable via `Settings.max_pdf_pages`.
+- **Hard end-to-end request timeout:** 180 s. Enforced at the service level via `asyncio.timeout()` and configured by `Settings.extraction_timeout_seconds`. Exceeding the budget returns `INTELLIGENCE_TIMEOUT` (504). This ceiling must cover Docling parsing, LangExtract orchestration (including the 4-attempt validator retry budget), coordinate matching, and annotation combined.
+- **Max concurrent in-flight requests:** 1. Uvicorn runs with `workers=1` by default. A second concurrent request blocks on FastAPI's native event-loop scheduling until the in-flight request completes. This is a deliberate v1 simplification — the caller is a single developer machine, Ollama is single-tenant locally, and adding real concurrency primitives (per-request semaphores, OCR parallelism, LangExtract batching) is out of scope for v1. Documented in the runbook.
+
+### 14.2 Latency targets (operational goals, not enforced)
+
+Two profiles, reflecting the dominant cost of OCR:
+
+- **Native digital PDF, ~10 pages, typical invoice-style skill:** `p50 ≤ 20 s`, `p95 ≤ 45 s`. Dominated by LangExtract multi-pass over Gemma 4 (3–8 chunks at 2–5 s per chunk on a modern developer machine).
+- **Scanned PDF, ~10 pages, OCR engaged:** `p50 ≤ 60 s`, `p95 ≤ 120 s`. Dominated by Docling's OCR pipeline (20–60 s for 10 pages depending on engine), with LangExtract cost on top.
+
+These targets are not asserted by the test suite. They are a sanity baseline for spot-checks during development and a yardstick for detecting regressions in future iterations. If the numbers turn out to be wrong in practice, this section is updated — the architecture is not.
+
+### 14.3 Memory footprint targets (operational, not enforced)
+
+- **Idle service process (warm, no requests in flight):** `≤ 1.5 GB` RSS. Dominated by Docling's model imports and LangExtract's dependency tree. Documented in the runbook so operators know what to size the container for.
+- **Per in-flight request, additional:** `≤ 1 GB` RSS on top of idle. Dominated by Docling's intermediate document representation for large PDFs, the concatenated text buffer, and PyMuPDF's PDF page cache during annotation.
+- **Total memory ceiling for a single request:** `≤ 2.5 GB`. If the service consistently exceeds this on representative workloads, it is a regression bug to investigate, not an expected operating condition.
+
+### 14.4 Cold start
+
+- **Container boot to first request accepted:** `≤ 10 s`. Dominated by Docling imports, Ollama connection probe, and `SkillManifest` startup validation. The validation cost scales linearly with the number of skills in `skills_dir` but is O(milliseconds) per skill, so a realistic v1 skill corpus adds negligible cost.
+
+### 14.5 Annotation overhead
+
+- **`PdfAnnotator` for a ~10-page PDF with ~20 highlighted fields:** `≤ 2 s` additional latency compared to the `JSON_ONLY` pipeline. PyMuPDF annotation is fast relative to extraction — this is an operational expectation, not a performance budget that shapes the design.
+
+### 14.6 Explicit non-requirements
+
+Stated explicitly to close the door on scope creep:
+
+- **No high-availability target.** The service is stateless and restartable, but v1 does not guarantee any uptime SLO. If the process dies, a single request in flight is lost.
+- **No horizontal scalability.** The architecture does not preclude running multiple instances behind a load balancer, but the service is not tested for it and there is no shared state to coordinate.
+- **No authentication, rate limiting, or quota enforcement.** Callers are trusted. Deploying this service exposed to untrusted networks is out of scope.
+- **No streaming responses.** Full responses are buffered and returned atomically.
+- **No observability beyond structlog.** Structured logs go to stdout. No Prometheus metrics, no distributed tracing, no APM integration. These are future-enhancement territory.
+
+## 15. Out of Scope for v1 (Future Enhancements)
 
 - Per-skill `allow_inference: bool` gating (currently ungrounded values are always returned with a flag; skills can't reject them at authoring time).
 - Streaming responses for very large PDFs.
