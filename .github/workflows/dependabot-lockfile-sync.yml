@@ -1,0 +1,214 @@
+# Regenerate workspace lockfiles on Dependabot PRs.
+#
+# WHY THIS EXISTS
+# ---------------
+# Dependabot's pnpm support has a known bug: when a monorepo uses a
+# single root pnpm-lock.yaml with per-workspace package.json files,
+# Dependabot updates the manifest but silently fails to regenerate the
+# root lockfile. CI then rejects every Dependabot PR with
+# ERR_PNPM_OUTDATED_LOCKFILE because `pnpm install --frozen-lockfile`
+# refuses to install with a manifest/lock divergence. The backend has
+# a looser equivalent: `uv sync --dev` regenerates uv.lock on the fly,
+# so the divergence doesn't break CI, but the lockfile in git is still
+# silently out of sync after every Dependabot merge -- which is its
+# own kind of correctness-eroding bug.
+#
+# This workflow fires on every Dependabot PR, detects which manifest
+# files changed, runs the matching package manager in regeneration
+# mode, and pushes the updated lockfile back to the PR branch as a
+# follow-up commit.
+#
+# HOW IT COMPOSES WITH THE AUTO-MERGE WORKFLOW
+# --------------------------------------------
+# The push back to the PR branch emits a pull_request.synchronize
+# event, which re-triggers both this workflow (which no-ops because
+# the lockfile is now correct) and dependabot-automerge.yml (which
+# re-calls `gh pr merge --auto --squash`, harmless idempotent). CI
+# then re-runs on the new head commit with the regenerated lockfile,
+# passes, and GitHub's merge queue executes the squash-merge.
+#
+# Net result: a Dependabot PR with the lockfile-gap bug goes from
+# "stuck red indefinitely" to "auto-merges cleanly without human
+# intervention" within about 2-3 minutes.
+#
+# WHY A PAT IS REQUIRED (NOT GITHUB_TOKEN)
+# ----------------------------------------
+# GitHub's built-in GITHUB_TOKEN has a deliberate security limitation:
+# events triggered by a GITHUB_TOKEN-authored push do NOT create new
+# workflow runs. This is to prevent workflow-recursion loops. But it
+# means that if this workflow pushes the lockfile fix using
+# GITHUB_TOKEN, the push will advance the PR's head commit, but CI
+# (ci.yml) will never fire on the new commit -- leaving the PR's
+# required status checks attached to the OLD, broken commit. The PR
+# then sits in a "no checks present on current head" state, and the
+# ruleset refuses to merge it.
+#
+# Pushing with a Personal Access Token (PAT) bypasses this limitation.
+# A PAT looks like a normal user to GitHub, so pushes from it trigger
+# workflow runs normally.
+#
+# Use a FINE-GRAINED PAT scoped to this one repository with the
+# minimal required permissions:
+#   - Contents: Read and write
+#   - Pull requests: Read and write
+#
+# Store it as a repo secret named DEPENDABOT_LOCKFILE_SYNC_PAT. See
+# docs/new-project-setup.md Phase 5b for step-by-step setup.
+#
+# PREREQUISITES (THIS WORKFLOW WILL NO-OP UNTIL ALL ARE SATISFIED)
+# ----------------------------------------------------------------
+#   1. Repo variable DEPENDABOT_LOCKFILE_SYNC_ENABLED = "true"
+#      (controlled separately from DEPENDABOT_AUTOMERGE_ENABLED so the
+#       two can be enabled independently if desired)
+#   2. Repo secret DEPENDABOT_LOCKFILE_SYNC_PAT with a fine-grained PAT
+#   3. The Phase 5 "Allow GitHub Actions to create and approve pull
+#      requests" toggle is already required for auto-merge and is
+#      assumed here too
+#
+# EMERGENCY DISABLE
+# -----------------
+#   gh variable set DEPENDABOT_LOCKFILE_SYNC_ENABLED --body "false"
+# Effective on the next pull_request event. Same pattern as the
+# auto-merge kill switch. The workflow continues to run on every
+# event but reports conclusion: skipped.
+#
+# FURTHER READING
+# ---------------
+#   - docs/automerge.md: the "Lockfile sync" section explains the
+#     architecture and the incident that prompted building this
+#   - docs/decisions.md ADR-010: the auto-merge exception this feeds
+#   - TEMPLATE_FRICTION.md: the "Dependabot pnpm workspace lockfile"
+#     entry tracks the underlying upstream bug
+
+name: Dependabot lockfile sync
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.user.login == 'dependabot[bot]' && vars.DEPENDABOT_LOCKFILE_SYNC_ENABLED == 'true'
+    steps:
+      - name: Verify PAT is configured
+        env:
+          PAT: ${{ secrets.DEPENDABOT_LOCKFILE_SYNC_PAT }}
+        run: |
+          if [ -z "$PAT" ]; then
+            echo "::error::DEPENDABOT_LOCKFILE_SYNC_PAT secret is not set, but DEPENDABOT_LOCKFILE_SYNC_ENABLED variable is 'true'. Either create the PAT (see docs/new-project-setup.md Phase 5b) or unset the variable with: gh variable set DEPENDABOT_LOCKFILE_SYNC_ENABLED --body 'false'"
+            exit 1
+          fi
+
+      - name: Checkout PR branch
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+          token: ${{ secrets.DEPENDABOT_LOCKFILE_SYNC_PAT }}
+
+      - name: Guard against self-triggered loops
+        id: loop_guard
+        run: |
+          LAST_AUTHOR=$(git log -1 --format='%ae' HEAD)
+          echo "Last commit author email: $LAST_AUTHOR"
+          if echo "$LAST_AUTHOR" | grep -q "github-actions\[bot\]@users.noreply.github.com"; then
+            echo "Last commit is from github-actions[bot]; this workflow already ran on a previous event. Skipping to prevent loop."
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Detect which manifests changed
+        id: changed
+        if: steps.loop_guard.outputs.skip != 'true'
+        run: |
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          echo "Diffing $BASE_SHA..$HEAD_SHA"
+
+          CHANGED=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+          echo "Changed files:"
+          echo "$CHANGED"
+
+          NEEDS_PNPM=false
+          NEEDS_UV_BACKEND=false
+          NEEDS_UV_ERROR_CONTRACTS=false
+
+          if echo "$CHANGED" | grep -qE '(apps/frontend|packages/api-client|packages/error-contracts)/package\.json$'; then
+            NEEDS_PNPM=true
+          fi
+          if echo "$CHANGED" | grep -qE 'apps/backend/pyproject\.toml$'; then
+            NEEDS_UV_BACKEND=true
+          fi
+          if echo "$CHANGED" | grep -qE 'packages/error-contracts/pyproject\.toml$'; then
+            NEEDS_UV_ERROR_CONTRACTS=true
+          fi
+
+          echo "needs_pnpm=$NEEDS_PNPM" >> $GITHUB_OUTPUT
+          echo "needs_uv_backend=$NEEDS_UV_BACKEND" >> $GITHUB_OUTPUT
+          echo "needs_uv_error_contracts=$NEEDS_UV_ERROR_CONTRACTS" >> $GITHUB_OUTPUT
+
+          if [ "$NEEDS_PNPM" = "false" ] && [ "$NEEDS_UV_BACKEND" = "false" ] && [ "$NEEDS_UV_ERROR_CONTRACTS" = "false" ]; then
+            echo "No manifest files changed. This PR probably touches only lockfiles or other files already in sync; nothing to do."
+          fi
+
+      - name: Set up Node.js
+        if: steps.loop_guard.outputs.skip != 'true' && steps.changed.outputs.needs_pnpm == 'true'
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Install pnpm
+        if: steps.loop_guard.outputs.skip != 'true' && steps.changed.outputs.needs_pnpm == 'true'
+        run: npm install -g pnpm@10.33.0
+
+      - name: Regenerate pnpm lockfile
+        if: steps.loop_guard.outputs.skip != 'true' && steps.changed.outputs.needs_pnpm == 'true'
+        run: pnpm install --no-frozen-lockfile --lockfile-only
+
+      - name: Set up uv
+        if: steps.loop_guard.outputs.skip != 'true' && (steps.changed.outputs.needs_uv_backend == 'true' || steps.changed.outputs.needs_uv_error_contracts == 'true')
+        uses: astral-sh/setup-uv@v7
+
+      - name: Set up Python
+        if: steps.loop_guard.outputs.skip != 'true' && (steps.changed.outputs.needs_uv_backend == 'true' || steps.changed.outputs.needs_uv_error_contracts == 'true')
+        run: uv python install 3.13
+
+      - name: Regenerate backend uv.lock
+        if: steps.loop_guard.outputs.skip != 'true' && steps.changed.outputs.needs_uv_backend == 'true'
+        working-directory: apps/backend
+        run: uv lock
+
+      - name: Regenerate error-contracts uv.lock
+        if: steps.loop_guard.outputs.skip != 'true' && steps.changed.outputs.needs_uv_error_contracts == 'true'
+        working-directory: packages/error-contracts
+        run: uv lock
+
+      - name: Commit and push lockfile updates
+        if: steps.loop_guard.outputs.skip != 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Stage only lockfile paths to avoid accidentally committing anything else
+          git add -u pnpm-lock.yaml apps/backend/uv.lock packages/error-contracts/uv.lock 2>/dev/null || true
+
+          if git diff --cached --quiet; then
+            echo "No lockfile changes to commit. Dependabot may have regenerated them correctly, or this PR touches no relevant manifests."
+            exit 0
+          fi
+
+          echo "Lockfile changes detected:"
+          git diff --cached --stat
+
+          git commit \
+            -m "chore(deps): regenerate lockfiles after dependabot bump" \
+            -m "Automated follow-up commit from .github/workflows/dependabot-lockfile-sync.yml. Dependabot's pnpm/uv support does not regenerate monorepo lockfiles when bumping a manifest; this workflow runs the package manager in regeneration mode and pushes the updated lockfile back so CI's frozen-lockfile check passes."
+
+          git push

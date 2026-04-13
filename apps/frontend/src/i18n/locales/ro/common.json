@@ -1,0 +1,36 @@
+{
+  "app_name": "Sablon Proiect",
+  "nav": {
+    "home": "Acasa",
+    "widgets": "Widget-uri"
+  },
+  "actions": {
+    "save": "Salveaza",
+    "cancel": "Anuleaza",
+    "delete": "Sterge",
+    "create": "Creeaza"
+  },
+  "language": {
+    "en": "Engleza",
+    "ro": "Romana",
+    "switch": "Limba"
+  },
+  "error_boundary": {
+    "title": "Ceva nu a functionat",
+    "message": "A aparut o eroare neasteptata.",
+    "reload": "Reincarca"
+  },
+  "loading": "Se incarca...",
+  "network_error": "A aparut o eroare de retea. Va rugam incercati din nou.",
+  "request_id": "ID cerere: {{id}}",
+  "widgets": {
+    "title": "Widget-uri",
+    "empty": "Niciun widget inca.",
+    "create": "Creeaza Widget",
+    "name": "Nume",
+    "name_placeholder": "Introduceti numele widget-ului",
+    "description": "Descriere",
+    "description_placeholder": "Introduceti descrierea (optional)",
+    "created_at": "Creat"
+  }
+}

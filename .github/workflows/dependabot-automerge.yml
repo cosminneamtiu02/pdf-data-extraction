@@ -1,0 +1,75 @@
+# Auto-merge Dependabot PRs once all required status checks pass.
+#
+# !!! CURRENTLY DISABLED BY DEFAULT !!!
+# --------------------------------------
+# This workflow is hard-off until the `main-protection` ruleset exists
+# with required status checks configured. To enable:
+#
+#   1. Complete Phase 4 of docs/new-project-setup.md -- create the
+#      `main-protection` branch ruleset with required status checks for
+#      backend-checks, frontend-checks, api-client-checks, error-contracts
+#      (and CodeQL once Phase 10 adds it).
+#   2. Complete Phase 3 -- uncheck Allow merge commits / rebase merging,
+#      check Automatically delete head branches.
+#   3. Complete Phase 5 partial -- Settings -> Actions -> General ->
+#      Workflow permissions -> check "Allow GitHub Actions to create and
+#      approve pull requests". Also check "Allow auto-merge" under
+#      Settings -> General -> Pull Requests.
+#   4. THEN set a repo variable to enable this workflow:
+#        gh variable set DEPENDABOT_AUTOMERGE_ENABLED --body "true"
+#      (or via UI: Settings -> Secrets and variables -> Actions ->
+#       Variables tab -> New repository variable).
+#
+# WHY THE GUARD: `gh pr merge --auto --squash` is only safe when the
+# ruleset has required status checks. Without them, --auto has nothing
+# to wait for and merges immediately, even if CI is red. This is not a
+# theoretical risk -- it happened on PR #19, which was merged with
+# failing frontend-checks and api-client-checks because no ruleset was
+# in place. Main was accidentally red for ~2 minutes until a follow-up
+# PR with a lockfile fix raced in and restored the invariant. The guard
+# below ensures this cannot happen again.
+#
+# Safe to merge this workflow file to main even when disabled: with
+# DEPENDABOT_AUTOMERGE_ENABLED unset (or not "true"), the job's `if:`
+# evaluates to false and the workflow exits without doing anything.
+#
+# How it works once enabled:
+#   - Triggers on every pull_request event.
+#   - Short-circuits unless the PR author is dependabot[bot] AND
+#     DEPENDABOT_AUTOMERGE_ENABLED == "true".
+#   - Calls `gh pr merge --auto --squash`, which marks the PR for
+#     auto-merge. GitHub's merge queue then merges it ONLY when every
+#     required status check on the `main-protection` ruleset is green
+#     and every conversation is resolved.
+#
+# Merge method is squash, matching docs/new-project-setup.md Phase 3.
+# The exception allowing automated merges for Dependabot PRs (not
+# human PRs) is documented in docs/decisions.md as ADR-010.
+
+name: Dependabot auto-merge
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  automerge:
+    runs-on: ubuntu-latest
+    # Check the PR author, not github.actor. github.actor is whoever
+    # triggered the current event -- if a human clicks "Update branch"
+    # in the UI, github.actor becomes that human, and this job would
+    # skip on every human-triggered sync of a Dependabot PR.
+    # pull_request.user.login reads the PR author from the event
+    # payload, which stays `dependabot[bot]` for the PR's lifetime
+    # regardless of who triggers individual events on it.
+    if: github.event.pull_request.user.login == 'dependabot[bot]' && vars.DEPENDABOT_AUTOMERGE_ENABLED == 'true'
+    steps:
+      - name: Enable auto-merge
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

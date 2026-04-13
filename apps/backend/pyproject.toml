@@ -1,0 +1,87 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[project]
+name = "project-template-backend"
+version = "0.1.0"
+description = "Backend API for the project template"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.135.3",
+    "uvicorn[standard]>=0.44.0",
+    "pydantic>=2.12.5",
+    "pydantic-settings>=2.13.1",
+    "sqlalchemy[asyncio]>=2.0.49",
+    "asyncpg>=0.31.0",
+    "alembic>=1.18.4",
+    "structlog>=25.1.0",
+    "httpx>=0.28.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+    "pytest-asyncio>=1.3.0",
+    "pytest-cov>=7.1.0",
+    "testcontainers[postgres]>=4.10.0",
+    "httpx>=0.28.1",
+    "ruff>=0.11.0",
+    "import-linter>=2.11",
+    "pyright>=1.1.400",
+    "schemathesis>=3.39.0",
+]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "D",       # pydocstyle — docs not enforced at module level
+    "ANN401",  # Any in **kwargs — needed for generic base classes
+    "COM812",  # trailing comma — conflicts with formatter
+    "ISC001",  # single-line implicit string concat — conflicts with formatter
+    "FIX002",  # line contains TODO
+    "TD003",   # missing issue link for TODO
+    "UP046",   # Generic[T] syntax — TypeVar approach is clearer for complex generics
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = [
+    "S101",    # assert allowed in tests
+    "ANN",     # type annotations relaxed in tests
+    "PLR2004", # magic values allowed in tests
+    "PLC0415", # imports inside functions allowed in test fixtures
+    "E501",    # long docstrings in tests
+]
+"alembic/**/*.py" = [
+    "INP001",  # alembic directory is not a package
+]
+"app/exceptions/_generated/**/*.py" = [
+    "E501",    # generated code may have long lines
+    "I001",    # generated imports may not be sorted
+    "RUF022",  # generated __all__ may not be sorted
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+
+[tool.coverage.run]
+source = ["app"]
+
+[tool.coverage.report]
+fail_under = 80
+
+[tool.pyright]
+pythonVersion = "3.13"
+typeCheckingMode = "strict"
+include = ["app"]

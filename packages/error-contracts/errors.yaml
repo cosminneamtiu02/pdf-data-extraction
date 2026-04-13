@@ -1,0 +1,52 @@
+version: 1
+
+errors:
+  # Generic errors (apply across domains)
+  NOT_FOUND:
+    http_status: 404
+    description: Requested resource does not exist
+    params: {}
+
+  CONFLICT:
+    http_status: 409
+    description: Operation conflicts with current state
+    params: {}
+
+  VALIDATION_FAILED:
+    http_status: 422
+    description: Request payload failed validation
+    params:
+      field: string
+      reason: string
+
+  INTERNAL_ERROR:
+    http_status: 500
+    description: Unhandled server error; details are logged with request_id
+    params: {}
+
+  RATE_LIMITED:
+    http_status: 429
+    description: Client exceeded rate limit
+    params:
+      retry_after_seconds: integer
+
+  # Widget domain
+  WIDGET_NOT_FOUND:
+    http_status: 404
+    description: Requested widget does not exist
+    params:
+      widget_id: string
+
+  WIDGET_NAME_CONFLICT:
+    http_status: 409
+    description: A widget with this name already exists
+    params:
+      name: string
+
+  WIDGET_NAME_TOO_LONG:
+    http_status: 422
+    description: Widget name exceeds maximum length
+    params:
+      name: string
+      max_length: integer
+      actual_length: integer

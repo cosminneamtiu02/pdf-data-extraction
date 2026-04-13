@@ -1,0 +1,10 @@
+{
+  "NOT_FOUND": "Resursa solicitata nu a fost gasita.",
+  "CONFLICT": "Aceasta operatiune intra in conflict cu starea curenta.",
+  "VALIDATION_FAILED": "Campul '{{field}}' este invalid: {{reason}}",
+  "INTERNAL_ERROR": "A aparut o problema. Echipa noastra a fost notificata.",
+  "RATE_LIMITED": "Prea multe cereri. Va rugam sa incercati din nou in {{retry_after_seconds}} secunde.",
+  "WIDGET_NOT_FOUND": "Widget-ul '{{widget_id}}' nu a fost gasit.",
+  "WIDGET_NAME_CONFLICT": "Un widget cu numele '{{name}}' exista deja.",
+  "WIDGET_NAME_TOO_LONG": "Numele widget-ului '{{name}}' are {{actual_length}} caractere; maximul este {{max_length}}."
+}

@@ -1,0 +1,32 @@
+# Deploy workflow — triggers on push to main.
+# Gate: branch protection requires CI to pass before merge.
+# This workflow does NOT depend on the CI workflow directly — the gate is
+# at the branch level, not the workflow level.
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build backend Docker image
+        run: docker build -f infra/docker/backend.Dockerfile -t project-template-backend:${{ github.sha }} .
+
+      - name: Build frontend Docker image
+        run: docker build -f infra/docker/frontend.Dockerfile -t project-template-frontend:${{ github.sha }} .
+
+      - name: Push to registry
+        run: |
+          echo "TODO: Push images to container registry"
+
+      - name: Deploy
+        run: |
+          echo "TODO: Deploy to target environment"

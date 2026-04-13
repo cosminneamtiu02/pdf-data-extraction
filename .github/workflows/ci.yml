@@ -1,0 +1,192 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend-checks:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/backend
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: test_db
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/test_db
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: apps/backend/uv.lock
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Lint (ruff)
+        run: uv run ruff check app/ tests/
+
+      - name: Format check (ruff)
+        run: uv run ruff format --check app/ tests/
+
+      - name: Type check (pyright)
+        run: uv run pyright app/
+
+      - name: Architecture check (import-linter)
+        run: uv run lint-imports --config architecture/import-linter-contracts.ini
+
+      - name: Unit + Integration tests with coverage
+        run: uv run pytest tests/unit/ tests/integration/ -v --cov=app --cov-fail-under=80
+
+      - name: Contract tests
+        run: uv run pytest tests/contract/ -v
+
+  frontend-checks:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/frontend
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Install pnpm
+        run: npm install -g pnpm@10.33.0
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint (biome)
+        run: pnpm biome check src/
+
+      - name: Type check (tsc)
+        run: pnpm tsc --noEmit
+
+      - name: Unit tests with coverage
+        run: pnpm vitest run --coverage
+
+      - name: Build Storybook
+        run: pnpm build-storybook
+
+  api-client-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: apps/backend/uv.lock
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Install backend dependencies
+        working-directory: apps/backend
+        run: uv sync --dev
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Install pnpm
+        run: npm install -g pnpm@10.33.0
+
+      - name: Install api-client dependencies
+        working-directory: packages/api-client
+        run: pnpm install --frozen-lockfile
+
+      - name: Extract OpenAPI spec
+        working-directory: apps/backend
+        run: |
+          DATABASE_URL=postgresql+asyncpg://x:x@localhost/x uv run python -c "
+          import json
+          from app.main import create_app
+          spec = create_app().openapi()
+          json.dump(spec, open('../../packages/api-client/openapi.json', 'w'), indent=2)
+          print('Extracted OpenAPI spec')
+          "
+
+      - name: Generate and verify schema.d.ts is up to date
+        working-directory: packages/api-client
+        run: |
+          pnpm generate
+          git diff --exit-code src/schema.d.ts
+
+  error-contracts:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/error-contracts
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Codegen + validator tests
+        run: uv run --with pytest --with pyyaml pytest tests/ -v
+
+      - name: Regenerate error contracts
+        run: |
+          uv run --with pyyaml python -c "
+          from pathlib import Path
+          from scripts.generate import generate_python, generate_typescript, generate_required_keys
+          p = Path('errors.yaml')
+          generate_python(p, Path('../../apps/backend/app/exceptions/_generated'))
+          generate_typescript(p, Path('src/generated.ts'))
+          generate_required_keys(p, Path('src/required-keys.json'))
+          "
+
+      - name: Verify generated files are up to date
+        working-directory: .
+        run: |
+          git diff --exit-code apps/backend/app/exceptions/_generated/
+          git diff --exit-code packages/error-contracts/src/generated.ts
+          git diff --exit-code packages/error-contracts/src/required-keys.json
+
+      - name: Validate translations
+        run: |
+          uv run --with pyyaml python -c "
+          from pathlib import Path
+          from scripts.validate_translations import validate
+          errors = validate(Path('src/required-keys.json'), Path('../../apps/frontend/src/i18n/locales'))
+          if errors:
+              for e in errors: print(f'ERROR: {e}')
+              raise SystemExit(1)
+          print('All translations valid')
+          "

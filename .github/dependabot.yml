@@ -1,0 +1,172 @@
+# Dependabot configuration.
+#
+# Groups are used aggressively here. Each `groups` entry batches
+# interlocking packages into a single weekly PR instead of one-per-
+# package. This matters for two reasons:
+#
+#   1. Interlocking ecosystems (TanStack Router + router-devtools +
+#      router-plugin, Storybook's many packages, the React trio, the
+#      SQLAlchemy/Alembic/asyncpg trio) have cross-package peer
+#      dependencies that only resolve cleanly when all members move
+#      together. Bumping one at a time produces lockfile resolutions
+#      that silently drift the others.
+#
+#   2. Multiple single-package PRs that all touch the same lines of a
+#      manifest file are mutually-exclusive merge candidates -- only
+#      one can rebase cleanly before the others go red. We observed
+#      this directly on @tanstack/* (4 mutually-conflicting PRs) and
+#      the sqlalchemy/alembic/asyncpg trio (a rebase-conflict cascade
+#      that required a manual replacement PR for the last one).
+#
+# Groups reduce the weekly PR count from ~15 to ~5 without losing any
+# coverage. Each group bumps atomically or not at all.
+#
+# See docs/automerge.md and docs/decisions.md ADR-010 for the wider
+# auto-merge architecture. See docs/new-project-setup.md Phase 5 for
+# the `DEPENDABOT_AUTOMERGE_ENABLED` variable this pairs with.
+
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/apps/backend"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      # SQLAlchemy 2.0 async + Alembic + asyncpg must version-shift
+      # together. Alembic depends on SQLAlchemy, asyncpg is the driver
+      # SQLAlchemy dispatches to. Independent bumps produce rebase-
+      # conflict cascades on pyproject.toml.
+      sqlalchemy-stack:
+        patterns:
+          - "sqlalchemy"
+          - "alembic"
+          - "asyncpg"
+      # Pydantic v2 core + settings package are released in lockstep
+      # and the settings package's version range is pinned against
+      # pydantic's minor version.
+      pydantic:
+        patterns:
+          - "pydantic"
+          - "pydantic-settings"
+      # pytest's ecosystem ships plugin releases aligned with pytest
+      # minor bumps. Grouping prevents stale-plugin failures on the
+      # first CI run after a pytest bump.
+      pytest:
+        patterns:
+          - "pytest"
+          - "pytest-*"
+      # FastAPI + Starlette + uvicorn share ASGI contract versions.
+      # Uvicorn's standard extras pin httptools/websockets against
+      # the uvicorn minor version.
+      fastapi-stack:
+        patterns:
+          - "fastapi"
+          - "starlette"
+          - "uvicorn*"
+
+  - package-ecosystem: "npm"
+    directory: "/apps/frontend"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      # TanStack Router + Query family. router-devtools and
+      # router-plugin have peer dependencies on react-router that
+      # span multiple minors; independent bumps produce lockfile
+      # resolutions that silently downgrade the peers.
+      tanstack:
+        patterns:
+          - "@tanstack/*"
+      # React + react-dom + the @types packages move in lockstep.
+      # Mismatched React / @types/react versions are a common cause
+      # of silently-wrong TypeScript errors under strict mode.
+      react:
+        patterns:
+          - "react"
+          - "react-dom"
+          - "@types/react"
+          - "@types/react-dom"
+      # Storybook 10.x ships ~40 @storybook/* packages that all share
+      # a single version number. Any mismatch between them crashes
+      # Storybook at boot. This group is the single most important
+      # one here.
+      storybook:
+        patterns:
+          - "storybook"
+          - "@storybook/*"
+      # Vitest's core + coverage + @vitest/* packages share a single
+      # version and must be bumped together.
+      vitest:
+        patterns:
+          - "vitest"
+          - "@vitest/*"
+      # Testing Library ships one package per framework (react, dom,
+      # user-event, jest-dom). They release independently but users
+      # almost always want them at the latest stable together.
+      testing-library:
+        patterns:
+          - "@testing-library/*"
+      # Tailwind's core + Vite plugin + utilities move together when
+      # Tailwind majors bump.
+      tailwind:
+        patterns:
+          - "tailwindcss"
+          - "@tailwindcss/*"
+          - "tailwind-merge"
+      # i18next core + browser detection + react bindings share
+      # API contracts.
+      i18next:
+        patterns:
+          - "i18next"
+          - "i18next-*"
+          - "react-i18next"
+      # dinero.js v2 is alpha and its currencies package tracks the
+      # core package's version exactly.
+      dinero:
+        patterns:
+          - "dinero.js"
+          - "@dinero.js/*"
+
+  - package-ecosystem: "pip"
+    directory: "/packages/error-contracts"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      pytest:
+        patterns:
+          - "pytest"
+          - "pytest-*"
+
+  - package-ecosystem: "npm"
+    directory: "/packages/api-client"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      # openapi-typescript + openapi-fetch share an API contract;
+      # one without the other is always a bug.
+      openapi:
+        patterns:
+          - "openapi-*"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      # Bump all official GitHub actions together (actions/checkout,
+      # actions/setup-node, actions/setup-python, etc.). These are
+      # version-independent but bundling the weekly bumps into one
+      # PR reduces noise.
+      github-official-actions:
+        patterns:
+          - "actions/*"
+
+  - package-ecosystem: "terraform"
+    directory: "/infra/terraform"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 3

@@ -1,0 +1,24 @@
+# Normalize line endings
+* text=auto eol=lf
+
+# Binary files
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary
+*.pdf binary
+
+# Generated files — diff but do not merge
+packages/api-client/src/schema.d.ts linguist-generated=true
+packages/error-contracts/src/generated.ts linguist-generated=true
+packages/error-contracts/src/required-keys.json linguist-generated=true
+apps/backend/app/exceptions/_generated/** linguist-generated=true
+
+# Lock files
+pnpm-lock.yaml linguist-generated=true -diff
+apps/backend/uv.lock linguist-generated=true -diff

@@ -1,0 +1,205 @@
+version: "3"
+
+vars:
+  BACKEND_DIR: apps/backend
+  FRONTEND_DIR: apps/frontend
+  COMPOSE_FILE: infra/compose/docker-compose.yml
+
+tasks:
+  # ── Development ──────────────────────────────────────────────
+  dev:
+    desc: Start full stack via docker-compose
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} up --build
+
+  dev:backend:
+    desc: Start backend only with hot reload
+    dir: "{{.BACKEND_DIR}}"
+    cmds:
+      - uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+
+  dev:frontend:
+    desc: Start frontend only with Vite HMR
+    dir: "{{.FRONTEND_DIR}}"
+    cmds:
+      - pnpm dev
+
+  # ── Check (Claude runs this before declaring done) ───────────
+  check:
+    desc: Run ALL checks — lint, types, arch, unit tests, error contracts
+    cmds:
+      - task: check:lint
+      - task: check:types
+      - task: check:arch
+      - task: check:test
+      - task: check:errors
+
+  check:lint:
+    desc: Run all linters
+    cmds:
+      - task: lint
+
+  check:types:
+    desc: Run all type checkers
+    cmds:
+      - cd {{.BACKEND_DIR}} && uv run pyright app/
+      - cd {{.FRONTEND_DIR}} && pnpm tsc --noEmit
+
+  check:arch:
+    desc: Run import-linter architecture checks
+    dir: "{{.BACKEND_DIR}}"
+    cmds:
+      - uv run lint-imports --config architecture/import-linter-contracts.ini
+
+  check:test:
+    desc: Run unit tests (backend + frontend)
+    cmds:
+      - task: test:unit
+
+  check:errors:
+    desc: Verify error contracts are in sync
+    cmds:
+      - task: errors:generate -- --check
+      - task: errors:check
+
+  # ── Testing ──────────────────────────────────────────────────
+  test:
+    desc: Run all tests including integration
+    cmds:
+      - task: test:unit
+      - task: test:integration
+      - task: test:contract
+
+  test:unit:
+    desc: Run unit tests (backend + frontend)
+    cmds:
+      - cd {{.BACKEND_DIR}} && uv run pytest tests/unit/ -v
+      - cd {{.FRONTEND_DIR}} && pnpm vitest run
+
+  test:integration:
+    desc: Run integration tests (Testcontainers)
+    dir: "{{.BACKEND_DIR}}"
+    cmds:
+      - uv run pytest tests/integration/ -v
+
+  test:e2e:
+    desc: Run Playwright E2E tests against full stack
+    dir: "{{.FRONTEND_DIR}}"
+    cmds:
+      - pnpm playwright test
+
+  test:contract:
+    desc: Run contract tests (Schemathesis + client diff)
+    cmds:
+      - cd {{.BACKEND_DIR}} && uv run pytest tests/contract/ -v
+      - task: client:generate
+      - git diff --exit-code packages/api-client/src/schema.d.ts
+
+  # ── Linting & Formatting ─────────────────────────────────────
+  lint:
+    desc: Run all linters
+    cmds:
+      - cd {{.BACKEND_DIR}} && uv run ruff check .
+      - cd {{.FRONTEND_DIR}} && pnpm biome check src/
+
+  format:
+    desc: Run all formatters
+    cmds:
+      - cd {{.BACKEND_DIR}} && uv run ruff format .
+      - cd {{.FRONTEND_DIR}} && pnpm biome format --write src/
+
+  # ── Database ─────────────────────────────────────────────────
+  db:migrate:
+    desc: Run Alembic migrations
+    dir: "{{.BACKEND_DIR}}"
+    cmds:
+      - uv run alembic upgrade head
+
+  db:revision:
+    desc: Create a new Alembic revision
+    dir: "{{.BACKEND_DIR}}"
+    cmds:
+      - uv run alembic revision --autogenerate -m "{{.CLI_ARGS}}"
+
+  db:reset:
+    desc: Drop, recreate, and migrate database (dev only)
+    dir: "{{.BACKEND_DIR}}"
+    cmds:
+      - echo "Dropping and recreating database..."
+      - uv run alembic downgrade base
+      - uv run alembic upgrade head
+
+  # ── Code Generation ──────────────────────────────────────────
+  client:generate:
+    desc: Generate TypeScript API client from OpenAPI spec
+    dir: packages/api-client
+    cmds:
+      - >-
+        cd ../../apps/backend &&
+        DATABASE_URL="postgresql+asyncpg://x:x@localhost/x"
+        uv run python -c "
+        import json;
+        from app.main import create_app;
+        spec = create_app().openapi();
+        json.dump(spec, open('../../packages/api-client/openapi.json', 'w'), indent=2);
+        print('Extracted OpenAPI spec')
+        "
+      - pnpm generate
+
+  errors:generate:
+    desc: Generate error classes from errors.yaml
+    dir: packages/error-contracts
+    cmds:
+      - uv run --with pyyaml python -c "
+        from pathlib import Path;
+        from scripts.generate import generate_python, generate_typescript, generate_required_keys;
+        p = Path('errors.yaml');
+        generate_python(p, Path('../../apps/backend/app/exceptions/_generated'));
+        generate_typescript(p, Path('src/generated.ts'));
+        generate_required_keys(p, Path('src/required-keys.json'));
+        print('Generated all error contract files')
+        "
+
+  errors:check:
+    desc: Validate translations against error contracts
+    dir: packages/error-contracts
+    cmds:
+      - uv run --with pyyaml python -c "
+        from pathlib import Path;
+        from scripts.validate_translations import validate;
+        errors = validate(Path('src/required-keys.json'), Path('../../apps/frontend/src/i18n/locales'));
+        if errors:
+            for e in errors: print(f'ERROR: {e}');
+            raise SystemExit(1);
+        print('All translations valid')
+        "
+
+  # ── Storybook ────────────────────────────────────────────────
+  storybook:
+    desc: Start Storybook dev server
+    dir: "{{.FRONTEND_DIR}}"
+    cmds:
+      - pnpm storybook
+
+  storybook:build:
+    desc: Build Storybook (CI check)
+    dir: "{{.FRONTEND_DIR}}"
+    cmds:
+      - pnpm build-storybook
+
+  # ── Docker ───────────────────────────────────────────────────
+  docker:build:
+    desc: Build all Docker images
+    cmds:
+      - docker build -f infra/docker/backend.Dockerfile -t template-backend .
+      - docker build -f infra/docker/frontend.Dockerfile -t template-frontend .
+
+  docker:up:
+    desc: Start docker-compose stack
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} up -d
+
+  docker:down:
+    desc: Stop docker-compose stack
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} down

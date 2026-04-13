@@ -1,0 +1,36 @@
+{
+  "app_name": "Project Template",
+  "nav": {
+    "home": "Home",
+    "widgets": "Widgets"
+  },
+  "actions": {
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "create": "Create"
+  },
+  "language": {
+    "en": "English",
+    "ro": "Romanian",
+    "switch": "Language"
+  },
+  "error_boundary": {
+    "title": "Something went wrong",
+    "message": "An unexpected error occurred.",
+    "reload": "Reload"
+  },
+  "loading": "Loading...",
+  "network_error": "A network error occurred. Please try again.",
+  "request_id": "Request ID: {{id}}",
+  "widgets": {
+    "title": "Widgets",
+    "empty": "No widgets yet.",
+    "create": "Create Widget",
+    "name": "Name",
+    "name_placeholder": "Enter widget name",
+    "description": "Description",
+    "description_placeholder": "Enter description (optional)",
+    "created_at": "Created"
+  }
+}
