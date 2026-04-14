@@ -14,3 +14,4 @@ class Settings(BaseSettings):
     app_env: str = "development"
     log_level: str = "info"
     cors_origins: list[str] = ["http://localhost:5173"]
+    structured_output_max_retries: int = 3
