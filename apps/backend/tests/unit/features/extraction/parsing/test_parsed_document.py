@@ -33,6 +33,17 @@ def test_parsed_document_blocks_field_is_tuple() -> None:
     assert isinstance(doc.blocks, tuple)
 
 
+def test_parsed_document_coerces_list_blocks_to_tuple() -> None:
+    # The field is typed tuple[...] but a list-typed call site could slip through
+    # in untyped contexts; __post_init__ must coerce so downstream consumers can
+    # always rely on tuple identity (frozen semantics for the collection itself).
+    block_list = [_block(1, "a"), _block(1, "b")]
+    doc = ParsedDocument(blocks=block_list, page_count=1)  # type: ignore[arg-type]
+
+    assert isinstance(doc.blocks, tuple)
+    assert doc.blocks == tuple(block_list)
+
+
 def test_parsed_document_is_frozen() -> None:
     doc = ParsedDocument(blocks=(_block(1, "a"),), page_count=1)
 
