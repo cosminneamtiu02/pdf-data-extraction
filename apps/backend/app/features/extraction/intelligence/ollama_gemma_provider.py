@@ -4,7 +4,7 @@ One class, two conformances. Satisfies the internal `IntelligenceProvider`
 protocol via `async generate(prompt, output_schema) -> GenerationResult`, and
 simultaneously conforms to LangExtract's community provider plugin contract by
 inheriting from `langextract.core.base_model.BaseLanguageModel` and registering
-itself via `langextract.providers.registry.register` on a regex matching Gemma
+itself via `langextract.providers.router.register` on a regex matching Gemma
 model IDs. The same registered entry point is declared in `pyproject.toml` so
 that fresh LangExtract processes discover the provider via Python's
 `importlib.metadata` entry-points mechanism.
@@ -172,13 +172,20 @@ class OllamaGemmaProvider(BaseLanguageModel):
             raise IntelligenceUnavailableError(message)
         return response_text
 
+    async def _raw_generate_batch(self, batch_prompts: Sequence[str]) -> list[str]:
+        # Must run every prompt inside the SAME event loop so the shared
+        # `httpx.AsyncClient` binds its connection pool to one loop only. If
+        # `infer` called `asyncio.run` per prompt, the second prompt would hit
+        # a client whose pool is bound to a closed loop.
+        return [await self._raw_generate(prompt) for prompt in batch_prompts]
+
     def infer(
         self,
         batch_prompts: Sequence[str],
         **kwargs: Any,  # noqa: ARG002 - LangExtract passes orchestrator kwargs that we do not consume
     ) -> Iterator[Sequence[ScoredOutput]]:
-        for prompt in batch_prompts:
-            raw = asyncio.run(self._raw_generate(prompt))
+        raw_outputs = asyncio.run(self._raw_generate_batch(batch_prompts))
+        for raw in raw_outputs:
             yield [ScoredOutput(score=1.0, output=raw)]
 
     async def health_check(self) -> bool:

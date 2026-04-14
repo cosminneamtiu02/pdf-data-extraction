@@ -4,8 +4,9 @@ These tests exercise every method on the class at the unit level:
 `async generate`, `async health_check`, `async aclose`, and the sync
 `infer` path that LangExtract's orchestrator calls into. They never touch a
 real Ollama, and the `infer` tests are sync pytest functions because `infer`
-calls `asyncio.run` internally (an async test would deadlock the loop — the
-exact failure mode documented in the provider's module docstring).
+calls `asyncio.run` internally (an async test would cause `asyncio.run` to
+raise `RuntimeError` because the event loop is already running — the exact
+failure mode documented in the provider's module docstring).
 
 The fake async client is hand-written in the same style as
 `test_structured_output_validator.py`: no unittest.mock, no pytest-mock. Each
@@ -379,6 +380,44 @@ def test_infer_propagates_intelligence_unavailable_error_on_connect_failure() ->
 
     with pytest.raises(IntelligenceUnavailableError):
         list(provider.infer(["p1"]))
+
+
+def test_infer_uses_a_single_asyncio_run_for_the_whole_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Regression: `httpx.AsyncClient` binds its connection pool to the running
+    # loop on first use. Calling `asyncio.run` per prompt would create a fresh
+    # loop each iteration, leaving the shared client bound to a closed loop on
+    # the second prompt. The fix batches all prompts into a single `asyncio.run`
+    # — pinned here by counting invocations.
+    import asyncio as _asyncio
+
+    call_count = 0
+    real_run = _asyncio.run
+
+    def counting_run(coro: Any, **kwargs: Any) -> Any:
+        nonlocal call_count
+        call_count += 1
+        return real_run(coro, **kwargs)
+
+    monkeypatch.setattr(
+        "app.features.extraction.intelligence.ollama_gemma_provider.asyncio.run",
+        counting_run,
+    )
+
+    fake = _FakeAsyncClient(
+        post_outcomes=[
+            _FakeResponse(body={"response": "a"}),
+            _FakeResponse(body={"response": "b"}),
+            _FakeResponse(body={"response": "c"}),
+        ],
+    )
+    provider = _build_provider(fake_client=fake)
+
+    results = list(provider.infer(["p1", "p2", "p3"]))
+
+    assert len(results) == 3
+    assert call_count == 1
 
 
 # The two constructor tests below pin the LangExtract plugin-instantiation

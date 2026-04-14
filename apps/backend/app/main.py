@@ -17,7 +17,12 @@ async def _lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     try:
         yield
     finally:
-        await get_intelligence_provider().aclose()
+        # Only close the provider if something actually constructed one during
+        # the app's lifetime — touching `get_intelligence_provider()` here
+        # otherwise instantiates an `httpx.AsyncClient` for the sole purpose
+        # of immediately closing it.
+        if get_intelligence_provider.cache_info().currsize > 0:
+            await get_intelligence_provider().aclose()
 
 
 def create_app() -> FastAPI:
