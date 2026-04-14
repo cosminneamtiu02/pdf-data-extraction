@@ -13,8 +13,6 @@ RUN uv sync --frozen --no-dev --no-install-project
 
 # Copy application source
 COPY apps/backend/app ./app
-COPY apps/backend/alembic ./alembic
-COPY apps/backend/alembic.ini ./
 
 # Install the project
 COPY apps/backend/pyproject.toml ./
@@ -32,8 +30,6 @@ WORKDIR /app
 # Copy the virtual environment and application from the builder
 COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app/app /app/app
-COPY --from=builder /app/alembic /app/alembic
-COPY --from=builder /app/alembic.ini /app/alembic.ini
 
 # Put the venv on PATH
 ENV PATH="/app/.venv/bin:$PATH"
