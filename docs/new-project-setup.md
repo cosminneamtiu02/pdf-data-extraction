@@ -94,7 +94,7 @@ Not `updates`, not `fixing the thing`, not `wip`.
 - [ ] Require deployments to succeed
 - [ ] Require code scanning results *(come back in Phase 8)*
 - [ ] Require code quality results
-- [ ] Automatically request Copilot code review *(the [copilot-review.yml](../.github/workflows/copilot-review.yml) workflow handles this)*
+- [x] **Automatically request Copilot code review** *(requires Copilot Pro or Pro+ on the repo owner's account; this is the single source of truth — do NOT add a parallel workflow that POSTs to `/requested_reviewers`, the REST endpoint silently drops `Copilot` when the Ruleset toggle is the mechanism)*
 
 Click **Create** at the bottom.
 
@@ -404,7 +404,7 @@ The CI pipeline runs automatically on PRs to `main`. It runs:
 
 The deploy workflow ([deploy.yml](../.github/workflows/deploy.yml)) triggers on push to `main` and builds Docker images. Customize the push/deploy steps for your infrastructure.
 
-The copilot-review workflow ([copilot-review.yml](../.github/workflows/copilot-review.yml)) requests a Copilot review on every non-draft PR. It has `continue-on-error: true` — failures don't block merges. Do NOT add it to required status checks and do NOT enable "Automatically request Copilot code review" in the ruleset. One mechanism, one source of truth.
+Copilot code review is handled server-side by the ruleset toggle enabled in Phase 4 (see above), not by a workflow. There is intentionally no `copilot-review.yml` — the REST `POST /pulls/{n}/requested_reviewers` endpoint silently drops `reviewers[]=Copilot` even when the caller holds Copilot Pro, so a workflow-based approach returns 201 Created without attaching the reviewer. The ruleset is the only supported mechanism.
 
 ---
 
@@ -428,8 +428,7 @@ For the extraction feature specifically, walk the 29 thickened features in
 
 - ~~Add yourself to the ruleset bypass list~~ — defeats the discipline contract
 - ~~Enable "Require signed commits"~~ unless you already have GPG/SSH signing configured
-- ~~Enable "Automatically request Copilot code review" in the ruleset~~ — duplicates [copilot-review.yml](../.github/workflows/copilot-review.yml)
-- ~~Make `request-copilot-review` a required status check~~ — it's advisory with `continue-on-error: true`, gating merges on it is pointless
+- ~~Reintroduce a `copilot-review.yml` workflow that POSTs to `/pulls/{n}/requested_reviewers`~~ — the endpoint silently drops `reviewers[]=Copilot` and returns 201, so the workflow always looks green while doing nothing. The ruleset toggle is the only mechanism that actually works
 - ~~Merge the first PR before CI completes~~ — you need CI to run to register the check names
 - ~~Set required approvals > 0 as a solo dev~~ — you'll lock yourself out
 - ~~Use "Merge commit" or "Rebase and merge"~~ — linear history rule forbids one, squash-only is better than the other
