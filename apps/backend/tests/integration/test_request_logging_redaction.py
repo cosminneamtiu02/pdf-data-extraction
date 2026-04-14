@@ -18,6 +18,8 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from httpx import ASGITransport, AsyncClient
 
+from app.core.config import Settings
+from app.core.logging import configure_logging
 from app.main import app
 
 HEX32 = re.compile(r"^[a-f0-9]{32}$")
@@ -29,7 +31,20 @@ _TEST_PATHS = {"/_t/log_safe", "/_t/log_sensitive", "/_t/log_pdf", "/_t/log_erro
 
 @pytest.fixture
 def test_app() -> Iterator[FastAPI]:
-    """The real app with extra logging routes mounted for the duration of the test."""
+    """The real app with extra logging routes mounted for the duration of the test.
+
+    Re-applies the production structlog config from Settings defaults so that
+    any prior unit test which called ``configure_logging`` with a narrowed
+    denylist does not leak into this integration test's processor chain.
+    """
+    settings = Settings()
+    configure_logging(
+        log_level=settings.log_level,
+        json_output=True,
+        redacted_keys=settings.log_redacted_keys,
+        max_value_length=settings.log_max_value_length,
+    )
+
     log = structlog.get_logger("redaction_test")
 
     @app.get("/_t/log_safe")
