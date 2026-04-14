@@ -1,7 +1,10 @@
 """Unit tests for OffsetIndex — O(log n) char-offset-to-block lookup."""
 
-import time
+import bisect
 
+import pytest
+
+from app.features.extraction.coordinates import offset_index as offset_index_module
 from app.features.extraction.coordinates.offset_index import OffsetIndex
 from app.features.extraction.coordinates.offset_index_entry import OffsetIndexEntry
 
@@ -111,31 +114,69 @@ def test_lookup_zero_width_entry_is_never_returned() -> None:
     assert index.lookup(2) == ("world_block", 0)
 
 
-def test_lookup_is_sublinear_on_large_index() -> None:
-    # Timing ratio sanity check: a 10_000-entry index must not be linearly
-    # slower than a 100-entry index. bisect guarantees the ratio stays near 1.
-    small = OffsetIndex(
-        entries=[
-            OffsetIndexEntry(start=i * 10, end=i * 10 + 5, block_id=f"b{i}") for i in range(100)
-        ],
-    )
-    large = OffsetIndex(
+def test_lookup_uses_bisect_exactly_once_per_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Deterministic replacement for the wall-clock "sublinear" check: spy on
+    # bisect.bisect_right and assert each lookup triggers exactly one call.
+    # A linear scan would either call it zero times (walking entries directly)
+    # or more than once (rescanning). Exactly-one is the binary-search contract.
+    index = OffsetIndex(
         entries=[
             OffsetIndexEntry(start=i * 10, end=i * 10 + 5, block_id=f"b{i}") for i in range(10_000)
         ],
     )
 
-    iterations = 2_000
+    call_count = 0
+    real_bisect_right = bisect.bisect_right
 
-    def measure(index: OffsetIndex, target: int) -> float:
-        t0 = time.perf_counter()
-        for _ in range(iterations):
-            index.lookup(target)
-        return time.perf_counter() - t0
+    def counting_bisect_right(
+        a: object,
+        x: object,
+        lo: int = 0,
+        hi: int | None = None,
+    ) -> int:
+        nonlocal call_count
+        call_count += 1
+        if hi is None:
+            return real_bisect_right(a, x)  # type: ignore[call-overload]
+        return real_bisect_right(a, x, lo, hi)  # type: ignore[call-overload]
 
-    small_time = measure(small, 500)
-    large_time = measure(large, 50_000)
+    monkeypatch.setattr(offset_index_module.bisect, "bisect_right", counting_bisect_right)
 
-    # Linear scan would put large at ~100x small. bisect keeps it near-constant.
-    # A generous 20x bound still rejects any accidental linear scan.
-    assert large_time < small_time * 20
+    for target in (0, 500, 50_000, 99_995, 100_000):
+        index.lookup(target)
+
+    assert call_count == 5
+
+
+def test_lookup_rejects_unordered_entries() -> None:
+    with pytest.raises(ValueError, match="ordered and non-overlapping"):
+        OffsetIndex(
+            entries=[
+                OffsetIndexEntry(start=10, end=15, block_id="b0"),
+                OffsetIndexEntry(start=5, end=8, block_id="b1"),
+            ],
+        )
+
+
+def test_lookup_rejects_overlapping_entries() -> None:
+    with pytest.raises(ValueError, match="ordered and non-overlapping"):
+        OffsetIndex(
+            entries=[
+                OffsetIndexEntry(start=0, end=10, block_id="b0"),
+                OffsetIndexEntry(start=5, end=15, block_id="b1"),
+            ],
+        )
+
+
+def test_lookup_accepts_adjacent_entries_with_no_gap() -> None:
+    # Back-to-back entries (previous end == next start) are legal: the half-open
+    # interval convention means the boundary offset belongs to the next block.
+    index = OffsetIndex(
+        entries=[
+            OffsetIndexEntry(start=0, end=5, block_id="b0"),
+            OffsetIndexEntry(start=5, end=10, block_id="b1"),
+        ],
+    )
+
+    assert index.lookup(4) == ("b0", 4)
+    assert index.lookup(5) == ("b1", 0)

@@ -1,8 +1,10 @@
 """Unit tests for TextConcatenator — single-pass join + index build."""
 
-import random
-import time
+import bisect
 
+import pytest
+
+from app.features.extraction.coordinates import offset_index as offset_index_module
 from app.features.extraction.coordinates.text_concatenator import TextConcatenator
 from app.features.extraction.parsing.bounding_box import BoundingBox
 from app.features.extraction.parsing.parsed_document import ParsedDocument
@@ -225,19 +227,38 @@ def test_input_document_is_not_mutated() -> None:
     assert [b.block_id for b in doc.blocks] == pre_ids
 
 
-def test_1000_blocks_random_lookup_is_fast() -> None:
+def test_1000_blocks_lookup_uses_bisect_exactly_once_per_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Deterministic replacement for the spec's "<100 ms for 100 random
+    # lookups" perf sanity. A linear scan would call bisect.bisect_right
+    # zero times; binary search calls it exactly once per lookup. We verify
+    # the latter on a 1000-block document with 100 deterministic offsets.
     blocks = tuple(_block(f"text_{i}", page=1, block_id=f"p1_b{i}") for i in range(1000))
     doc = ParsedDocument(blocks=blocks, page_count=1)
 
     text, index = TextConcatenator().concatenate(doc)
     total_len = len(text)
 
-    rng = random.Random(42)  # noqa: S311 — deterministic seed for perf sanity test, not crypto
-    offsets = [rng.randint(0, total_len - 1) for _ in range(100)]
+    call_count = 0
+    real_bisect_right = bisect.bisect_right
 
-    t0 = time.perf_counter()
+    def counting_bisect_right(
+        a: object,
+        x: object,
+        lo: int = 0,
+        hi: int | None = None,
+    ) -> int:
+        nonlocal call_count
+        call_count += 1
+        if hi is None:
+            return real_bisect_right(a, x)  # type: ignore[call-overload]
+        return real_bisect_right(a, x, lo, hi)  # type: ignore[call-overload]
+
+    monkeypatch.setattr(offset_index_module.bisect, "bisect_right", counting_bisect_right)
+
+    offsets = [(i * 37) % total_len for i in range(100)]
     for offset in offsets:
         index.lookup(offset)
-    elapsed = time.perf_counter() - t0
 
-    assert elapsed < 0.1  # 100 ms budget per spec
+    assert call_count == 100
