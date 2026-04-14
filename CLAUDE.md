@@ -190,37 +190,48 @@ The only working path is the ruleset, which binds on `opened` /
    sign in as Ioana. If PR creation goes through gh in the terminal,
    the VSCode extension's identity is irrelevant.
 
-### Commit trailers (mandatory on every commit)
+### Contribution credit for cosmin (via local git config)
 
-Every commit on this repo must include both of these trailers, in this
-order, at the end of the commit message body:
+Cosmin's contribution-graph credit on Ioana-authored PRs flows through
+the `Co-authored-by:` trailer that GitHub **auto-extracts** from each
+branch commit's `author` field at squash-merge time. The load-bearing
+step is local git config, set once per machine:
 
 ```
-Co-Authored-By: cosminneamtiu02 <91669989+cosminneamtiu02@users.noreply.github.com>
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+git config --global user.email "91669989+cosminneamtiu02@users.noreply.github.com"
+git config --global user.name  "cosminneamtiu02"
 ```
 
-The `cosminneamtiu02` trailer exists so that cosmin accrues
-contribution-graph credit on his profile even though Ioana is the PR
-author. GitHub only counts trailer-based co-authorship when the email
-in the trailer matches a verified email on the credited account — the
-`<user-id>+<login>@users.noreply.github.com` form is GitHub's always-
-valid no-reply address for the account (user ID `91669989` was retrieved
-from `/users/cosminneamtiu02`). Any other email form (personal address,
-typo, wrong ID) produces a trailer that GitHub displays but does NOT
-count toward contributions. Lost contribution credit cannot be
-retroactively added.
+User ID `91669989` was fetched from `/users/cosminneamtiu02`. The
+`<user-id>+<login>@users.noreply.github.com` form is the only email
+GitHub treats as verified for the account when resolving trailer-based
+contribution credit.
 
-The `Claude Opus 4.6` trailer exists to identify AI-assisted commits.
+With that config set, every commit's `author` field is
+`cosminneamtiu02 <91669989+cosminneamtiu02@users.noreply.github.com>`,
+and when Ioana squash-merges a PR on this repo, GitHub auto-appends a
+`Co-authored-by: cosminneamtiu02 <91669989+...>` trailer to the squash
+commit message, matching the verified email → contribution graph
+credits cosmin.
+
+Do NOT write manual `Co-Authored-By:` trailers in commit messages or
+PR body text on this repo. They are redundant with the auto-extracted
+trailer and, worse, long trailer lines get line-wrapped during the
+PR-body-to-squash-commit transformation (observed on PR #20: an 89-char
+trailer broke across two lines and became unparseable). The auto-
+extraction path is robust; the manual path is fragile.
+
+The Claude AI-attribution trailer (`Co-Authored-By: Claude Opus 4.6 (1M
+context) <noreply@anthropic.com>`) is separate and optional — Anthropic
+has no GitHub account to credit, so it serves only as transparency
+about AI-assisted commits. Omit it if it would wrap a trailer line.
 
 ### At squash-merge time
 
-GitHub's squash-merge UI auto-populates `Co-Authored-By` trailers from
-the PR's commits into the final squash commit message. Do NOT delete
-either trailer from the squash-merge message box. The final commit that
-lands on `main` must carry both trailers — the contribution graph
-records attribution based on the commit on the default branch, not on
-the branch commits that get discarded during squash.
+Do NOT delete the auto-extracted `Co-authored-by:` trailer from the
+squash-merge message box. If the commit that lands on `main` does not
+carry it, cosmin's contribution-graph credit for that PR is lost and
+cannot be retroactively added.
 
 ## Dependabot
 
