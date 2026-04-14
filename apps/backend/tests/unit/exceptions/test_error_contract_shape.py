@@ -49,13 +49,13 @@ def test_generated_registry_matches_yaml() -> None:
 
 
 def test_no_stale_generated_error_files() -> None:
-    stem_to_code = {
-        "not_found_error": "NOT_FOUND",
-        "validation_failed_error": "VALIDATION_FAILED",
-        "internal_error": "INTERNAL_ERROR",
-        "skill_validation_failed_error": "SKILL_VALIDATION_FAILED",
+    expected_stems = {
+        "not_found_error",
+        "validation_failed_error",
+        "internal_error",
+        "skill_validation_failed_error",
     }
     stale = {"conflict_error", "rate_limited_error", "widget_not_found_error"}
     present_stems = {p.stem for p in GENERATED_DIR.glob("*_error.py")}
-    assert present_stems == set(stem_to_code.keys())
+    assert present_stems == expected_stems
     assert present_stems.isdisjoint(stale)
