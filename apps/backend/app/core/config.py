@@ -1,5 +1,8 @@
 """Application configuration via pydantic-settings."""
 
+from typing import Annotated
+
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -23,3 +26,4 @@ class Settings(BaseSettings):
         "prompt",
         "field_values",
     ]
+    structured_output_max_retries: Annotated[int, Field(ge=0)] = 3
