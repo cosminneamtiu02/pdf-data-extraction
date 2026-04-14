@@ -72,7 +72,13 @@ tasks:
     desc: Run integration tests (in-process ASGI; no external services)
     dir: "{{.BACKEND_DIR}}"
     cmds:
-      - uv run pytest tests/integration/ -v
+      - uv run pytest tests/integration/ -v -m "not slow"
+
+  test:slow:
+    desc: Run integration tests marked slow (real Docling, real Ollama). Opt-in.
+    dir: "{{.BACKEND_DIR}}"
+    cmds:
+      - uv run pytest tests/integration/ -v -m slow
 
   test:contract:
     desc: Run contract tests against the OpenAPI spec
