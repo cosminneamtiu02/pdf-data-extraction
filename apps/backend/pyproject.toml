@@ -29,12 +29,16 @@ dependencies = [
     "pymupdf>=1.27.2.2,<2.0.0",
 ]
 
+[project.entry-points."langextract.providers"]
+ollama_gemma = "app.features.extraction.intelligence.ollama_gemma_provider:OllamaGemmaProvider"
+
 [dependency-groups]
 dev = [
     "pytest>=9.0.3",
     "pytest-asyncio>=1.3.0",
     "pytest-cov>=7.1.0",
     "httpx>=0.28.1",
+    "respx>=0.22.0",
     "ruff>=0.15.10",
     "import-linter>=2.11",
     "pyright>=1.1.408",

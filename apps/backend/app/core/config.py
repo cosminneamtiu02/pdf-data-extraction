@@ -36,3 +36,7 @@ class Settings(BaseSettings):
     skills_dir: Path = Field(default_factory=lambda: _DEFAULT_SKILLS_DIR)
     docling_ocr_default: str | None = None
     docling_table_mode_default: str | None = None
+
+    ollama_base_url: str = "http://host.docker.internal:11434"
+    ollama_model: str = "gemma4:e2b"
+    ollama_timeout_seconds: Annotated[float, Field(gt=0)] = 30.0
