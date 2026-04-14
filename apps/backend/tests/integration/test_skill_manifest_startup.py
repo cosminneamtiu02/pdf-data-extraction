@@ -39,6 +39,7 @@ def _write_skill(base: Path, *, dir_name: str, **overrides: Any) -> Path:
 
 
 def _settings_with_skills(skills_dir: Path) -> Settings:
+    # pydantic-settings loads the remaining fields from env / defaults
     return Settings(skills_dir=skills_dir)  # type: ignore[reportCallIssue]
 
 
@@ -78,8 +79,11 @@ async def test_create_app_fails_fast_on_malformed_yaml(tmp_path: Path) -> None:
 async def test_create_app_fails_fast_on_missing_skills_dir(tmp_path: Path) -> None:
     missing = tmp_path / "nowhere"
 
-    with pytest.raises(SkillValidationFailedError):
+    with pytest.raises(SkillValidationFailedError) as exc_info:
         create_app(_settings_with_skills(missing))
+
+    assert exc_info.value.params is not None
+    assert "nowhere" in exc_info.value.params.model_dump()["reason"]
 
 
 async def test_manifest_is_stable_across_reads(tmp_path: Path) -> None:
@@ -101,6 +105,7 @@ async def test_docling_override_flows_from_settings(tmp_path: Path) -> None:
         docling={"ocr": "off"},
     )
 
+    # pydantic-settings loads the remaining fields from env / defaults
     settings = Settings(  # type: ignore[reportCallIssue]
         skills_dir=tmp_path,
         docling_ocr_default="on",
