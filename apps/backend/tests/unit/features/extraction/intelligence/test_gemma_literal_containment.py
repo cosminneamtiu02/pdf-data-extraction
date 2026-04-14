@@ -3,7 +3,7 @@
 The model tag is configuration, not code. A hardcoded tag means changing the
 model version requires a code edit instead of an env var flip. This test
 enforces the invariant by grepping AST string constants for a model-tag shape
-(`gemma<digit>`), which matches actual Ollama tags like `gemma2:2b`, `gemma4:1b`
+(`gemma<digit>`), which matches actual Ollama tags like `gemma4:e2b`, `gemma4:e4b`
 without false-flagging conceptual mentions of "Gemma 4" in docstrings.
 
 Allowlist: regex pattern strings passed to the LangExtract `register(...)`

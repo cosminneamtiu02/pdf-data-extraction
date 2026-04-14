@@ -29,5 +29,5 @@ class Settings(BaseSettings):
     structured_output_max_retries: Annotated[int, Field(ge=0)] = 3
 
     ollama_base_url: str = "http://host.docker.internal:11434"
-    ollama_model: str = "gemma2:2b"
+    ollama_model: str = "gemma4:e2b"
     ollama_timeout_seconds: Annotated[float, Field(gt=0)] = 30.0

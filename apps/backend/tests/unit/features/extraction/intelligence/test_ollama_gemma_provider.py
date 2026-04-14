@@ -107,7 +107,7 @@ class _FakeAsyncClient:
 def _build_settings(
     *,
     base_url: str = "http://host.docker.internal:11434",
-    model: str = "gemma2:2b",
+    model: str = "gemma4:e2b",
     timeout_seconds: float = 30.0,
     max_retries: int = 3,
 ) -> Settings:
@@ -169,7 +169,7 @@ async def test_generate_sends_model_and_url_from_settings() -> None:
     )
     settings = _build_settings(
         base_url="http://ollama.test:11434",
-        model="gemma2:1b",
+        model="gemma4:e4b",
     )
     provider = _build_provider(settings=settings, fake_client=fake)
 
@@ -177,7 +177,7 @@ async def test_generate_sends_model_and_url_from_settings() -> None:
 
     url, payload = fake.post_calls[0]
     assert url == "http://ollama.test:11434/api/generate"
-    assert payload["model"] == "gemma2:1b"
+    assert payload["model"] == "gemma4:e4b"
     assert payload["prompt"] == "hi"
     assert payload["stream"] is False
 

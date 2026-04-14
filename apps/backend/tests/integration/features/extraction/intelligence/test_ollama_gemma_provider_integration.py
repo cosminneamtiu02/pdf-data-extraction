@@ -6,7 +6,7 @@ factory so the Depends()/lifespan wiring is exercised end-to-end in-process.
 
 Also verifies the LangExtract plugin discovery path: importing the provider
 module triggers the `@register(r"^gemma", ...)` decorator, and
-`langextract.providers.router.resolve("gemma2:2b")` returns our class.
+`langextract.providers.router.resolve("gemma4:e2b")` returns our class.
 """
 
 from __future__ import annotations
@@ -121,7 +121,7 @@ def test_langextract_plugin_discovery_resolves_to_ollama_gemma_provider() -> Non
     # OllamaLanguageModel (priority=10); our priority=20 wins the tie.
     resolve.cache_clear()  # type: ignore[attr-defined]  # resolve is @lru_cache-wrapped
 
-    resolved = resolve("gemma2:2b")
+    resolved = resolve("gemma4:e2b")
 
     assert resolved is OllamaGemmaProvider
 
@@ -134,6 +134,6 @@ def test_custom_provider_priority_beats_builtin_ollama_provider() -> None:
     from langextract.providers.ollama import OllamaLanguageModel
 
     resolve.cache_clear()  # type: ignore[attr-defined]  # resolve is @lru_cache-wrapped
-    resolved = resolve("gemma2:2b")
+    resolved = resolve("gemma4:e2b")
     assert resolved is OllamaGemmaProvider
     assert resolved is not OllamaLanguageModel
