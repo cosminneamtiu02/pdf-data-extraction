@@ -41,7 +41,7 @@ def test_skill_from_schema_populates_all_fields() -> None:
     assert skill.version == 1
     assert skill.prompt == "Extract."
     assert len(skill.examples) == 1
-    assert skill.output_schema["required"] == ["a"]
+    assert skill.output_schema["required"] == ("a",)
     assert isinstance(skill.docling_config, SkillDoclingConfig)
 
 
@@ -62,6 +62,28 @@ def test_skill_output_schema_is_read_only() -> None:
 
     with pytest.raises(TypeError):
         skill.output_schema["injected"] = True  # type: ignore[index]
+
+
+def test_skill_output_schema_is_deeply_immutable() -> None:
+    """Nested dicts and lists inside `output_schema` must also be frozen —
+    a shallow `MappingProxyType` would leave `skill.output_schema["properties"]`
+    mutable, which violates the "immutable runtime object" contract.
+    """
+    schema = _valid_schema()
+    skill = Skill.from_schema(schema)
+
+    # Nested dict: `properties` → `{"a": {"type": "string"}}`
+    with pytest.raises(TypeError):
+        skill.output_schema["properties"]["a"]["type"] = "integer"  # type: ignore[index]
+
+    with pytest.raises(TypeError):
+        skill.output_schema["properties"]["injected"] = {}  # type: ignore[index]
+
+    # Nested list → frozen as tuple, so `.append` and index assignment fail
+    required = skill.output_schema["required"]
+    assert isinstance(required, tuple)
+    with pytest.raises((TypeError, AttributeError)):
+        required.append("b")  # type: ignore[attr-defined]
 
 
 def test_docling_config_is_merged_not_raw_override() -> None:

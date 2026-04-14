@@ -5,11 +5,17 @@ the process. `lookup` is a pure dict access; there is no disk I/O on the
 request path. See PDFX-E002-F002 for the design rationale.
 """
 
+from __future__ import annotations
+
 from types import MappingProxyType
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from app.exceptions import SkillNotFoundError
-from app.features.extraction.skills.skill import Skill
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from app.features.extraction.skills.skill import Skill
 
 _LATEST: Final = "latest"
 
@@ -23,10 +29,10 @@ class SkillManifest:
             current = latest.get(name)
             if current is None or version > current:
                 latest[name] = version
-        # MappingProxyType makes the internal dicts read-only at the type level,
-        # reinforcing the "never mutated after construction" invariant.
-        self._skills: MappingProxyType[tuple[str, int], Skill] = MappingProxyType(dict(loaded))
-        self._latest: MappingProxyType[str, int] = MappingProxyType(latest)
+        # `MappingProxyType` gives a read-only view; annotating with `Mapping`
+        # avoids any subscripting quirks at runtime and keeps consumers honest.
+        self._skills: Mapping[tuple[str, int], Skill] = MappingProxyType(dict(loaded))
+        self._latest: Mapping[str, int] = MappingProxyType(latest)
 
     def lookup(self, name: str, version: str) -> Skill:
         """Return the `Skill` for `(name, version)` or raise `SkillNotFoundError`.

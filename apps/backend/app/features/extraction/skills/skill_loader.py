@@ -57,6 +57,14 @@ class SkillLoader:
                 problems.append(f"{path}: {type(exc).__name__}: {exc}")
                 continue
 
+            parent_name = path.parent.name
+            if parent_name != schema.name:
+                problems.append(
+                    f"{path}: directory name '{parent_name}' does not match "
+                    f"body name '{schema.name}'",
+                )
+                continue
+
             key = (schema.name, schema.version)
             if key in origins:
                 problems.append(
