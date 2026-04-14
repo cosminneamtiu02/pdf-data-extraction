@@ -10,6 +10,7 @@ if TYPE_CHECKING:
 from app.exceptions._generated.conflict_error import ConflictError
 from app.exceptions._generated.internal_error import InternalError
 from app.exceptions._generated.not_found_error import NotFoundError
+from app.exceptions._generated.skill_validation_failed_error import SkillValidationFailedError
 from app.exceptions._generated.validation_failed_error import ValidationFailedError
 
 ERROR_CLASSES: dict[str, type[DomainError]] = {
@@ -17,4 +18,5 @@ ERROR_CLASSES: dict[str, type[DomainError]] = {
     "CONFLICT": ConflictError,
     "VALIDATION_FAILED": ValidationFailedError,
     "INTERNAL_ERROR": InternalError,
+    "SKILL_VALIDATION_FAILED": SkillValidationFailedError,
 }
