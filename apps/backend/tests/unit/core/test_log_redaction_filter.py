@@ -92,3 +92,54 @@ def test_event_key_is_never_redacted_or_truncated() -> None:
     filt = _filter()
     out = filt(None, "info", {"event": "some event name"})
     assert out["event"] == "some event name"
+
+
+def test_event_key_survives_even_when_misconfigured_into_denylist() -> None:
+    """An accidental 'event' in the denylist must not silently drop the log message."""
+    filt = LogRedactionFilter(redacted_keys=["event", "secret"], max_value_length=500)
+    out = filt(None, "info", {"event": "important", "secret": "x", "skill_name": "inv"})
+    assert out["event"] == "important"
+    assert "secret" not in out
+    assert out["skill_name"] == "inv"
+
+
+def test_long_event_message_is_not_truncated() -> None:
+    """The event key passes through untruncated even when the message is long."""
+    long = "x" * 10_000
+    out = _call(_filter(), event=long)
+    assert out["event"] == long
+
+
+def test_nested_dict_strips_forbidden_key_at_any_depth() -> None:
+    """A forbidden key inside a dict value is stripped — closes the safety-net bypass."""
+    out = _call(
+        _filter(),
+        event="test",
+        context={"extracted_value": "$1,847.50", "skill_name": "inv"},
+    )
+    assert "extracted_value" not in out["context"]
+    assert out["context"] == {"skill_name": "inv"}
+    assert all("$1,847.50" not in repr(v) for v in out.values())
+
+
+def test_deeply_nested_dict_is_walked() -> None:
+    out = _call(
+        _filter(),
+        event="test",
+        outer={"inner": {"prompt": "leaked", "ok": "kept"}},
+    )
+    assert out["outer"]["inner"] == {"ok": "kept"}
+
+
+def test_list_values_are_walked_for_nested_dicts() -> None:
+    out = _call(
+        _filter(),
+        event="test",
+        items=[{"extracted_value": "leak", "name": "a"}, {"name": "b"}],
+    )
+    assert out["items"] == [{"name": "a"}, {"name": "b"}]
+
+
+def test_long_string_inside_nested_dict_is_truncated() -> None:
+    out = _call(_filter(), event="test", ctx={"msg": "y" * 600})
+    assert out["ctx"]["msg"] == "y" * 500 + "... [truncated]"

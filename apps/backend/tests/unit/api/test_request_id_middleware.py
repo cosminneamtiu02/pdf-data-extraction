@@ -5,7 +5,6 @@ import re
 import pytest
 import structlog
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
 from httpx import ASGITransport, AsyncClient
 
 from app.api.middleware import RequestIdMiddleware
@@ -55,17 +54,25 @@ async def test_request_id_is_unbound_after_request(app: FastAPI) -> None:
     assert "request_id" not in structlog.contextvars.get_contextvars()
 
 
-async def test_x_request_id_present_on_4xx_responses(app: FastAPI) -> None:
-    """Header is attached on 4xx JSON responses produced by handlers
-    (the path used by the project's DomainError exception handler chain).
+async def test_x_request_id_present_on_domain_error_responses() -> None:
+    """The middleware attaches X-Request-Id even when the handler raises a
+    DomainError that is converted to a JSONResponse by the project's exception
+    handler chain. Mount the real handlers so this exercises the production path,
+    not a synthetic JSONResponse return.
     """
+    from app.api.errors import register_exception_handlers
+    from app.exceptions import NotFoundError
 
-    @app.get("/_test_404")
-    async def _not_found() -> JSONResponse:
-        return JSONResponse(status_code=404, content={"error": "nope"})
+    application = FastAPI()
+    application.add_middleware(RequestIdMiddleware)
+    register_exception_handlers(application)
 
-    async with await _client(app) as ac:
-        response = await ac.get("/_test_404")
+    @application.get("/_boom")
+    async def _boom() -> dict[str, str]:
+        raise NotFoundError
+
+    async with AsyncClient(transport=ASGITransport(app=application), base_url="http://test") as ac:
+        response = await ac.get("/_boom")
     assert response.status_code == 404
     assert "x-request-id" in response.headers
     assert HEX32.match(response.headers["x-request-id"])

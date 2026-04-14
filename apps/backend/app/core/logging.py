@@ -31,6 +31,11 @@ def configure_logging(
         max_value_length=max_value_length,
     )
 
+    # Order matters. The redaction filter must run after merge_contextvars
+    # (so bound request_id is in the dict and survives the allowlist check)
+    # but before any processor that might enrich the dict with sensitive data.
+    # Today no enrichment processor adds sensitive keys, but if one is added
+    # later it must be placed before the redaction filter, not after.
     shared_processors: list[structlog.types.Processor] = [
         structlog.contextvars.merge_contextvars,
         redaction_filter,
