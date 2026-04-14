@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 import httpx
 import pytest
 import respx
+from langextract import factory as lx_factory
 from langextract.providers.router import resolve
 
 from app.api.deps import (
@@ -137,3 +138,26 @@ def test_custom_provider_priority_beats_builtin_ollama_provider() -> None:
     resolved = resolve("gemma4:e2b")
     assert resolved is OllamaGemmaProvider
     assert resolved is not OllamaLanguageModel
+
+
+async def test_langextract_factory_create_model_instantiates_our_provider() -> None:
+    # This is the exact path LangExtract's orchestration takes: build a
+    # ModelConfig from a model_id and ask the factory to create the model.
+    # The factory calls provider_class(**kwargs) with kwargs["model_id"] set
+    # and any env-derived extras merged in. This test exists because the
+    # first implementation accepted only (settings, validator) as keyword
+    # arguments and LangExtract's `provider_class(model_id=...)` invocation
+    # raised `unexpected keyword argument 'model_id'` — a silent blocker
+    # that `resolve(...)` alone would not catch.
+    resolve.cache_clear()  # type: ignore[attr-defined]  # resolve is @lru_cache-wrapped
+    config = lx_factory.ModelConfig(model_id="gemma4:e2b")
+
+    model = lx_factory.create_model(config)
+
+    try:
+        assert isinstance(model, OllamaGemmaProvider)
+        # The model_id passed to the factory must be the tag the provider
+        # will send to Ollama on every POST (overriding Settings default).
+        assert model._model == "gemma4:e2b"  # noqa: SLF001 — exercising constructor contract
+    finally:
+        await model.aclose()

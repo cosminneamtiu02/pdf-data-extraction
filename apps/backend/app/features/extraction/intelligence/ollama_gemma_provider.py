@@ -28,6 +28,7 @@ because it surfaces the incorrect call site instead of deadlocking.
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -36,23 +37,27 @@ from langextract.core.base_model import BaseLanguageModel
 from langextract.core.types import ScoredOutput
 from langextract.providers.router import register
 
+from app.core.config import Settings
+from app.features.extraction.intelligence.correction_prompt_builder import (
+    CorrectionPromptBuilder,
+)
 from app.features.extraction.intelligence.intelligence_unavailable_error import (
     IntelligenceUnavailableError,
+)
+from app.features.extraction.intelligence.structured_output_validator import (
+    StructuredOutputValidator,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
 
-    from app.core.config import Settings
     from app.features.extraction.intelligence.generation_result import GenerationResult
-    from app.features.extraction.intelligence.structured_output_validator import (
-        StructuredOutputValidator,
-    )
 
 _CONNECT_ERROR_MESSAGE = "Ollama connection failed"
 _TIMEOUT_MESSAGE = "Ollama request timed out"
 _HTTP_ERROR_MESSAGE_TEMPLATE = "Ollama returned HTTP {status}"
 _MISSING_RESPONSE_FIELD_MESSAGE = "Ollama response body missing 'response' string field"
+_INVALID_JSON_BODY_MESSAGE = "Ollama response body is not valid JSON"
 
 _logger = structlog.get_logger(__name__)
 
@@ -71,19 +76,49 @@ def _build_payload(model: str, prompt: str) -> dict[str, Any]:
 
 @register(r"^gemma", priority=20)
 class OllamaGemmaProvider(BaseLanguageModel):
+    """Dual-interface Ollama provider.
+
+    Two construction paths:
+
+    1. FastAPI `Depends()` factory path — `OllamaGemmaProvider(settings=...,
+       validator=...)`. Used by `app.api.deps.get_intelligence_provider`. All
+       config comes from the injected `Settings` instance.
+    2. LangExtract plugin path — `OllamaGemmaProvider(model_id=<tag>,
+       **langextract_kwargs)`. `langextract.factory.create_model` calls
+       `provider_class(**kwargs)` where `kwargs["model_id"]` is the model tag.
+       When this path fires, we lazily construct a default `Settings()` and a
+       matching `StructuredOutputValidator`, honoring `model_id` as an
+       override of `settings.ollama_model`. Any extra kwargs LangExtract
+       passes (`model_url`, `timeout`, `format_type`, `constraint`, …) are
+       absorbed and ignored — Ollama/LangExtract's own concerns are not the
+       provider's to re-implement here.
+    """
+
     def __init__(
         self,
-        settings: Settings,
-        validator: StructuredOutputValidator,
+        model_id: str | None = None,
+        *,
+        settings: Settings | None = None,
+        validator: StructuredOutputValidator | None = None,
         http_client: httpx.AsyncClient | None = None,
+        **_langextract_kwargs: Any,
     ) -> None:
         super().__init__()
-        self._model = settings.ollama_model
-        self._generate_url = _build_generate_url(settings.ollama_base_url)
-        self._tags_url = _build_tags_url(settings.ollama_base_url)
-        self._validator = validator
+        effective_settings = settings if settings is not None else Settings()  # type: ignore[reportCallIssue]  # pydantic-settings loads fields from env
+        effective_validator = (
+            validator
+            if validator is not None
+            else StructuredOutputValidator(
+                settings=effective_settings,
+                correction_prompt_builder=CorrectionPromptBuilder(),
+            )
+        )
+        self._model = model_id or effective_settings.ollama_model
+        self._generate_url = _build_generate_url(effective_settings.ollama_base_url)
+        self._tags_url = _build_tags_url(effective_settings.ollama_base_url)
+        self._validator = effective_validator
         self.http_client = http_client or httpx.AsyncClient(
-            timeout=httpx.Timeout(settings.ollama_timeout_seconds),
+            timeout=httpx.Timeout(effective_settings.ollama_timeout_seconds),
         )
 
     async def generate(
@@ -122,7 +157,15 @@ class OllamaGemmaProvider(BaseLanguageModel):
             message = _HTTP_ERROR_MESSAGE_TEMPLATE.format(status=status)
             raise IntelligenceUnavailableError(message, cause=exc) from exc
 
-        body: dict[str, Any] = response.json()
+        try:
+            body: dict[str, Any] = response.json()
+        except (json.JSONDecodeError, ValueError) as exc:
+            # Ollama (or an interposing proxy) returned a non-JSON body. Treat
+            # the same as unreachability — operators reading the log see the
+            # underlying decode error on the `cause` attribute.
+            _logger.warning("ollama_non_json_body", error=str(exc))
+            message = _INVALID_JSON_BODY_MESSAGE
+            raise IntelligenceUnavailableError(message, cause=exc) from exc
         response_text = body.get("response")
         if not isinstance(response_text, str):
             message = _MISSING_RESPONSE_FIELD_MESSAGE

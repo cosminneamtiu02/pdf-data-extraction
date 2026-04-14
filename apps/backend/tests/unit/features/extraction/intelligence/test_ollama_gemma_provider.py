@@ -1,9 +1,11 @@
 """Unit tests for OllamaGemmaProvider — the dual-interface Ollama plugin.
 
-These tests exercise the internal `IntelligenceProvider` side of the class:
-`async generate`, `async health_check`, and `async aclose`. They never touch a
-real Ollama and never start LangExtract's orchestration — the LangExtract-facing
-`infer` path is covered by the integration-test file.
+These tests exercise every method on the class at the unit level:
+`async generate`, `async health_check`, `async aclose`, and the sync
+`infer` path that LangExtract's orchestrator calls into. They never touch a
+real Ollama, and the `infer` tests are sync pytest functions because `infer`
+calls `asyncio.run` internally (an async test would deadlock the loop — the
+exact failure mode documented in the provider's module docstring).
 
 The fake async client is hand-written in the same style as
 `test_structured_output_validator.py`: no unittest.mock, no pytest-mock. Each
@@ -13,6 +15,7 @@ when `post` or `get` is awaited.
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -242,6 +245,23 @@ async def test_generate_http_404_raises_intelligence_unavailable() -> None:
         await provider.generate("hi", _NAME_STRING_SCHEMA)
 
 
+async def test_generate_raises_intelligence_unavailable_when_body_is_not_json() -> None:
+    # Ollama (or an interposing proxy) returned a body that response.json()
+    # cannot parse. This must map to IntelligenceUnavailableError, not crash
+    # out of the provider as an unhandled JSONDecodeError.
+    class _NonJsonResponse(_FakeResponse):
+        def json(self) -> dict[str, Any]:  # type: ignore[override]
+            msg = "Expecting value"
+            raise json.JSONDecodeError(msg, "<html>proxy error</html>", 0)
+
+    fake = _FakeAsyncClient(post_outcomes=[_NonJsonResponse()])
+    provider = _build_provider(fake_client=fake)
+
+    with pytest.raises(IntelligenceUnavailableError) as excinfo:
+        await provider.generate("hi", _NAME_STRING_SCHEMA)
+    assert isinstance(excinfo.value.cause, json.JSONDecodeError)
+
+
 async def test_generate_retries_on_bad_json_and_succeeds_on_second_attempt() -> None:
     fake = _FakeAsyncClient(
         post_outcomes=[
@@ -258,7 +278,7 @@ async def test_generate_retries_on_bad_json_and_succeeds_on_second_attempt() -> 
     assert len(fake.post_calls) == 2
 
 
-def test_client_timeout_configured_from_settings() -> None:
+async def test_client_timeout_configured_from_settings() -> None:
     settings = _build_settings(timeout_seconds=12.5)
     provider = OllamaGemmaProvider(
         settings=settings,
@@ -267,9 +287,7 @@ def test_client_timeout_configured_from_settings() -> None:
     try:
         assert provider.http_client.timeout.read == 12.5
     finally:
-        # Sync path — we deliberately don't await aclose here; test-isolation
-        # happens via the test harness not reusing the client.
-        pass
+        await provider.aclose()
 
 
 async def test_aclose_closes_underlying_client() -> None:
@@ -361,3 +379,39 @@ def test_infer_propagates_intelligence_unavailable_error_on_connect_failure() ->
 
     with pytest.raises(IntelligenceUnavailableError):
         list(provider.infer(["p1"]))
+
+
+# The two constructor tests below pin the LangExtract plugin-instantiation
+# path. `langextract.factory.create_model` calls `provider_class(**kwargs)`
+# where `kwargs["model_id"]` is the model tag from `ModelConfig`. Any
+# provider_kwargs a user supplies (model_url, format_type, …) come through
+# the same dict. The provider must accept all of this without raising and
+# must honor `model_id` as an override of `settings.ollama_model`.
+
+
+async def test_init_accepts_langextract_model_id_kwarg() -> None:
+    provider = OllamaGemmaProvider(model_id="gemma4:e2b")
+    try:
+        # Private attribute access is intentional — the constructor contract
+        # is "honor model_id as the tag LangExtract will use on every POST".
+        assert provider._model == "gemma4:e2b"  # noqa: SLF001 — test covers constructor contract
+    finally:
+        await provider.aclose()
+
+
+async def test_init_absorbs_unknown_langextract_kwargs() -> None:
+    # LangExtract's factory layers env-derived kwargs on top of user
+    # provider_kwargs. The provider must not TypeError on unknown keys like
+    # `base_url`, `format_type`, `timeout`, or `constraint` — those are
+    # LangExtract/Ollama concerns that we deliberately do not consume.
+    provider = OllamaGemmaProvider(
+        model_id="gemma4:e2b",
+        base_url="http://other-host:11434",
+        format_type="json",
+        timeout=7,
+        constraint=None,
+    )
+    try:
+        assert provider._model == "gemma4:e2b"  # noqa: SLF001 — test covers constructor contract
+    finally:
+        await provider.aclose()
