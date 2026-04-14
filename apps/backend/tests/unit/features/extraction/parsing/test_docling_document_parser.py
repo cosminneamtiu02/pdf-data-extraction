@@ -19,9 +19,11 @@ from typing import Any
 
 import pytest
 
+from app.features.extraction.parsing import docling_document_parser as parser_mod
 from app.features.extraction.parsing.docling_config import DoclingConfig
 from app.features.extraction.parsing.docling_document_parser import (
     DoclingDocumentParser,
+    _default_converter_factory,
 )
 from app.features.extraction.parsing.document_parser import DocumentParser
 from app.features.extraction.parsing.parsed_document import ParsedDocument
@@ -385,6 +387,148 @@ async def test_parser_does_not_wrap_converter_errors_as_domain_pdf_errors() -> N
 
     with pytest.raises(RuntimeError, match="simulated Docling failure"):
         await parser.parse(b"%PDF-fake", DoclingConfig(ocr="auto", table_mode="fast"))
+
+
+# ---------------------------------------------------------------------------
+# Default converter factory: structurally distinct pipelines per OCR mode
+# ---------------------------------------------------------------------------
+
+
+class _FakePipelineOptions:
+    def __init__(self) -> None:
+        self.do_ocr: bool = False
+        self.do_table_structure: bool = False
+        self.table_structure_options: Any = None
+        self.ocr_options: Any = None
+
+
+class _FakeTableStructureOptions:
+    def __init__(self, *, do_cell_matching: bool, mode: Any) -> None:
+        self.do_cell_matching = do_cell_matching
+        self.mode = mode
+
+
+class _FakeEasyOcrOptions:
+    def __init__(self, *, force_full_page_ocr: bool) -> None:
+        self.force_full_page_ocr = force_full_page_ocr
+
+
+class _FakeTableFormerMode:
+    FAST = "FAST"
+    ACCURATE = "ACCURATE"
+
+
+class _FakeInputFormat:
+    PDF = "PDF"
+
+
+class _FakePdfFormatOption:
+    def __init__(self, *, pipeline_options: Any) -> None:
+        self.pipeline_options = pipeline_options
+
+
+class _FakeRealDocumentConverter:
+    last_format_options: Any = None
+
+    def __init__(self, *, format_options: Any) -> None:
+        _FakeRealDocumentConverter.last_format_options = format_options
+        self.format_options = format_options
+
+    def convert(self, _source: Any) -> Any:  # pragma: no cover - not exercised here
+        class _Result:
+            document = None
+
+        return _Result()
+
+
+def _install_fake_docling_modules(monkeypatch: pytest.MonkeyPatch) -> None:
+    base_models_mod = type(sys)("docling.datamodel.base_models")
+    base_models_mod.InputFormat = _FakeInputFormat  # type: ignore[attr-defined]
+    base_models_mod.DocumentStream = object  # type: ignore[attr-defined]
+
+    pipeline_options_mod = type(sys)("docling.datamodel.pipeline_options")
+    pipeline_options_mod.PdfPipelineOptions = _FakePipelineOptions  # type: ignore[attr-defined]
+    pipeline_options_mod.TableStructureOptions = _FakeTableStructureOptions  # type: ignore[attr-defined]
+    pipeline_options_mod.TableFormerMode = _FakeTableFormerMode  # type: ignore[attr-defined]
+    pipeline_options_mod.EasyOcrOptions = _FakeEasyOcrOptions  # type: ignore[attr-defined]
+
+    document_converter_mod = type(sys)("docling.document_converter")
+    document_converter_mod.DocumentConverter = _FakeRealDocumentConverter  # type: ignore[attr-defined]
+    document_converter_mod.PdfFormatOption = _FakePdfFormatOption  # type: ignore[attr-defined]
+
+    import sys as _sys  # local alias to avoid shadowing
+
+    monkeypatch.setitem(_sys.modules, "docling.datamodel.base_models", base_models_mod)
+    monkeypatch.setitem(
+        _sys.modules,
+        "docling.datamodel.pipeline_options",
+        pipeline_options_mod,
+    )
+    monkeypatch.setitem(_sys.modules, "docling.document_converter", document_converter_mod)
+
+
+def _extract_pipeline_options() -> _FakePipelineOptions:
+    format_options = _FakeRealDocumentConverter.last_format_options
+    pdf_format_option = format_options[_FakeInputFormat.PDF]
+    return pdf_format_option.pipeline_options  # type: ignore[no-any-return]
+
+
+def test_default_factory_auto_mode_enables_ocr_without_forcing_full_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_docling_modules(monkeypatch)
+
+    _default_converter_factory(DoclingConfig(ocr="auto", table_mode="fast"))
+    pipeline_options = _extract_pipeline_options()
+
+    assert pipeline_options.do_ocr is True
+    assert isinstance(pipeline_options.ocr_options, _FakeEasyOcrOptions)
+    assert pipeline_options.ocr_options.force_full_page_ocr is False
+    assert pipeline_options.table_structure_options.mode == _FakeTableFormerMode.FAST
+
+
+def test_default_factory_force_mode_sets_force_full_page_ocr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_docling_modules(monkeypatch)
+
+    _default_converter_factory(DoclingConfig(ocr="force", table_mode="accurate"))
+    pipeline_options = _extract_pipeline_options()
+
+    assert pipeline_options.do_ocr is True
+    assert isinstance(pipeline_options.ocr_options, _FakeEasyOcrOptions)
+    assert pipeline_options.ocr_options.force_full_page_ocr is True
+    assert pipeline_options.table_structure_options.mode == _FakeTableFormerMode.ACCURATE
+
+
+def test_default_factory_off_mode_disables_ocr_and_skips_ocr_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_docling_modules(monkeypatch)
+
+    _default_converter_factory(DoclingConfig(ocr="off", table_mode="fast"))
+    pipeline_options = _extract_pipeline_options()
+
+    assert pipeline_options.do_ocr is False
+    assert pipeline_options.ocr_options is None
+
+
+def test_default_factory_raises_runtime_error_when_docling_not_installed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib as _importlib
+
+    real_import_module = _importlib.import_module
+
+    def failing_import(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name.startswith("docling"):
+            raise ImportError(name)
+        return real_import_module(name, *args, **kwargs)
+
+    monkeypatch.setattr(parser_mod.importlib, "import_module", failing_import)
+
+    with pytest.raises(RuntimeError, match="docling is not installed"):
+        _default_converter_factory(DoclingConfig(ocr="auto", table_mode="fast"))
 
 
 # ---------------------------------------------------------------------------

@@ -33,6 +33,16 @@ Design summary (load-bearing; do not re-architect without updating the spec):
   real-Docling adapter performs the translation there if Docling's native
   convention disagrees (verified empirically during PDFX-E003-F002 integration
   testing — open question #3 in the feature spec).
+
+Carve-out to CLAUDE.md "one class per file":
+This file holds four classes — `DoclingDocumentParser` plus three private
+adapters (`_RealDoclingConverterAdapter`, `_RealDoclingDocumentAdapter`,
+`_FlatDoclingTextItem`). The adapters cannot live in sibling files because
+every line that reads Docling's real types must stay inside this single file
+to honor the Docling-containment technical constraint (enforced in PDFX-E007-F004
+via `import-linter`). They are module-private (leading underscore), exist only
+to bridge Docling's concrete types into this parser's local `_DoclingXxxLike`
+Protocols, and are never imported from anywhere else in the service.
 """
 
 from __future__ import annotations
@@ -145,10 +155,19 @@ def _default_converter_factory(config: DoclingConfig) -> _DoclingConverterLike:
     pdf_pipeline_options_cls: Any = pipeline_options_mod.PdfPipelineOptions
     table_structure_options_cls: Any = pipeline_options_mod.TableStructureOptions
     table_former_mode: Any = pipeline_options_mod.TableFormerMode
+    easy_ocr_options_cls: Any = pipeline_options_mod.EasyOcrOptions
     document_converter_cls: Any = document_converter_mod.DocumentConverter
     pdf_format_option_cls: Any = document_converter_mod.PdfFormatOption
 
-    do_ocr: bool = config.ocr in {"auto", "force"}
+    # OCR mode mapping, per PDFX-E003-F002 scope:
+    #   - "off":   do_ocr=False               (skip OCR entirely)
+    #   - "auto":  do_ocr=True, force_full_page_ocr=False
+    #              (Docling auto-detects the absence of a text layer and
+    #               runs OCR on pages that lack one)
+    #   - "force": do_ocr=True, force_full_page_ocr=True
+    #              (OCR every page even when a text layer is present)
+    do_ocr: bool = config.ocr != "off"
+    force_full_page_ocr: bool = config.ocr == "force"
     mode: Any = (
         table_former_mode.ACCURATE if config.table_mode == "accurate" else table_former_mode.FAST
     )
@@ -160,6 +179,10 @@ def _default_converter_factory(config: DoclingConfig) -> _DoclingConverterLike:
         do_cell_matching=True,
         mode=mode,
     )
+    if do_ocr:
+        pipeline_options.ocr_options = easy_ocr_options_cls(
+            force_full_page_ocr=force_full_page_ocr,
+        )
 
     real_converter: Any = document_converter_cls(
         format_options={
@@ -293,6 +316,16 @@ class DoclingDocumentParser:
         # directly, bypassing Python's logging module. We redirect stdout and
         # stderr to scratch buffers for the duration of the synchronous
         # convert call so the service's structured logs stay clean.
+        #
+        # Thread-safety note: `contextlib.redirect_stdout` mutates the
+        # process-global `sys.stdout`. This is safe here because the
+        # extraction service runs `workers=1` (documented in the PDFX-E003-F002
+        # spec "Out of scope: Parallel parsing of multiple PDFs. One at a
+        # time, per workers=1."). If a future change enables concurrent
+        # parses on the same process, this function must be replaced with a
+        # thread-local capture strategy — concurrent redirect_stdout contexts
+        # would interleave and either leak Docling noise into service logs or
+        # swallow a caller's unrelated output.
         stdout_buf = io.StringIO()
         stderr_buf = io.StringIO()
         with (
