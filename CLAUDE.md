@@ -153,6 +153,75 @@ Type checker (Pyright strict) is a build failure, not a warning.
 
 Excluded: property-based, performance, mutation, snapshot, fuzz beyond Schemathesis.
 
+## PR Authoring and Attribution
+
+All human-authored pull requests on this repo must be opened by the
+Copilot-Pro-licensed account (`ioanaecaterinastan-collab`). Only PRs whose
+GitHub-author field is a user with an active Copilot code-review seat
+scoped to this repo trigger the `copilot_code_review` rule on the
+`main-protection` ruleset. PRs opened by `cosminneamtiu02` (a collaborator
+whose personal Copilot Pro does not extend to repos he does not own) do
+NOT get auto-reviewed — verified experimentally on 2026-04-14: PR #19
+(opened as Ioana) received a full Copilot review within 2 minutes; PRs
+#9–#17 (opened as cosmin) did not, even after close+reopen and
+`update-branch` retriggers.
+
+Root-cause context: PR #18 (2026-04-14) deleted a dead
+`copilot-review.yml` workflow after confirming the REST
+`POST /pulls/{n}/requested_reviewers` endpoint silently drops
+`reviewers[]=Copilot` on this repo regardless of caller entitlement.
+The only working path is the ruleset, which binds on `opened` /
+`reopened` events and only fires when the PR author is entitlement-eligible.
+
+### Before `gh pr create` on this repo
+
+1. Run `gh api /user --jq .login` and verify the output is
+   `ioanaecaterinastan-collab`. If it is anything else, run
+   `gh auth switch --user ioanaecaterinastan-collab` and re-verify.
+2. If the Ioana account is not yet authenticated in gh CLI, run
+   `gh auth login --hostname github.com` as Ioana once; gh will store
+   both identities and `gh auth switch` will flip between them.
+3. Do NOT switch mid-session on unrelated projects — `gh auth switch`
+   flips the global gh identity for every shell on this machine. Commit
+   to the switch for the duration of work on this repo.
+4. VSCode's "GitHub" extension (Source Control sidebar, PR panel) uses a
+   separate auth context from the gh CLI. If PR creation goes through
+   the extension, sign out of it via VSCode → Accounts → Sign out and
+   sign in as Ioana. If PR creation goes through gh in the terminal,
+   the VSCode extension's identity is irrelevant.
+
+### Commit trailers (mandatory on every commit)
+
+Every commit on this repo must include both of these trailers, in this
+order, at the end of the commit message body:
+
+```
+Co-Authored-By: cosminneamtiu02 <91669989+cosminneamtiu02@users.noreply.github.com>
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+```
+
+The `cosminneamtiu02` trailer exists so that cosmin accrues
+contribution-graph credit on his profile even though Ioana is the PR
+author. GitHub only counts trailer-based co-authorship when the email
+in the trailer matches a verified email on the credited account — the
+`<user-id>+<login>@users.noreply.github.com` form is GitHub's always-
+valid no-reply address for the account (user ID `91669989` was retrieved
+from `/users/cosminneamtiu02`). Any other email form (personal address,
+typo, wrong ID) produces a trailer that GitHub displays but does NOT
+count toward contributions. Lost contribution credit cannot be
+retroactively added.
+
+The `Claude Opus 4.6` trailer exists to identify AI-assisted commits.
+
+### At squash-merge time
+
+GitHub's squash-merge UI auto-populates `Co-Authored-By` trailers from
+the PR's commits into the final squash commit message. Do NOT delete
+either trailer from the squash-merge message box. The final commit that
+lands on `main` must carry both trailers — the contribution graph
+records attribution based on the commit on the default branch, not on
+the branch commits that get discarded during squash.
+
 ## Dependabot
 
 Close and delete any Dependabot PR that proposes a version older than latest.
