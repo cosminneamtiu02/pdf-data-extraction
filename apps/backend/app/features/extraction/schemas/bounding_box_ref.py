@@ -8,10 +8,12 @@ from pydantic import BaseModel, Field, model_validator
 class BoundingBoxRef(BaseModel):
     """A single 1-indexed page coordinate rectangle anchoring an extracted value.
 
-    The rectangle is expressed in PDF user-space coordinates as emitted by the
-    document parser; ``(x0, y0)`` is the top-left corner and ``(x1, y1)`` the
-    bottom-right. Zero-area rectangles are legal (a degenerate span is still a
-    grounding anchor); inverted rectangles are rejected.
+    The rectangle is expressed in PDF page coordinates with origin at the
+    **bottom-left** of the page (PyMuPDF's default), matching the convention
+    locked by PDFX-E003-F001: ``(x0, y0)`` is the bottom-left corner and
+    ``(x1, y1)`` is the top-right, so ``x0 <= x1`` and ``y0 <= y1``. Zero-area
+    rectangles are legal (a degenerate span is still a grounding anchor);
+    inverted rectangles are rejected.
     """
 
     page: int = Field(ge=1)
