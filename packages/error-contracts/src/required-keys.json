@@ -5,7 +5,8 @@
     "NOT_FOUND",
     "CONFLICT",
     "VALIDATION_FAILED",
-    "INTERNAL_ERROR"
+    "INTERNAL_ERROR",
+    "SKILL_VALIDATION_FAILED"
   ],
   "params_by_key": {
     "NOT_FOUND": [],
@@ -14,6 +15,9 @@
       "field",
       "reason"
     ],
-    "INTERNAL_ERROR": []
+    "INTERNAL_ERROR": [],
+    "SKILL_VALIDATION_FAILED": [
+      "reason"
+    ]
   }
 }
