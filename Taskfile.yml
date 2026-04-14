@@ -101,16 +101,17 @@ tasks:
 
   # ── Skills ───────────────────────────────────────────────────
   skills:validate:
-    desc: Validate all skill YAMLs under apps/backend/skills/ (populated by PDFX-E002-F004)
+    desc: "STUB (fails) — real validator lands with PDFX-E002-F004. Not a passing gate."
     dir: "{{.BACKEND_DIR}}"
     cmds:
-      - echo "skills:validate — stub. Real implementation lands with PDFX-E002-F004."
+      - sh -c 'echo "skills:validate is a stub. Real implementation lands with PDFX-E002-F004. Do not rely on this task as a validation gate." >&2; exit 1'
 
   # ── Code Generation ──────────────────────────────────────────
   errors:check:
-    desc: Verify generated error classes are in sync with errors.yaml
+    desc: Verify generated error contracts are in sync with errors.yaml (fails on drift)
     cmds:
-      - task: check:errors
+      - task: errors:generate
+      - git diff --exit-code -- apps/backend/app/exceptions/_generated packages/error-contracts/src/generated.ts packages/error-contracts/src/required-keys.json
 
   errors:generate:
     desc: Generate error classes from errors.yaml
