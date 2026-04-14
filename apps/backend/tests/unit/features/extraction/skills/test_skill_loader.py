@@ -1,18 +1,16 @@
 """Unit tests for `SkillLoader` — filesystem walk + aggregated validation."""
 
-import logging
 import time
 from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
+from structlog.testing import capture_logs
 
 from app.exceptions import SkillValidationFailedError
 from app.features.extraction.skills import SkillDoclingConfig
 from app.features.extraction.skills.skill_loader import SkillLoader
-
-_LOADER_LOGGER = "app.features.extraction.skills.skill_loader"
 
 
 def _reason(err: SkillValidationFailedError) -> str:
@@ -65,24 +63,16 @@ def test_load_three_valid_skills_returns_keyed_dict(tmp_path: Path) -> None:
     assert loaded[("research_paper", 1)].name == "research_paper"
 
 
-def test_load_empty_directory_returns_empty_dict_and_warns(
-    tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    # `caplog` works whether or not structlog's stdlib integration is configured
-    # (locally vs CI): any record emitted via `structlog.get_logger(__name__)`
-    # eventually hits the stdlib root logger. `structlog.testing.capture_logs`
-    # only catches raw structlog events and silently drops routed-to-stdlib ones.
-    caplog.set_level(logging.WARNING, logger=_LOADER_LOGGER)
-
-    loaded = SkillLoader().load(tmp_path)
+def test_load_empty_directory_returns_empty_dict_and_warns(tmp_path: Path) -> None:
+    # `capture_logs` hooks into structlog's processor chain directly, so the
+    # assertion works regardless of whether `configure_logging()` has been
+    # called yet in the test session — unlike `caplog`, which only sees events
+    # once structlog is routed through stdlib.
+    with capture_logs() as logs:
+        loaded = SkillLoader().load(tmp_path)
 
     assert loaded == {}
-    assert any(
-        "skill_manifest_empty" in record.getMessage()
-        or record.__dict__.get("event") == "skill_manifest_empty"
-        for record in caplog.records
-    )
+    assert any(entry.get("event") == "skill_manifest_empty" for entry in logs)
 
 
 def test_load_missing_directory_raises(tmp_path: Path) -> None:
@@ -94,12 +84,8 @@ def test_load_missing_directory_raises(tmp_path: Path) -> None:
     assert "nope" in _reason(exc_info.value)
 
 
-def test_load_ignores_top_level_yaml(
-    tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+def test_load_ignores_top_level_yaml(tmp_path: Path) -> None:
     (tmp_path / "stray.yaml").write_text("name: stray\nversion: 1\n", encoding="utf-8")
-    caplog.set_level(logging.WARNING, logger=_LOADER_LOGGER)
 
     loaded = SkillLoader().load(tmp_path)
 
