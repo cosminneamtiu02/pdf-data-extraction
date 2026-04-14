@@ -13,9 +13,11 @@ same lexical scope that holds the `page` local — do NOT factor the
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import hashlib
 import inspect
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import pymupdf
@@ -32,6 +34,22 @@ if TYPE_CHECKING:
 
 _RECT_TOLERANCE = 8.0  # PyMuPDF expands highlight rects to cover quadpoints; observed drift ~5px
 _PDF_ANNOT_HIGHLIGHT = 8
+
+
+def _rect_matches_within_tolerance(
+    observed: tuple[float, float, float, float],
+    expected: tuple[float, float, float, float],
+    tolerance: float = _RECT_TOLERANCE,
+) -> bool:
+    # Symmetric proximity: every edge of the observed rect must be within `tolerance`
+    # of the corresponding expected edge. This would fail if PyMuPDF silently
+    # shrank or shifted the highlight, unlike a one-sided containment check.
+    return (
+        abs(observed[0] - expected[0]) <= tolerance
+        and abs(observed[1] - expected[1]) <= tolerance
+        and abs(observed[2] - expected[2]) <= tolerance
+        and abs(observed[3] - expected[3]) <= tolerance
+    )
 
 
 def _field(name: str, bbox_refs: list[BoundingBoxRef]) -> ExtractedField:
@@ -56,19 +74,6 @@ def _make_blank_pdf(page_count: int = 2) -> bytes:
 
 def _run(annotator: PdfAnnotator, pdf_bytes: bytes, fields: list[ExtractedField]) -> bytes:
     return asyncio.run(annotator.annotate(pdf_bytes, fields))
-
-
-def _rect_contains(
-    container: tuple[float, float, float, float],
-    inner: tuple[float, float, float, float],
-    tolerance: float = _RECT_TOLERANCE,
-) -> bool:
-    return (
-        container[0] <= inner[0] + tolerance
-        and container[1] <= inner[1] + tolerance
-        and container[2] >= inner[2] - tolerance
-        and container[3] >= inner[3] - tolerance
-    )
 
 
 def test_single_field_single_bbox_single_page_draws_one_highlight() -> None:
@@ -99,7 +104,7 @@ def test_single_field_single_bbox_single_page_draws_one_highlight() -> None:
         page1_count = sum(1 for _ in (page1.annots() or []))
         assert len(page0_rects) == 1
         assert page1_count == 0
-        assert _rect_contains(page0_rects[0], input_rect)
+        assert _rect_matches_within_tolerance(page0_rects[0], input_rect)
     finally:
         doc.close()
 
@@ -155,8 +160,8 @@ def test_multi_page_span_draws_one_annotation_per_page() -> None:
             page1_rects.append((float(r.x0), float(r.y0), float(r.x1), float(r.y1)))
         assert len(page0_rects) == 1
         assert len(page1_rects) == 1
-        assert _rect_contains(page0_rects[0], rect_a)
-        assert _rect_contains(page1_rects[0], rect_b)
+        assert _rect_matches_within_tolerance(page0_rects[0], rect_a)
+        assert _rect_matches_within_tolerance(page1_rects[0], rect_b)
     finally:
         doc.close()
 
@@ -189,7 +194,7 @@ def test_multi_block_span_on_same_page_draws_all_highlights() -> None:
             observed.append((float(r.x0), float(r.y0), float(r.x1), float(r.y1)))
         assert len(observed) == 5
         for expected in input_rects:
-            assert any(_rect_contains(obs, expected) for obs in observed), (
+            assert any(_rect_matches_within_tolerance(obs, expected) for obs in observed), (
                 f"no observed annotation contains expected rect {expected}"
             )
     finally:
@@ -302,6 +307,45 @@ def test_multiple_fields_on_distinct_pages_in_3_page_doc() -> None:
 
 def test_annotate_is_async_coroutine_function() -> None:
     assert inspect.iscoroutinefunction(PdfAnnotator.annotate)
+
+
+_ALLOWED_FITZ_IMPORTERS: frozenset[str] = frozenset(
+    {
+        "annotation/pdf_annotator.py",
+        # parsing/docling_document_parser.py may preflight via PyMuPDF once PDFX-E003-F002 lands.
+        "parsing/docling_document_parser.py",
+    }
+)
+_FITZ_ROOTS: frozenset[str] = frozenset({"fitz", "pymupdf"})
+
+
+def _collect_root_imports(source: str) -> set[str]:
+    tree = ast.parse(source)
+    roots: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                roots.add(alias.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom) and node.module is not None and node.level == 0:
+            roots.add(node.module.split(".")[0])
+    return roots
+
+
+def test_pymupdf_imports_are_confined_to_pdf_annotator() -> None:
+    extraction_root = Path(__file__).resolve().parents[5] / "app" / "features" / "extraction"
+    assert extraction_root.is_dir(), f"extraction feature root not found at {extraction_root}"
+
+    offenders: list[str] = []
+    for py_file in extraction_root.rglob("*.py"):
+        relative = py_file.relative_to(extraction_root).as_posix()
+        roots = _collect_root_imports(py_file.read_text())
+        if roots & _FITZ_ROOTS and relative not in _ALLOWED_FITZ_IMPORTERS:
+            offenders.append(relative)
+
+    assert not offenders, (
+        f"PyMuPDF imports must be confined to {sorted(_ALLOWED_FITZ_IMPORTERS)}, "
+        f"but found in: {sorted(offenders)}"
+    )
 
 
 def test_document_handle_is_closed_exactly_once(monkeypatch: pytest.MonkeyPatch) -> None:
