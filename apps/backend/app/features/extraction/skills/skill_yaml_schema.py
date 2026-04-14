@@ -95,7 +95,11 @@ class SkillYamlSchema(BaseModel):
             raise SkillValidationFailedError(reason=msg) from exc
 
         raw_text = path.read_text(encoding="utf-8")
-        data = yaml.safe_load(raw_text)
+        try:
+            data = yaml.safe_load(raw_text)
+        except yaml.YAMLError as exc:
+            msg = f"skill YAML at {path} is not parseable: {exc}"
+            raise SkillValidationFailedError(reason=msg) from exc
         if not isinstance(data, dict):
             msg = f"skill YAML at {path} did not parse to a mapping"
             raise SkillValidationFailedError(reason=msg)

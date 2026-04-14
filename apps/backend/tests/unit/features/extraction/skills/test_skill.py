@@ -53,6 +53,17 @@ def test_skill_is_frozen() -> None:
         skill.name = "other"  # type: ignore[misc]
 
 
+def test_skill_output_schema_is_read_only() -> None:
+    """Frozen dataclass protects attribute reassignment; MappingProxyType
+    protects against in-place mutation of the schema dict itself.
+    """
+    schema = _valid_schema()
+    skill = Skill.from_schema(schema)
+
+    with pytest.raises(TypeError):
+        skill.output_schema["injected"] = True  # type: ignore[index]
+
+
 def test_docling_config_is_merged_not_raw_override() -> None:
     schema = _valid_schema(docling=SkillDoclingConfig(ocr="auto"))
     default = SkillDoclingConfig(ocr="none", table_mode="fast")

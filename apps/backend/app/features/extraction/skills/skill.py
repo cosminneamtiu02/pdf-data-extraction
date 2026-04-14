@@ -7,7 +7,9 @@ defaults — the resulting `docling_config` is always a concrete
 `SkillDoclingConfig`, never a raw YAML dict.
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any
 
 from app.features.extraction.skills.skill_docling_config import SkillDoclingConfig
@@ -24,7 +26,7 @@ class Skill:
     description: str | None
     prompt: str
     examples: tuple[SkillExample, ...]
-    output_schema: dict[str, Any]
+    output_schema: Mapping[str, Any]
     docling_config: SkillDoclingConfig = field(default_factory=SkillDoclingConfig)
 
     @classmethod
@@ -59,6 +61,8 @@ class Skill:
             description=schema.description,
             prompt=schema.prompt,
             examples=tuple(schema.examples),
-            output_schema=schema.output_schema,
+            # MappingProxyType gives a read-only view so `skill.output_schema[k] = v`
+            # raises TypeError, matching the "immutable runtime object" contract.
+            output_schema=MappingProxyType(dict(schema.output_schema)),
             docling_config=merged,
         )

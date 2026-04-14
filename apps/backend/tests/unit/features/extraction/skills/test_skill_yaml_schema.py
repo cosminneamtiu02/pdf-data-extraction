@@ -258,6 +258,17 @@ def test_optional_docling_defaults_to_none(
     assert schema.docling is None
 
 
+def test_unparseable_yaml_raises_skill_validation_error(tmp_path: Path) -> None:
+    """Broken YAML must surface as SkillValidationFailedError, not raw yaml.YAMLError."""
+    path = tmp_path / "1.yaml"
+    path.write_text("key: [unterminated\n", encoding="utf-8")
+
+    with pytest.raises(SkillValidationFailedError) as exc_info:
+        SkillYamlSchema.load_from_file(path)
+
+    assert "is not parseable" in _reason(exc_info.value)
+
+
 def test_yaml_body_that_is_not_a_mapping_raises(tmp_path: Path) -> None:
     path = tmp_path / "1.yaml"
     path.write_text("- just\n- a\n- list\n", encoding="utf-8")
