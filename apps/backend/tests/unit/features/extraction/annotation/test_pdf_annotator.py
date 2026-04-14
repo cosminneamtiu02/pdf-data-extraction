@@ -64,12 +64,10 @@ def _field(name: str, bbox_refs: list[BoundingBoxRef]) -> ExtractedField:
 
 
 def _make_blank_pdf(page_count: int = 2) -> bytes:
-    doc: Any = cast("Any", pymupdf.open())
-    for _ in range(page_count):
-        doc.new_page(width=612.0, height=792.0)
-    data: bytes = cast("bytes", doc.tobytes())
-    doc.close()
-    return data
+    with cast("Any", pymupdf.open()) as doc:
+        for _ in range(page_count):
+            doc.new_page(width=612.0, height=792.0)
+        return cast("bytes", doc.tobytes())
 
 
 def _run(annotator: PdfAnnotator, pdf_bytes: bytes, fields: list[ExtractedField]) -> bytes:
