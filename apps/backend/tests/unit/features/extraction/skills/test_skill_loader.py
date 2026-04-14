@@ -6,10 +6,10 @@ from typing import Any
 
 import pytest
 import yaml
-from structlog.testing import capture_logs
 
 from app.exceptions import SkillValidationFailedError
 from app.features.extraction.skills import SkillDoclingConfig
+from app.features.extraction.skills import skill_loader as skill_loader_module
 from app.features.extraction.skills.skill_loader import SkillLoader
 
 
@@ -63,16 +63,27 @@ def test_load_three_valid_skills_returns_keyed_dict(tmp_path: Path) -> None:
     assert loaded[("research_paper", 1)].name == "research_paper"
 
 
-def test_load_empty_directory_returns_empty_dict_and_warns(tmp_path: Path) -> None:
-    # `capture_logs` hooks into structlog's processor chain directly, so the
-    # assertion works regardless of whether `configure_logging()` has been
-    # called yet in the test session — unlike `caplog`, which only sees events
-    # once structlog is routed through stdlib.
-    with capture_logs() as logs:
-        loaded = SkillLoader().load(tmp_path)
+def test_load_empty_directory_returns_empty_dict_and_warns(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Swap the loader module's `_logger` for a test double: structlog's global
+    # state differs between local-only runs and the full CI session (where
+    # `configure_logging()` has already been called by other fixtures), and
+    # both `caplog` and `capture_logs()` depend on which regime is active.
+    # A direct stub sidesteps that entire class of flake.
+    events: list[tuple[str, dict[str, object]]] = []
+
+    class _SpyLogger:
+        def warning(self, event: str, **kwargs: object) -> None:
+            events.append((event, kwargs))
+
+    monkeypatch.setattr(skill_loader_module, "_logger", _SpyLogger())
+
+    loaded = SkillLoader().load(tmp_path)
 
     assert loaded == {}
-    assert any(entry.get("event") == "skill_manifest_empty" for entry in logs)
+    assert any(event == "skill_manifest_empty" for event, _ in events)
 
 
 def test_load_missing_directory_raises(tmp_path: Path) -> None:
