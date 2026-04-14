@@ -17,7 +17,7 @@ Full context lives in:
 
 - [`docs/superpowers/specs/2026-04-13-pdf-extraction-microservice-design.md`](superpowers/specs/2026-04-13-pdf-extraction-microservice-design.md)
 - [`docs/superpowers/specs/2026-04-13-pdf-extraction-microservice-requirements.md`](superpowers/specs/2026-04-13-pdf-extraction-microservice-requirements.md)
-- [`docs/graphs/PDFX/`](graphs/PDFX/) — 1 project + 7 epics + 29 features, all at `status: detailed`
+- [`docs/graphs/PDFX/`](graphs/PDFX/) — 1 project + 7 epics + 29 features (see each file's frontmatter for current `status`)
 
 ## Backend — What's Built (post-bootstrap shell)
 
