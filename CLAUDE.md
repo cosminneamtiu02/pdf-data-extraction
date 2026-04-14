@@ -98,7 +98,9 @@ app/features/<feature>/ -- Self-contained vertical slice. The extraction feature
 - Never raise a generic `ValueError` or `RuntimeError` from within the extraction
   pipeline. Raise a `DomainError` subclass generated from `errors.yaml`.
 - Never import Docling, LangExtract, PyMuPDF, or the Ollama HTTP client outside
-  their designated containment files.
+  their designated containment files (the names of which are listed in the
+  "Third-party dependencies are contained to specific implementation files"
+  list under "Layer Rules" above).
 - Never return a response shape that omits a field declared by the skill's
   `output_schema`. The "every declared field always present" invariant is
   load-bearing for API stability.
