@@ -333,34 +333,22 @@ def contextlib_suppress_cancelled() -> Any:
 
 
 # ---------------------------------------------------------------------------
-# stdout/stderr silencing
+# Docling logger is configured at module import time
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_parser_suppresses_stdout_writes_from_converter(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    class _NoisyConverter:
-        def __init__(self, document: _FakeDoclingDocument, *, config: DoclingConfig) -> None:
-            self.document = document
-            self.config = config
+def test_docling_logger_level_is_raised_at_module_import() -> None:
+    """Module-level side effect: `logging.getLogger("docling").setLevel(WARNING)`.
 
-        def convert(self, _pdf_bytes: bytes) -> _FakeDoclingDocument:
-            sys.stdout.write("DOCLING NOISE ON STDOUT\n")
-            sys.stderr.write("DOCLING NOISE ON STDERR\n")
-            return self.document
+    The parser does not redirect stdout/stderr — that would mutate
+    process-global file objects and interleave under concurrent requests.
+    Instead, we cap Docling's own logger at WARNING so its INFO/DEBUG stream
+    stays out of the service's log bus. Raw `print()` calls from Docling
+    are out of scope (they would indicate a bug in Docling itself).
+    """
+    import logging as _logging
 
-    def factory(config: DoclingConfig) -> _NoisyConverter:
-        return _NoisyConverter(_two_page_document(), config=config)
-
-    parser = DoclingDocumentParser(converter_factory=factory)
-
-    await parser.parse(b"%PDF-fake", DoclingConfig(ocr="auto", table_mode="fast"))
-
-    captured = capsys.readouterr()
-    assert "DOCLING NOISE ON STDOUT" not in captured.out
-    assert "DOCLING NOISE ON STDERR" not in captured.err
+    assert _logging.getLogger("docling").level >= _logging.WARNING
 
 
 # ---------------------------------------------------------------------------

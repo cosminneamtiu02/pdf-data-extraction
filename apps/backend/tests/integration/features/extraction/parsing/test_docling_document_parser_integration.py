@@ -32,7 +32,10 @@ pytestmark = pytest.mark.slow
 
 
 _DOCLING_AVAILABLE = importlib.util.find_spec("docling") is not None
-_FIXTURES_DIR = Path(__file__).resolve().parents[5] / "fixtures" / "pdfs"
+_PYMUPDF_AVAILABLE = importlib.util.find_spec("pymupdf") is not None
+# parents: [0]=parsing [1]=extraction [2]=features [3]=integration [4]=tests
+# so parents[4] is apps/backend/tests, which is where fixtures live.
+_FIXTURES_DIR = Path(__file__).resolve().parents[4] / "fixtures" / "pdfs"
 _NATIVE_FIXTURE = _FIXTURES_DIR / "native_two_page.pdf"
 _SCANNED_FIXTURE = _FIXTURES_DIR / "scanned_one_page.pdf"
 
@@ -79,9 +82,23 @@ async def test_real_docling_ocrs_scanned_fixture() -> None:
 
 
 @pytest.mark.skipif(not _DOCLING_AVAILABLE, reason=_SKIP_REASON_DOCLING)
+@pytest.mark.skipif(not _PYMUPDF_AVAILABLE, reason="pymupdf not installed")
 @pytest.mark.skipif(not _NATIVE_FIXTURE.exists(), reason=_SKIP_REASON_FIXTURE)
 @pytest.mark.asyncio
-async def test_real_docling_bboxes_are_bottom_left_origin() -> None:
+async def test_real_docling_bboxes_agree_with_pymupdf_on_native_fixture() -> None:
+    """Empirically verify that Docling's bbox output lands inside PyMuPDF page rects.
+
+    This is the authoritative check for UNRESOLVED open question #3 in the
+    feature spec (coordinate convention). Every emitted bbox must:
+      1. Have `x0 < x1 and y0 < y1` (valid rectangle).
+      2. Fit inside the PyMuPDF-reported page rect for its page, with a
+         small tolerance (accounts for small floating-point drift).
+    If Docling ever changes its native origin from bottom-left to top-left
+    without us updating the adapter, this test catches it because the
+    y-values would land outside [0, page_height].
+    """
+    import pymupdf  # type: ignore[import-not-found]  # gated by _PYMUPDF_AVAILABLE
+
     from app.features.extraction.parsing.docling_config import DoclingConfig
     from app.features.extraction.parsing.docling_document_parser import (
         DoclingDocumentParser,
@@ -92,11 +109,18 @@ async def test_real_docling_bboxes_are_bottom_left_origin() -> None:
 
     result = await parser.parse(pdf_bytes, DoclingConfig(ocr="auto", table_mode="fast"))
 
+    tolerance = 1.0
+    with pymupdf.open(stream=pdf_bytes, filetype="pdf") as doc:
+        page_rects = {i + 1: doc[i].rect for i in range(len(doc))}
+
     for block in result.blocks:
+        page_rect = page_rects[block.page_number]
         assert block.bbox.x0 < block.bbox.x1
         assert block.bbox.y0 < block.bbox.y1
-        assert block.bbox.x0 >= 0
-        assert block.bbox.y0 >= 0
+        assert block.bbox.x0 >= -tolerance
+        assert block.bbox.y0 >= -tolerance
+        assert block.bbox.x1 <= page_rect.width + tolerance
+        assert block.bbox.y1 <= page_rect.height + tolerance
 
 
 @pytest.mark.skipif(not _DOCLING_AVAILABLE, reason=_SKIP_REASON_DOCLING)

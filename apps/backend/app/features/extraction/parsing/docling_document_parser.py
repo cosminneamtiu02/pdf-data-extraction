@@ -48,7 +48,6 @@ Protocols, and are never imported from anywhere else in the service.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import importlib
 import io
 import logging
@@ -304,35 +303,8 @@ class DoclingDocumentParser:
         docling_config: DoclingConfig,
     ) -> ParsedDocument:
         converter = self._converter_factory(docling_config)
-        document = await asyncio.to_thread(self._convert_silently, converter, pdf_bytes)
+        document = await asyncio.to_thread(converter.convert, pdf_bytes)
         return self._to_parsed_document(document)
-
-    @staticmethod
-    def _convert_silently(
-        converter: _DoclingConverterLike,
-        pdf_bytes: bytes,
-    ) -> _DoclingDocumentLike:
-        # Docling (and some of its backends) occasionally write to stdout
-        # directly, bypassing Python's logging module. We redirect stdout and
-        # stderr to scratch buffers for the duration of the synchronous
-        # convert call so the service's structured logs stay clean.
-        #
-        # Thread-safety note: `contextlib.redirect_stdout` mutates the
-        # process-global `sys.stdout`. This is safe here because the
-        # extraction service runs `workers=1` (documented in the PDFX-E003-F002
-        # spec "Out of scope: Parallel parsing of multiple PDFs. One at a
-        # time, per workers=1."). If a future change enables concurrent
-        # parses on the same process, this function must be replaced with a
-        # thread-local capture strategy — concurrent redirect_stdout contexts
-        # would interleave and either leak Docling noise into service logs or
-        # swallow a caller's unrelated output.
-        stdout_buf = io.StringIO()
-        stderr_buf = io.StringIO()
-        with (
-            contextlib.redirect_stdout(stdout_buf),
-            contextlib.redirect_stderr(stderr_buf),
-        ):
-            return converter.convert(pdf_bytes)
 
     @staticmethod
     def _to_parsed_document(document: _DoclingDocumentLike) -> ParsedDocument:
