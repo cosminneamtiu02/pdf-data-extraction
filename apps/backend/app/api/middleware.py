@@ -1,4 +1,4 @@
-"""Request middleware — request ID, security headers, access logging, CORS."""
+"""Request middleware — request ID, access logging, CORS."""
 
 import re
 import time
@@ -54,31 +54,6 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
         return response
 
 
-class SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    """Set security headers on every response."""
-
-    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        response = await call_next(request)
-        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-        response.headers["X-Frame-Options"] = "DENY"
-        response.headers["Permissions-Policy"] = (
-            "camera=(), microphone=(), geolocation=(), payment=()"
-        )
-        # Permissive CSP default — blocks external script/style loading but allows
-        # inline (needed for Tailwind/Vite). Tighten per project.
-        response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; "
-            "script-src 'self' 'unsafe-inline'; "
-            "style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' data:; "
-            "font-src 'self'; "
-            "connect-src 'self'"
-        )
-        return response
-
-
 def configure_middleware(app: FastAPI, cors_origins: list[str]) -> None:
     """Attach all middleware to the FastAPI app.
 
@@ -86,12 +61,7 @@ def configure_middleware(app: FastAPI, cors_origins: list[str]) -> None:
     1. CORS (handles preflight before anything else)
     2. RequestId (sets request_id for all downstream middleware and handlers)
     3. AccessLog (logs after response is generated, includes request_id from contextvars)
-    4. SecurityHeaders (sets headers on every response)
-
-    Note: Rate limiting is a per-project decision. When needed, add it between
-    RequestId and AccessLog so rate-limited requests are still logged.
     """
-    app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(AccessLogMiddleware)
     app.add_middleware(RequestIdMiddleware)
     app.add_middleware(

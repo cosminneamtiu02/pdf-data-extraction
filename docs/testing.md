@@ -5,73 +5,66 @@
 This is a test-driven development project. Every piece of functionality is written
 test-first: red -> green -> refactor. New code without a test is a bug.
 
-## Four Test Levels
+## Three Test Levels
 
-All four levels are mandatory for every feature. Missing a level = incomplete work.
+Three levels, all mandatory for every feature. E2E is optional-slow.
 
 ### 1. Unit Tests
 
 - **What:** Individual functions, classes, pure logic in isolation.
-- **Dependencies:** None. No database, no network, no file system, no containers.
+- **Dependencies:** None. No network, no Ollama, no real PDFs.
 - **Backend:** pytest + pytest-asyncio. Location: `tests/unit/` mirroring source tree.
-- **Frontend:** Vitest + React Testing Library. Location: co-located `*.test.tsx`.
 - **Speed budget:** Entire unit suite < 10 seconds locally.
 
 ### 2. Integration Tests
 
-- **What:** Multiple components with real dependencies. Real Postgres, real HTTP, real service-to-repository calls.
-- **Backend:** pytest + Testcontainers + httpx.AsyncClient. Session-scoped Postgres container. Transactional rollback per test. Location: `tests/integration/`.
-- **Frontend:** Not a separate level. Covered by E2E + unit with MSW where needed.
-- **Speed budget:** Entire integration suite < 2 minutes locally.
-- **No SQLite.** SQLite lies about Postgres behavior. Banned.
+- **What:** Multiple components in-process against the FastAPI ASGI app.
+- **Backend:** pytest + `httpx.AsyncClient` with `ASGITransport`. No external
+  services. Real Docling against fixture PDFs is allowed. Ollama is stubbed via
+  `Depends()` override with a mock `IntelligenceProvider`.
+- **Speed budget:** Entire integration suite < 30 seconds locally for the post-
+  bootstrap shell; more once the extraction pipeline lands and fixture PDFs are
+  exercised.
 
-### 3. End-to-End Tests
+### 3. Contract Tests
 
-- **What:** Full system. Real browser, real frontend, real backend, real Postgres.
-- **Tooling:** Playwright. Full docker-compose stack.
-- **Location:** `tests/e2e/` in the frontend directory.
-- **Scope:** Few tests, boring flows. Template ships one E2E test for Widget CRUD.
-- **Speed budget:** Entire E2E suite < 3 minutes in CI.
+- **What:** Validates the generated OpenAPI spec shape. Schemathesis-based
+  assertions against `/api/v1/extract` land during feature-dev.
+- **Backend:** `tests/contract/test_schemathesis.py`.
 
-### 4. Contract Tests
+### Optional — E2E (slow)
 
-Two independent checks, both required:
-
-1. **Schemathesis** reads the OpenAPI spec and fuzzes every endpoint. Asserts responses
-   conform to declared schemas. Location: `tests/contract/test_schemathesis.py`.
-2. **Generated client diff check.** CI runs `task client:generate` then
-   `git diff --exit-code` on the generated TypeScript types. Non-empty diff = developer
-   forgot to regenerate after an API change.
+- **What:** End-to-end smoke test with a real Ollama + real Gemma 4 model
+  against a fixture PDF.
+- **Tooling:** Pytest with `@pytest.mark.slow`, excluded from default
+  `task check`. Runnable via `task test:e2e` after the marker is added in
+  feature-dev.
+- **Scope:** One test only. Determinism is not required — the test catches
+  catastrophic regressions in the Ollama integration.
 
 ## Type-Driven Discipline
 
 - **Backend:** Pyright strict. Enforced in CI. Type error = build failure.
-- **Frontend:** `tsc --noEmit` with `strict: true`, `noUncheckedIndexedAccess: true`,
-  `exactOptionalPropertyTypes: true`. Enforced in CI.
 
 ## Test Naming
 
 | Context | Pattern | Example |
 |---|---|---|
-| Python | `test_<unit>_<scenario>_<expected>` | `test_widget_service_create_returns_widget_read` |
-| Vitest | `describe("<Subject>") { it("<behavior>") }` | `describe("WidgetList") { it("renders empty state") }` |
-| Playwright | `test("<user-facing behavior>")` | `test("user can create a widget and see it in the list")` |
+| Python | `test_<unit>_<scenario>_<expected>` | `test_skill_loader_rejects_duplicate_versions` |
 
 ## Test File Location
 
 - Backend unit: `tests/unit/<mirrors source tree>/test_<module>.py`
 - Backend integration: `tests/integration/<mirrors source tree>/test_<module>.py`
 - Backend contract: `tests/contract/test_schemathesis.py`
-- Frontend unit: co-located `<component>.test.tsx`
-- Frontend E2E: `tests/e2e/<flow>.spec.ts`
 
 ## Pre-commit / Pre-push / CI
 
 | Layer | What runs | Speed |
 |---|---|---|
-| Pre-commit | ruff, biome, whitespace, yaml/json check | ~10-15s |
-| Pre-push | pytest unit + vitest | ~15s |
-| CI | All four test levels + type checkers + Storybook build + generated file diffs | Full |
+| Pre-commit | ruff, whitespace, yaml/json check | ~5 s |
+| Pre-push | pytest unit | ~10 s |
+| CI | unit + integration + contract + type checker + import-linter + error contracts | Full |
 
 ## Explicitly Excluded
 

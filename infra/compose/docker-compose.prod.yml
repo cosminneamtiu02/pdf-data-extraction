@@ -1,4 +1,7 @@
 services:
+  # The extraction service runs as a single container.
+  # Ollama runs on the host machine (outside this compose file) and is
+  # reached via `host.docker.internal:11434` by default.
   backend:
     build:
       context: ../..
@@ -8,42 +11,10 @@ services:
     environment:
       # These override Settings defaults for production.
       # See apps/backend/app/core/config.py for all available settings.
-      - DATABASE_URL=postgresql+asyncpg://postgres:${DB_PASSWORD}@db:5432/app_prod
       - APP_ENV=production
       - LOG_LEVEL=info
       - CORS_ORIGINS=${CORS_ORIGINS}
-    # For non-K8s deployments, consider:
-    # gunicorn app.main:app -k uvicorn.workers.UvicornWorker --workers 4 --timeout 30
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
     restart: always
-    depends_on:
-      db:
-        condition: service_healthy
-
-  frontend:
-    build:
-      context: ../..
-      dockerfile: infra/docker/frontend.Dockerfile
-    ports:
-      - "80:80"
-    restart: always
-    depends_on:
-      - backend
-
-  db:
-    image: postgres:17
-    environment:
-      POSTGRES_DB: app_prod
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: always
-
-volumes:
-  pgdata:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
