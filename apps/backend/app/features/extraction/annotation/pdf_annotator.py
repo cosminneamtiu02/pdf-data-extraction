@@ -1,10 +1,18 @@
 """PdfAnnotator: render source-grounded highlights onto the input PDF via PyMuPDF.
 
-This file is the ONLY place in the extraction feature permitted to import
-PyMuPDF (`pymupdf` / legacy alias `fitz`). The containment is enforced
-mechanically by an AST scan unit test and, from PDFX-E007-F004 onward, by
-import-linter. All other layers depend on `ExtractedField` / `BoundingBoxRef`
-schemas, never on PyMuPDF types.
+This file is the only place in the extraction feature permitted to import
+PyMuPDF (`pymupdf` / legacy alias `fitz`). Containment is enforced
+mechanically by the AST-scan unit test in the sibling test module, and from
+PDFX-E007-F004 onward by import-linter. All other layers depend on
+`ExtractedField` / `BoundingBoxRef` schemas, never on PyMuPDF types.
+
+Coordinate system note: `BoundingBoxRef` uses **bottom-left** PDF-native
+coordinates, but PyMuPDF's drawing APIs (including `Page.add_highlight_annot`)
+take rects in its internal **top-left** MuPDF coordinate system, where y grows
+downward from the top edge of the page. A bbox passed straight through would
+render flipped vertically (e.g., a region 10 px from the bottom would appear
+10 px from the top). `_draw_highlight` therefore converts each bbox using
+`y_mupdf = page_height - y_pdf` before constructing the `pymupdf.Rect`.
 """
 
 from typing import Any, cast
@@ -21,7 +29,8 @@ class PdfAnnotator:
     Fields with empty ``bbox_refs`` are skipped silently — no annotation, no
     warning, no exception — matching the contract with `SpanResolver`: failed
     extractions and ungrounded values still flow through the pipeline, they
-    just don't leave a visual trace on the PDF.
+    just don't leave a visual trace on the PDF. Zero-area rects are treated
+    the same way because PyMuPDF rejects them as highlight quads.
     """
 
     async def annotate(
@@ -42,6 +51,11 @@ def _draw_highlight(doc: Any, bbox_ref: BoundingBoxRef) -> None:
     if bbox_ref.x0 == bbox_ref.x1 or bbox_ref.y0 == bbox_ref.y1:
         return
     page = doc[bbox_ref.page - 1]
-    rect = pymupdf.Rect(bbox_ref.x0, bbox_ref.y0, bbox_ref.x1, bbox_ref.y1)
+    page_height = float(page.rect.height)
+    # Flip bottom-left PDF y → top-left MuPDF y. Upper PDF edge (larger y) becomes
+    # smaller MuPDF y; lower PDF edge (smaller y) becomes larger MuPDF y.
+    y0_mupdf = page_height - bbox_ref.y1
+    y1_mupdf = page_height - bbox_ref.y0
+    rect = pymupdf.Rect(bbox_ref.x0, y0_mupdf, bbox_ref.x1, y1_mupdf)
     annot = page.add_highlight_annot(rect)
     annot.update()

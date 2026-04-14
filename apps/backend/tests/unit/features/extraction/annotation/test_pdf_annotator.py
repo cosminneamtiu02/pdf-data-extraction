@@ -3,12 +3,21 @@
 Scenarios map 1:1 to the `## Unit test scenarios` section of
 docs/graphs/PDFX/PDFX-E006-F004.md.
 
-Important: PyMuPDF's SWIG bindings make `Annot` objects hold non-owning
-references to their parent `Page`. If a helper returns a list of annots and
-then goes out of scope, the page is GC'd and subsequent `annot.rect` access
-segfaults. Therefore every assertion on annotation data is performed in the
-same lexical scope that holds the `page` local — do NOT factor the
-"get annots on page N" pattern into a helper.
+Two PyMuPDF gotchas these tests work around:
+
+1. SWIG lifetime. PyMuPDF `Annot` objects hold non-owning references to their
+   parent `Page`. If a helper returns a list of annots and then goes out of
+   scope, the page is GC'd and subsequent `annot.rect` reads segfault. Every
+   assertion on annotation data is therefore performed in the same lexical
+   scope that holds the `page` local — do NOT factor the "get annots on page
+   N" pattern into a helper.
+
+2. Coordinate origin. `BoundingBoxRef` is bottom-left PDF-native, but
+   PyMuPDF's drawing and `Annot.rect` APIs use top-left MuPDF coordinates.
+   `PdfAnnotator._draw_highlight` flips `y` via `page_height - y`, so the
+   expected MuPDF-view rect for a bottom-left bbox `(x0, y0, x1, y1)` on a
+   page of height `h` is `(x0, h - y1, x1, h - y0)`. Helper
+   `_expected_mupdf_rect` centralizes this conversion.
 """
 
 from __future__ import annotations
@@ -32,6 +41,8 @@ if TYPE_CHECKING:
 
     import pytest
 
+_PAGE_HEIGHT = 792.0
+_PAGE_WIDTH = 612.0
 _RECT_TOLERANCE = 8.0  # PyMuPDF expands highlight rects to cover quadpoints; observed drift ~5px
 _PDF_ANNOT_HIGHLIGHT = 8
 
@@ -41,15 +52,24 @@ def _rect_matches_within_tolerance(
     expected: tuple[float, float, float, float],
     tolerance: float = _RECT_TOLERANCE,
 ) -> bool:
-    # Symmetric proximity: every edge of the observed rect must be within `tolerance`
-    # of the corresponding expected edge. This would fail if PyMuPDF silently
-    # shrank or shifted the highlight, unlike a one-sided containment check.
+    # Symmetric per-edge proximity check. Rejects any shift larger than `tolerance`
+    # on any edge — unlike a one-sided containment predicate that would let a
+    # shrunken or drifted rect pass.
     return (
         abs(observed[0] - expected[0]) <= tolerance
         and abs(observed[1] - expected[1]) <= tolerance
         and abs(observed[2] - expected[2]) <= tolerance
         and abs(observed[3] - expected[3]) <= tolerance
     )
+
+
+def _expected_mupdf_rect(
+    bl_rect: tuple[float, float, float, float],
+    page_height: float = _PAGE_HEIGHT,
+) -> tuple[float, float, float, float]:
+    """Flip a bottom-left `(x0, y0, x1, y1)` rect into PyMuPDF's top-left view."""
+    x0, y0, x1, y1 = bl_rect
+    return (x0, page_height - y1, x1, page_height - y0)
 
 
 def _field(name: str, bbox_refs: list[BoundingBoxRef]) -> ExtractedField:
@@ -66,7 +86,7 @@ def _field(name: str, bbox_refs: list[BoundingBoxRef]) -> ExtractedField:
 def _make_blank_pdf(page_count: int = 2) -> bytes:
     with cast("Any", pymupdf.open()) as doc:
         for _ in range(page_count):
-            doc.new_page(width=612.0, height=792.0)
+            doc.new_page(width=_PAGE_WIDTH, height=_PAGE_HEIGHT)
         return cast("bytes", doc.tobytes())
 
 
@@ -77,15 +97,11 @@ def _run(annotator: PdfAnnotator, pdf_bytes: bytes, fields: list[ExtractedField]
 def test_single_field_single_bbox_single_page_draws_one_highlight() -> None:
     annotator = PdfAnnotator()
     pdf_bytes = _make_blank_pdf(page_count=2)
-    input_rect = (10.0, 10.0, 100.0, 30.0)
+    bl_rect = (10.0, 10.0, 100.0, 30.0)
     fields = [
         _field(
             "x",
-            [
-                BoundingBoxRef(
-                    page=1, x0=input_rect[0], y0=input_rect[1], x1=input_rect[2], y1=input_rect[3]
-                )
-            ],
+            [BoundingBoxRef(page=1, x0=bl_rect[0], y0=bl_rect[1], x1=bl_rect[2], y1=bl_rect[3])],
         ),
     ]
 
@@ -102,7 +118,49 @@ def test_single_field_single_bbox_single_page_draws_one_highlight() -> None:
         page1_count = sum(1 for _ in (page1.annots() or []))
         assert len(page0_rects) == 1
         assert page1_count == 0
-        assert _rect_matches_within_tolerance(page0_rects[0], input_rect)
+        assert _rect_matches_within_tolerance(page0_rects[0], _expected_mupdf_rect(bl_rect))
+    finally:
+        doc.close()
+
+
+def test_bottom_left_bbox_near_floor_renders_in_bottom_half_of_page() -> None:
+    """Visual-placement regression guard for the bottom-left → top-left flip.
+
+    A bbox described in bottom-left coordinates with `y0=10, y1=30` (10-30 px
+    above the bottom edge) must end up in the BOTTOM half of a 792 pt page when
+    read back through PyMuPDF's top-left view, not at the top. Before the
+    coordinate flip landed, `PdfAnnotator` passed bottom-left y values directly
+    into `pymupdf.Rect`, which silently rendered this bbox at the top of the
+    page. This test would fail against that regression.
+    """
+    annotator = PdfAnnotator()
+    pdf_bytes = _make_blank_pdf(page_count=1)
+    bl_rect = (20.0, 10.0, 120.0, 30.0)
+    fields = [
+        _field(
+            "floor",
+            [BoundingBoxRef(page=1, x0=bl_rect[0], y0=bl_rect[1], x1=bl_rect[2], y1=bl_rect[3])],
+        ),
+    ]
+
+    output = _run(annotator, pdf_bytes, fields)
+
+    doc: Any = cast("Any", pymupdf.open(stream=output, filetype="pdf"))
+    try:
+        page = doc[0]
+        observed: list[tuple[float, float, float, float]] = []
+        for a in page.annots() or []:
+            r = a.rect
+            observed.append((float(r.x0), float(r.y0), float(r.x1), float(r.y1)))
+        assert len(observed) == 1
+        y_top, y_bot = observed[0][1], observed[0][3]
+        # Bottom half of an 792 pt page in MuPDF top-left view = y > 396.
+        assert y_top > _PAGE_HEIGHT / 2, (
+            f"highlight top edge {y_top} is in the upper half of the page; "
+            f"coordinate flip regression suspected"
+        )
+        assert y_bot > _PAGE_HEIGHT / 2
+        assert _rect_matches_within_tolerance(observed[0], _expected_mupdf_rect(bl_rect))
     finally:
         doc.close()
 
@@ -130,14 +188,14 @@ def test_empty_bbox_refs_are_skipped_silently() -> None:
 def test_multi_page_span_draws_one_annotation_per_page() -> None:
     annotator = PdfAnnotator()
     pdf_bytes = _make_blank_pdf(page_count=2)
-    rect_a = (10.0, 10.0, 100.0, 30.0)
-    rect_b = (20.0, 40.0, 150.0, 60.0)
+    bl_a = (10.0, 10.0, 100.0, 30.0)
+    bl_b = (20.0, 40.0, 150.0, 60.0)
     fields = [
         _field(
             "span",
             [
-                BoundingBoxRef(page=1, x0=rect_a[0], y0=rect_a[1], x1=rect_a[2], y1=rect_a[3]),
-                BoundingBoxRef(page=2, x0=rect_b[0], y0=rect_b[1], x1=rect_b[2], y1=rect_b[3]),
+                BoundingBoxRef(page=1, x0=bl_a[0], y0=bl_a[1], x1=bl_a[2], y1=bl_a[3]),
+                BoundingBoxRef(page=2, x0=bl_b[0], y0=bl_b[1], x1=bl_b[2], y1=bl_b[3]),
             ],
         ),
     ]
@@ -158,8 +216,8 @@ def test_multi_page_span_draws_one_annotation_per_page() -> None:
             page1_rects.append((float(r.x0), float(r.y0), float(r.x1), float(r.y1)))
         assert len(page0_rects) == 1
         assert len(page1_rects) == 1
-        assert _rect_matches_within_tolerance(page0_rects[0], rect_a)
-        assert _rect_matches_within_tolerance(page1_rects[0], rect_b)
+        assert _rect_matches_within_tolerance(page0_rects[0], _expected_mupdf_rect(bl_a))
+        assert _rect_matches_within_tolerance(page1_rects[0], _expected_mupdf_rect(bl_b))
     finally:
         doc.close()
 
@@ -191,9 +249,12 @@ def test_multi_block_span_on_same_page_draws_all_highlights() -> None:
             r = a.rect
             observed.append((float(r.x0), float(r.y0), float(r.x1), float(r.y1)))
         assert len(observed) == 5
-        for expected in input_rects:
-            assert any(_rect_matches_within_tolerance(obs, expected) for obs in observed), (
-                f"no observed annotation contains expected rect {expected}"
+        for expected_bl in input_rects:
+            expected_mupdf = _expected_mupdf_rect(expected_bl)
+            assert any(_rect_matches_within_tolerance(obs, expected_mupdf) for obs in observed), (
+                f"no observed annotation rect matched expected MuPDF-view rect "
+                f"{expected_mupdf} (from bottom-left input {expected_bl}) within "
+                f"tolerance {_RECT_TOLERANCE}"
             )
     finally:
         doc.close()
