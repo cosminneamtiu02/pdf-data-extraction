@@ -53,8 +53,8 @@ with a typed params model (where applicable), enforcing the one-class-per-file
 rule. A `_registry.py` maps error code strings back to classes for handler
 lookup. The post-bootstrap shell ships three generic codes: `NOT_FOUND`,
 `VALIDATION_FAILED`, `INTERNAL_ERROR`. Extraction-specific codes
-(skill lookup, PDF parsing, intelligence layer, API layer) are added as feature
-dev lands the corresponding features.
+(skill lookup, PDF parsing, intelligence layer, API layer) are added as
+feature-dev lands the corresponding features.
 
 ### Exception Handlers ([app/api/errors.py](../apps/backend/app/api/errors.py))
 Three handlers serialize `DomainError`, `RequestValidationError`, and unhandled
