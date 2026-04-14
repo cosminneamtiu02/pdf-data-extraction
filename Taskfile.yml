@@ -99,7 +99,19 @@ tasks:
     cmds:
       - uv run ruff format .
 
+  # ── Skills ───────────────────────────────────────────────────
+  skills:validate:
+    desc: Validate all skill YAMLs under apps/backend/skills/ (populated by PDFX-E002-F004)
+    dir: "{{.BACKEND_DIR}}"
+    cmds:
+      - echo "skills:validate — stub. Real implementation lands with PDFX-E002-F004."
+
   # ── Code Generation ──────────────────────────────────────────
+  errors:check:
+    desc: Verify generated error classes are in sync with errors.yaml
+    cmds:
+      - task: check:errors
+
   errors:generate:
     desc: Generate error classes from errors.yaml
     dir: packages/error-contracts
