@@ -1,17 +1,6 @@
 """Health and readiness endpoints — mounted at root, outside /api/v1/."""
 
-from typing import Annotated
-
-import structlog
-from fastapi import APIRouter, Depends
-from fastapi.responses import JSONResponse
-from sqlalchemy import text
-from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.core.database import get_session
-
-logger = structlog.get_logger(__name__)
+from fastapi import APIRouter
 
 router = APIRouter(tags=["health"])
 
@@ -22,18 +11,13 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@router.get("/ready", response_model=None)
-async def ready(
-    session: Annotated[AsyncSession, Depends(get_session)],
-) -> dict[str, str] | JSONResponse:
-    """Readiness probe. Returns 200 if DB is reachable, 503 otherwise."""
-    try:
-        await session.execute(text("SELECT 1"))
-    except (SQLAlchemyError, OSError):
-        logger.exception("readiness_check_failed")
-        return JSONResponse(
-            status_code=503,
-            content={"status": "not ready"},
-        )
-    else:
-        return {"status": "ready"}
+@router.get("/ready")
+async def ready() -> dict[str, str]:
+    """Readiness probe.
+
+    v1 minimal stub: returns 200 unconditionally. The feature-dev for
+    PDFX-E007-F001 replaces this with an Ollama-probe-gated readiness
+    check that returns 503 when the configured Ollama base URL is
+    unreachable within a short TTL.
+    """
+    return {"status": "ready"}

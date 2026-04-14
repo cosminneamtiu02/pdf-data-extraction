@@ -1,65 +1,44 @@
 # Runbook
 
-Operational guide for running and maintaining the system.
+Operational guide for running and maintaining the PDF data extraction
+microservice.
+
+## Prerequisites
+
+- Python 3.13 and `uv` installed.
+- Ollama running on the host machine with the smallest Gemma 4 variant pulled.
+  The exact model tag is a config value (`OLLAMA_MODEL`) defaulted in
+  `apps/backend/app/core/config.py` during feature-dev for PDFX-E004-F002.
+- Docker (optional — only if you want to run the service in a container).
 
 ## Local Development
 
 ```bash
-# Start everything
-task dev
-
-# Backend only
+# Backend directly with hot reload (no Docker)
 task dev:backend
 
-# Frontend only
-task dev:frontend
-```
-
-### First-time setup (fresh clone)
-
-```bash
-# Start Postgres
-task docker:up
-
-# Generate and run initial migration
-cd apps/backend
-task db:revision -- "create_initial_tables"
-task db:migrate
+# Backend in a container (Ollama still runs on the host)
+task dev
 ```
 
 Services:
-- Frontend: http://localhost:5173
-- Backend API: http://localhost:8000
-- API docs: http://localhost:8000/docs
-- Storybook: `task storybook` -> http://localhost:6006
 
-## Database
-
-```bash
-# Run migrations
-task db:migrate
-
-# Create a new migration
-task db:revision -- "describe_change"
-
-# Reset database (dev only)
-task db:reset
-```
+- API: http://localhost:8000
+- API docs: http://localhost:8000/docs (dev only)
+- Liveness: http://localhost:8000/health
+- Readiness: http://localhost:8000/ready
 
 ## Testing
 
 ```bash
-# All tests
-task test
+# Everything task check runs
+task check
 
 # Unit only (fast)
 task test:unit
 
-# Integration (needs Docker for Testcontainers)
+# In-process integration (no external services)
 task test:integration
-
-# E2E (needs full stack running)
-task test:e2e
 
 # Contract tests
 task test:contract
@@ -68,40 +47,56 @@ task test:contract
 ## Error System
 
 ```bash
-# After editing errors.yaml:
+# After editing packages/error-contracts/errors.yaml:
 task errors:generate
-task errors:check
 ```
 
 ## Docker
 
 ```bash
-# Build images
+# Build the backend image
 task docker:build
 
-# Start stack
+# Start the stack (backend only; Ollama is on the host)
 task docker:up
 
-# Stop stack
+# Stop the stack
 task docker:down
 ```
 
 ## Health Checks
 
-- Liveness: `GET /health` -> `{"status": "ok"}`
-- Readiness: `GET /ready` -> `{"status": "ready"}` (checks DB)
+- **Liveness**: `GET /health` → `{"status": "ok"}`
+- **Readiness**: `GET /ready` → `{"status": "ready"}` (post-bootstrap stub;
+  during feature-dev PDFX-E007-F001 replaces this with an Ollama-probe-gated
+  version that returns 503 when Ollama is unreachable)
+
+## Ollama
+
+The service reaches Ollama via the `OLLAMA_BASE_URL` configured in
+`Settings` (added during feature-dev for PDFX-E004-F002). Defaults:
+
+- Inside a Docker container: `http://host.docker.internal:11434`
+- Non-containerized: `http://localhost:11434`
+
+If `/ready` returns 503 or extraction requests return
+`INTELLIGENCE_UNAVAILABLE`, check:
+
+1. Is `ollama serve` running on the host?
+2. Is the model tag in `OLLAMA_MODEL` actually pulled? Run `ollama list`.
+3. From the container: `curl http://host.docker.internal:11434/api/tags` —
+   should return the list of installed models.
 
 ## Troubleshooting
 
 ### Backend won't start
-- Check `DATABASE_URL` in `.env`
-- Ensure Postgres is running: `docker compose -f infra/compose/docker-compose.yml up db`
-- Run migrations: `task db:migrate`
 
-### Frontend won't start
-- Run `pnpm install` in `apps/frontend/`
-- Check Node version: must be 22+
+- Run `uv sync --dev` in `apps/backend/`.
+- Check that `apps/backend/skills/` exists if any skills have been authored
+  (skill manifest validation happens at startup; a broken skill kills the
+  boot).
 
-### Tests fail with "connection refused"
-- Integration tests need Docker running (for Testcontainers)
-- E2E tests need the full stack: `task docker:up`
+### Tests fail with import errors
+
+- Run `uv sync --dev` in `apps/backend/`.
+- Remove `.pytest_cache/` and retry.

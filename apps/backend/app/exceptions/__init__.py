@@ -7,11 +7,7 @@ from app.exceptions._generated import (
     ConflictError,
     InternalError,
     NotFoundError,
-    RateLimitedError,
     ValidationFailedError,
-    WidgetNameConflictError,
-    WidgetNameTooLongError,
-    WidgetNotFoundError,
 )
 from app.exceptions.base import DomainError
 
@@ -20,9 +16,5 @@ __all__ = [
     "DomainError",
     "InternalError",
     "NotFoundError",
-    "RateLimitedError",
     "ValidationFailedError",
-    "WidgetNameConflictError",
-    "WidgetNameTooLongError",
-    "WidgetNotFoundError",
 ]

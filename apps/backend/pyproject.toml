@@ -15,9 +15,6 @@ dependencies = [
     "uvicorn[standard]>=0.44.0",
     "pydantic>=2.13.0",
     "pydantic-settings>=2.13.1",
-    "sqlalchemy[asyncio]>=2.0.49",
-    "asyncpg>=0.31.0",
-    "alembic>=1.18.4",
     "structlog>=25.5.0",
     "httpx>=0.28.1",
 ]
@@ -27,7 +24,6 @@ dev = [
     "pytest>=9.0.3",
     "pytest-asyncio>=1.3.0",
     "pytest-cov>=7.1.0",
-    "testcontainers[postgres]>=4.14.2",
     "httpx>=0.28.1",
     "ruff>=0.15.10",
     "import-linter>=2.11",
@@ -58,9 +54,6 @@ ignore = [
     "PLR2004", # magic values allowed in tests
     "PLC0415", # imports inside functions allowed in test fixtures
     "E501",    # long docstrings in tests
-]
-"alembic/**/*.py" = [
-    "INP001",  # alembic directory is not a package
 ]
 "app/exceptions/_generated/**/*.py" = [
     "E501",    # generated code may have long lines

@@ -5,11 +5,7 @@
     "NOT_FOUND",
     "CONFLICT",
     "VALIDATION_FAILED",
-    "INTERNAL_ERROR",
-    "RATE_LIMITED",
-    "WIDGET_NOT_FOUND",
-    "WIDGET_NAME_CONFLICT",
-    "WIDGET_NAME_TOO_LONG"
+    "INTERNAL_ERROR"
   ],
   "params_by_key": {
     "NOT_FOUND": [],
@@ -18,20 +14,6 @@
       "field",
       "reason"
     ],
-    "INTERNAL_ERROR": [],
-    "RATE_LIMITED": [
-      "retry_after_seconds"
-    ],
-    "WIDGET_NOT_FOUND": [
-      "widget_id"
-    ],
-    "WIDGET_NAME_CONFLICT": [
-      "name"
-    ],
-    "WIDGET_NAME_TOO_LONG": [
-      "name",
-      "max_length",
-      "actual_length"
-    ]
+    "INTERNAL_ERROR": []
   }
 }

@@ -20,12 +20,9 @@ jobs:
       - name: Build backend Docker image
         run: docker build -f infra/docker/backend.Dockerfile -t pdf-data-extraction-backend:${{ github.sha }} .
 
-      - name: Build frontend Docker image
-        run: docker build -f infra/docker/frontend.Dockerfile -t pdf-data-extraction-frontend:${{ github.sha }} .
-
       - name: Push to registry
         run: |
-          echo "TODO: Push images to container registry"
+          echo "TODO: Push image to container registry"
 
       - name: Deploy
         run: |

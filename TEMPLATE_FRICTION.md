@@ -70,3 +70,51 @@ When multiple Dependabot PRs modify adjacent lines in the same manifest file (e.
 **Template-level fix we shipped:** aggressive `groups:` in [.github/dependabot.yml](.github/dependabot.yml) for every ecosystem where interlocking dependencies touch the same manifest file. Specifically: `sqlalchemy-stack` (sqlalchemy + alembic + asyncpg), `fastapi-stack`, `pydantic`, `pytest`, `tanstack`, `react`, `storybook`, `vitest`, `testing-library`, `tailwind`, `i18next`, `dinero`.
 
 **Takeaway codified:** when you see a fifth Dependabot PR for the same ecosystem, it's almost always doomed to cascade-conflict. Add a group and don't merge siblings individually.
+
+### 2026-04-13 — project-bootstrap skill run: strip template to PDF extraction microservice
+
+Ran the `project-bootstrap` skill against this repo to strip the full-stack
+monorepo template down to what the PDF data extraction microservice actually
+needs. The graph tree at `docs/graphs/PDFX/` (1 project + 7 epics + 29
+thickened features) and the design/requirements specs at
+`docs/superpowers/specs/` drove the strip decisions.
+
+**Autonomous strips:** entire `apps/frontend/`, `packages/api-client/`,
+`infra/terraform/`, `apps/backend/alembic/`, `apps/backend/app/features/widget/`,
+`apps/backend/app/core/database.py`, `apps/backend/app/shared/base_repository.py`,
+`base_model.py`, `base_service.py`, `apps/backend/app/types/`,
+`apps/backend/app/schemas/page.py`, all frontend dockerfiles, widget tests,
+DB integration conftest, Testcontainers usage, widget-specific error codes,
+and generated widget error classes.
+
+**User-confirmed strips:** security-headers middleware (fully local, no need),
+root JS workspace (`package.json`, `pnpm-workspace.yaml`, `pnpm-lock.yaml`,
+`node_modules/`), Node/pnpm pins in `.tool-versions`, Biome pre-commit hook,
+`frontend-checks` and `api-client-checks` CI jobs, npm/pnpm/terraform Dependabot
+ecosystems.
+
+**User-confirmed keeps:** CORS middleware (downstream callers may be in
+separate processes), Copilot PR review workflow, all pre-commit / pre-push
+hooks, all CI infrastructure that wasn't frontend-specific, the error-contracts
+package (pruned to 4 generic codes), all Dependabot auto-merge plumbing.
+
+**Modifications to kept files:** `apps/backend/pyproject.toml` (dropped
+sqlalchemy/alembic/asyncpg/testcontainers), `app/main.py` (removed widget
+router + database lifespan), `app/core/config.py` (removed DATABASE_URL),
+`app/api/middleware.py` (removed SecurityHeadersMiddleware), `app/api/health_router.py`
+(removed DB probe — now a stub, full Ollama-probe version lands in PDFX-E007-F001
+feature-dev), the entire backend test suite, `packages/error-contracts/errors.yaml`
+(removed widget + rate-limited codes), `Taskfile.yml` (removed db/frontend/storybook
+tasks), `.github/workflows/ci.yml` (kept only backend-checks + error-contracts),
+`.github/workflows/deploy.yml` (removed frontend image build), `.github/dependabot.yml`
+(pip-only), `.pre-commit-config.yaml` (removed Biome + Vitest), `.tool-versions`,
+`.env.example`, `.gitignore`, `infra/compose/docker-compose.yml` (backend-only, adds
+`host.docker.internal` extra_hosts), `docker-compose.prod.yml` (same), `CLAUDE.md`
+(rewritten for extraction service), `README.md`, and every file under `docs/` except
+`superpowers/specs/` and `graphs/PDFX/` (those are the project artifacts this
+skill is sourcing from).
+
+**Outcome:** the post-bootstrap shell is a minimal FastAPI service with
+`/health` and `/ready` endpoints, a working error contract pipeline, and the
+test infrastructure to add features per the graph tree. Feature-dev starts at
+PDFX-E002-F001 and walks the 29 features in topological priority order.
