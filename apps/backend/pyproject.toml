@@ -20,6 +20,7 @@ dependencies = [
     "pyyaml>=6.0.3",
     "jsonschema>=4.26.0",
     "langextract>=1.0.7",
+    "pymupdf>=1.27.2.2,<2.0.0",
 ]
 
 [project.entry-points."langextract.providers"]
@@ -76,6 +77,9 @@ pythonpath = ["."]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
+markers = [
+    "slow: tests that require real heavy dependencies (Docling models, Ollama) and are excluded from the default fast check loop",
+]
 
 [tool.coverage.run]
 source = ["app"]
