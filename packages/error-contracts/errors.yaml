@@ -29,3 +29,10 @@ errors:
     description: Skill YAML file failed validation at parse time
     params:
       reason: string
+
+  SKILL_NOT_FOUND:
+    http_status: 404
+    description: Requested skill (name, version) is not registered in the manifest
+    params:
+      name: string
+      version: string

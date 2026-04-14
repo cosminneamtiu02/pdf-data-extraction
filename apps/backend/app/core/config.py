@@ -1,9 +1,14 @@
 """Application configuration via pydantic-settings."""
 
+from pathlib import Path
 from typing import Annotated
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# `app/core/config.py` -> `app/core/` -> `app/` -> `apps/backend/`
+_BACKEND_ROOT = Path(__file__).resolve().parent.parent.parent
+_DEFAULT_SKILLS_DIR = _BACKEND_ROOT / "skills"
 
 
 class Settings(BaseSettings):
@@ -27,3 +32,7 @@ class Settings(BaseSettings):
         "field_values",
     ]
     structured_output_max_retries: Annotated[int, Field(ge=0)] = 3
+
+    skills_dir: Path = Field(default_factory=lambda: _DEFAULT_SKILLS_DIR)
+    docling_ocr_default: str | None = None
+    docling_table_mode_default: str | None = None

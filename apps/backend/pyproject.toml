@@ -71,6 +71,9 @@ pythonpath = ["."]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
+markers = [
+    "slow: excluded from default `task check` run; opt in with `-m slow`",
+]
 
 [tool.coverage.run]
 source = ["app"]

@@ -7,6 +7,7 @@ from app.exceptions._generated import (
     ConflictError,
     InternalError,
     NotFoundError,
+    SkillNotFoundError,
     SkillValidationFailedError,
     ValidationFailedError,
 )
@@ -17,6 +18,7 @@ __all__ = [
     "DomainError",
     "InternalError",
     "NotFoundError",
+    "SkillNotFoundError",
     "SkillValidationFailedError",
     "ValidationFailedError",
 ]
