@@ -66,7 +66,7 @@ Extraction Microservice (`PDFX`). The strip was driven by the graph tree at
 | Health router (`/health` + `/ready`) | Required, rewritten stub until PDFX-E007-F001 |
 | Exception handlers (`app/api/errors.py`) | Unchanged — feature-agnostic |
 | Error body schemas (`app/schemas/error_*.py`) | Unchanged — feature-agnostic |
-| Four generic error codes (`NOT_FOUND`, `CONFLICT`, `VALIDATION_FAILED`, `INTERNAL_ERROR`) | Generic and needed by future features |
+| Three generic error codes (`NOT_FOUND`, `VALIDATION_FAILED`, `INTERNAL_ERROR`) | Generic and needed by future features — `CONFLICT` pruned in PDFX-E001-F004 as a CRUD-era orphan |
 | `.editorconfig`, `.gitattributes`, Python pin in `.tool-versions` | Default keeps |
 
 ### Partials (kept but significantly rewritten)

@@ -3,7 +3,6 @@
   "namespace": "errors",
   "keys": [
     "NOT_FOUND",
-    "CONFLICT",
     "VALIDATION_FAILED",
     "INTERNAL_ERROR",
     "SKILL_VALIDATION_FAILED",
@@ -11,7 +10,6 @@
   ],
   "params_by_key": {
     "NOT_FOUND": [],
-    "CONFLICT": [],
     "VALIDATION_FAILED": [
       "field",
       "reason"
