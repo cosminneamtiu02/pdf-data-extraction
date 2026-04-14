@@ -23,3 +23,9 @@ errors:
     http_status: 500
     description: Unhandled server error; details are logged with request_id
     params: {}
+
+  SKILL_VALIDATION_FAILED:
+    http_status: 500
+    description: Skill YAML file failed validation at parse time
+    params:
+      reason: string
