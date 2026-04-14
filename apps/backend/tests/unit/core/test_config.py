@@ -21,3 +21,23 @@ def test_settings_accepts_overrides() -> None:
     assert s.app_env == "production"
     assert s.log_level == "warning"
     assert s.cors_origins == ["https://example.com"]
+
+
+def test_settings_redaction_defaults() -> None:
+    """log_redacted_keys and log_max_value_length default to the documented values."""
+    s = Settings()
+    assert s.log_max_value_length == 500
+    assert s.log_redacted_keys == [
+        "pdf_bytes",
+        "raw_output",
+        "extracted_value",
+        "prompt",
+        "field_values",
+    ]
+
+
+def test_settings_redaction_overrides() -> None:
+    """Both redaction fields accept explicit overrides."""
+    s = Settings(log_max_value_length=42, log_redacted_keys=["secret", "token"])
+    assert s.log_max_value_length == 42
+    assert s.log_redacted_keys == ["secret", "token"]

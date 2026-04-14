@@ -11,28 +11,32 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 
 logger = structlog.get_logger(__name__)
 
-# Valid UUID pattern for X-Request-ID header
-_UUID_PATTERN = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-    re.IGNORECASE,
-)
+# Valid 32-char lowercase hex pattern for X-Request-Id (PDFX-E007-F003).
+_REQUEST_ID_PATTERN = re.compile(r"^[a-f0-9]{32}$")
 
 
 class RequestIdMiddleware(BaseHTTPMiddleware):
-    """Attach a request ID to every request and response."""
+    """Attach a 32-char hex request id to every request and response.
+
+    Format mandated by PDFX-E007-F003: `uuid.uuid4().hex` (32 lowercase hex chars,
+    no dashes). Honors a client-supplied `X-Request-Id` header only when it
+    already matches the format, otherwise generates a fresh id.
+    """
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        # Accept client-provided request ID only if it's a valid UUID.
-        # Otherwise generate a new one. Prevents log injection.
-        client_id = request.headers.get("X-Request-ID", "")
-        request_id = client_id if _UUID_PATTERN.match(client_id) else str(uuid.uuid4())
+        client_id = request.headers.get("X-Request-Id", "")
+        request_id = client_id if _REQUEST_ID_PATTERN.match(client_id) else uuid.uuid4().hex
         request.state.request_id = request_id
 
         structlog.contextvars.clear_contextvars()
         structlog.contextvars.bind_contextvars(request_id=request_id)
 
-        response = await call_next(request)
-        response.headers["X-Request-ID"] = request_id
+        try:
+            response = await call_next(request)
+        finally:
+            structlog.contextvars.unbind_contextvars("request_id")
+
+        response.headers["X-Request-Id"] = request_id
         return response
 
 
