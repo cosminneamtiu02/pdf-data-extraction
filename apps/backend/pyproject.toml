@@ -19,6 +19,11 @@ dependencies = [
     "httpx>=0.28.1",
     "pyyaml>=6.0.3",
     "jsonschema>=4.26.0",
+    # Docling pulls a heavy ML runtime (torch, torchvision, transformers, and
+    # associated platform wheels). This is intentional: document parsing and
+    # OCR are core to the service. Deployments cannot assume a slim or
+    # CPU-only dependency set — plan image size and cold-start budgets
+    # accordingly.
     "docling>=2.88.0,<3.0.0",
     "langextract>=1.2.1,<2.0.0",
     "pymupdf>=1.27.2.2,<2.0.0",
