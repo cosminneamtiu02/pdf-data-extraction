@@ -16,6 +16,8 @@ def create_app() -> FastAPI:
     configure_logging(
         log_level=settings.log_level,
         json_output=settings.app_env == "production",
+        redacted_keys=settings.log_redacted_keys,
+        max_value_length=settings.log_max_value_length,
     )
 
     is_prod = settings.app_env == "production"

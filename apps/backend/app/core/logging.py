@@ -5,16 +5,40 @@ import sys
 
 import structlog
 
+from app.core.log_redaction_filter import LogRedactionFilter
 
-def configure_logging(*, log_level: str = "info", json_output: bool = False) -> None:
+
+def configure_logging(
+    *,
+    log_level: str = "info",
+    json_output: bool = False,
+    redacted_keys: list[str] | None = None,
+    max_value_length: int = 500,
+) -> None:
     """Configure structlog for the application.
 
     Args:
         log_level: The minimum log level (debug, info, warning, error).
         json_output: If True, output JSON. If False, output pretty console format.
+        redacted_keys: Keys to strip from every event dict (defense-in-depth
+            redaction policy from PDFX-E007-F003). Defaults to an empty list,
+            but app.main wires the policy from Settings.log_redacted_keys.
+        max_value_length: Maximum length of any string value in an event dict;
+            longer values are truncated.
     """
+    redaction_filter = LogRedactionFilter(
+        redacted_keys=redacted_keys or [],
+        max_value_length=max_value_length,
+    )
+
+    # Order matters. The redaction filter must run after merge_contextvars
+    # (so bound request_id is in the dict and survives the allowlist check)
+    # but before any processor that might enrich the dict with sensitive data.
+    # Today no enrichment processor adds sensitive keys, but if one is added
+    # later it must be placed before the redaction filter, not after.
     shared_processors: list[structlog.types.Processor] = [
         structlog.contextvars.merge_contextvars,
+        redaction_filter,
         structlog.stdlib.add_log_level,
         structlog.stdlib.add_logger_name,
         structlog.processors.TimeStamper(fmt="iso"),

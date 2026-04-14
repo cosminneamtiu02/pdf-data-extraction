@@ -33,10 +33,12 @@ async def test_ready_returns_200(client: AsyncClient) -> None:
 
 
 async def test_response_includes_x_request_id(client: AsyncClient) -> None:
-    """Every response should include an X-Request-ID header."""
+    """Every response should include an X-Request-Id header in 32-char hex format."""
+    import re
+
     response = await client.get("/health")
-    assert "X-Request-ID" in response.headers
-    assert len(response.headers["X-Request-ID"]) > 0
+    assert "X-Request-Id" in response.headers
+    assert re.match(r"^[a-f0-9]{32}$", response.headers["X-Request-Id"])
 
 
 async def test_cors_allows_configured_origin(client: AsyncClient) -> None:
