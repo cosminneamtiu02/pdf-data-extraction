@@ -37,8 +37,8 @@ live in `packages/error-contracts/errors.yaml`; a codegen script produces one
 Python exception class per error code in `app/exceptions/_generated/`. A single
 exception handler in `app/api/errors.py` maps all `DomainError` subclasses to a
 consistent JSON response shape: `{error: {code, params, details, request_id}}`.
-The post-bootstrap shell ships four generic error codes (`NOT_FOUND`,
-`CONFLICT`, `VALIDATION_FAILED`, `INTERNAL_ERROR`). Extraction-specific codes
+The post-bootstrap shell ships three generic error codes (`NOT_FOUND`,
+`VALIDATION_FAILED`, `INTERNAL_ERROR`). Extraction-specific codes
 (skill lookup, PDF parsing, intelligence layer, API layer) are added as
 feature-dev lands the corresponding features.
 
