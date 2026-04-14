@@ -23,6 +23,10 @@ async def _lifespan(_app: FastAPI) -> AsyncGenerator[None]:
         # of immediately closing it.
         if get_intelligence_provider.cache_info().currsize > 0:
             await get_intelligence_provider().aclose()
+            # Evict the now-closed provider so any subsequent `create_app()`
+            # / lifespan in the same process (tests, factory reuse) builds a
+            # fresh instance instead of handing out one with a dead client.
+            get_intelligence_provider.cache_clear()
 
 
 def create_app() -> FastAPI:
