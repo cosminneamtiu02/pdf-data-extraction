@@ -7,11 +7,6 @@ errors:
     description: Requested resource does not exist
     params: {}
 
-  CONFLICT:
-    http_status: 409
-    description: Operation conflicts with current state
-    params: {}
-
   VALIDATION_FAILED:
     http_status: 422
     description: Request payload failed validation

@@ -51,10 +51,10 @@ in stack traces.
 Every error code in `errors.yaml` is code-generated into its own Python file
 with a typed params model (where applicable), enforcing the one-class-per-file
 rule. A `_registry.py` maps error code strings back to classes for handler
-lookup. The post-bootstrap shell ships four generic codes: `NOT_FOUND`,
-`CONFLICT`, `VALIDATION_FAILED`, `INTERNAL_ERROR`. Extraction-specific codes
-(skill lookup, PDF parsing, intelligence layer, API layer) are added as feature
-dev lands the corresponding features.
+lookup. The post-bootstrap shell ships three generic codes: `NOT_FOUND`,
+`VALIDATION_FAILED`, `INTERNAL_ERROR`. Extraction-specific codes
+(skill lookup, PDF parsing, intelligence layer, API layer) are added as
+feature-dev lands the corresponding features.
 
 ### Exception Handlers ([app/api/errors.py](../apps/backend/app/api/errors.py))
 Three handlers serialize `DomainError`, `RequestValidationError`, and unhandled
