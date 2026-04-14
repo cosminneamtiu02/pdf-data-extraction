@@ -3,14 +3,12 @@
 
 export type ErrorCode =
   | "NOT_FOUND"
-  | "CONFLICT"
   | "VALIDATION_FAILED"
   | "INTERNAL_ERROR"
   | "SKILL_VALIDATION_FAILED";
 
 export interface ErrorParamsByCode {
   NOT_FOUND: Record<string, never>;
-  CONFLICT: Record<string, never>;
   VALIDATION_FAILED: { field: string; reason: string };
   INTERNAL_ERROR: Record<string, never>;
   SKILL_VALIDATION_FAILED: { reason: string };
@@ -23,11 +21,10 @@ export interface ApiErrorPayload<C extends ErrorCode = ErrorCode> {
   request_id: string;
 }
 
-export const ERROR_CODES: readonly ErrorCode[] = ["NOT_FOUND", "CONFLICT", "VALIDATION_FAILED", "INTERNAL_ERROR", "SKILL_VALIDATION_FAILED"] as const;
+export const ERROR_CODES: readonly ErrorCode[] = ["NOT_FOUND", "VALIDATION_FAILED", "INTERNAL_ERROR", "SKILL_VALIDATION_FAILED"] as const;
 
 export const HTTP_STATUS_BY_CODE: Record<ErrorCode, number> = {
   NOT_FOUND: 404,
-  CONFLICT: 409,
   VALIDATION_FAILED: 422,
   INTERNAL_ERROR: 500,
   SKILL_VALIDATION_FAILED: 500,
