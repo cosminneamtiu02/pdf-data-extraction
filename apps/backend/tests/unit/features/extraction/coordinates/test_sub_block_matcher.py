@@ -103,25 +103,20 @@ def test_multiple_occurrences_returns_lowest_index() -> None:
     assert result == CharRange(start=0, end=2)
 
 
-def test_whitespace_drift_goes_through_step_two_not_step_one_or_three() -> None:
-    """A collapsed-run fixture where NFKC does NOT help isolates step 2.
+def test_whitespace_drift_goes_through_step_two_and_succeeds() -> None:
+    """A pure whitespace-collapse fixture: step 1 fails, step 2 resolves it.
 
-    `"a    b"` vs `"a b"`: step 1 fails (no direct match), step 3 alone would
-    also fail because NFKC does not collapse runs of ordinary spaces. Only
-    step 2 (whitespace collapse on both sides) can resolve this.
+    `"a    b"` vs `"a b"`: step 1 fails (no direct match because the block has
+    4 spaces and the value has 1). Step 2 collapses both sides to `"a b"` and
+    finds the match. Step 3 would ALSO resolve this (step 3 is a strict
+    superset of step 2 since PDFX-E005-F002 hardening), but step 2 is cheaper
+    and is tried first — verified by the isolated assertion that step 1 alone
+    returned -1, so the matcher must have fallen through to step 2.
     """
-    import unicodedata
-
     block_text = "a    b"
     value = "a b"
 
     assert block_text.find(value) == -1
-    assert (
-        unicodedata.normalize("NFKC", block_text).find(
-            unicodedata.normalize("NFKC", value),
-        )
-        == -1
-    )
 
     matcher = SubBlockMatcher()
     result = matcher.locate(block_text, value)
@@ -203,3 +198,74 @@ def test_value_longer_than_block_text_returns_none() -> None:
     result = matcher.locate("short", "this is a much longer value")
 
     assert result is None
+
+
+def test_mixed_drift_multi_space_plus_ligature_resolves_via_step_three() -> None:
+    """Regression for PR review: multi-space run adjacent to a ligature.
+
+    `"a    ﬁnal"` (4 spaces + U+FB01) vs `"a final"` (1 space + "fi"). Neither
+    step 1 (direct), step 2 (whitespace-collapse alone leaves the ligature),
+    nor NFKC-alone (leaves the multi-space run) can resolve it. Step 3's
+    composed NFKC + whitespace-collapse pipeline handles both drifts at once.
+    """
+    import unicodedata
+
+    block_text = "a    \ufb01nal"
+    value = "a final"
+
+    assert block_text.find(value) == -1
+
+    def _collapse(s: str) -> str:
+        return " ".join(s.split())
+
+    assert _collapse(block_text).find(_collapse(value)) == -1
+    assert (
+        unicodedata.normalize("NFKC", block_text).find(
+            unicodedata.normalize("NFKC", value),
+        )
+        == -1
+    )
+
+    matcher = SubBlockMatcher()
+    result = matcher.locate(block_text, value)
+
+    assert result is not None
+    assert result.start == 0
+    assert result.end == len(block_text)
+
+
+def test_mixed_drift_full_width_colon_plus_multi_space_resolves() -> None:
+    """Regression: full-width compatibility char adjacent to a collapsed space run.
+
+    `"price" + U+FF1A + "   100"` (full-width colon + 3 spaces) vs
+    `"price: 100"` (ASCII colon + 1 space). NFKC alone maps the full-width
+    colon but leaves the space run, and whitespace-collapse alone leaves the
+    full-width colon. Only the composed step 3 handles both.
+    """
+    matcher = SubBlockMatcher()
+    block_text = "price\uff1a   100"
+    value = "price: 100"
+
+    result = matcher.locate(block_text, value)
+
+    assert result is not None
+    assert result.start == 0
+    assert result.end == len(block_text)
+
+
+def test_mixed_drift_ligature_adjacent_to_two_spaces_returns_full_range() -> None:
+    """Minimal mixed-drift regression adapted from the reviewer's reproduction.
+
+    `"a  ﬁ"` (1 space + 1 space + U+FB01) vs `"a fi"` (1 space + "fi"). The
+    reviewer reported this class of input as a miss. With composed step 3 it
+    resolves to a range covering the full original block.
+    """
+    matcher = SubBlockMatcher()
+    block_text = "a  \ufb01"
+    value = "a fi"
+
+    result = matcher.locate(block_text, value)
+
+    assert result is not None
+    assert result.start == 0
+    assert result.end == len(block_text)
