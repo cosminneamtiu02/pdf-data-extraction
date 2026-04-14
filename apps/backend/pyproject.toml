@@ -17,6 +17,7 @@ dependencies = [
     "pydantic-settings>=2.13.1",
     "structlog>=25.5.0",
     "httpx>=0.28.1",
+    "pyyaml>=6.0.3",
     "jsonschema>=4.26.0",
 ]
 
@@ -30,6 +31,8 @@ dev = [
     "import-linter>=2.11",
     "pyright>=1.1.408",
     "schemathesis>=4.15.1",
+    "types-pyyaml>=6.0.12",
+    "types-jsonschema>=4.26.0",
 ]
 
 [tool.ruff]
