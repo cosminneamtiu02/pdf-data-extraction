@@ -98,10 +98,12 @@ class SkillYamlSchema(BaseModel):
         try:
             data = yaml.safe_load(raw_text)
         except yaml.YAMLError as exc:
-            msg = f"skill YAML at {path} is not parseable: {exc}"
+            # Schema errors stay path-free; SkillLoader is the single place that
+            # prepends the file path when aggregating across the manifest walk.
+            msg = f"skill YAML is not parseable: {exc}"
             raise SkillValidationFailedError(reason=msg) from exc
         if not isinstance(data, dict):
-            msg = f"skill YAML at {path} did not parse to a mapping"
+            msg = "skill YAML did not parse to a mapping"
             raise SkillValidationFailedError(reason=msg)
 
         instance = cls.model_validate(data)

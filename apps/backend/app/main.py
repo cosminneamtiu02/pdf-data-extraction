@@ -9,7 +9,13 @@ from app.api.deps import get_intelligence_provider, get_settings
 from app.api.errors import register_exception_handlers
 from app.api.health_router import router as health_router
 from app.api.middleware import configure_middleware
+from app.core.config import Settings
 from app.core.logging import configure_logging
+from app.features.extraction.skills import (
+    SkillDoclingConfig,
+    SkillLoader,
+    SkillManifest,
+)
 
 
 @asynccontextmanager
@@ -29,18 +35,23 @@ async def _lifespan(_app: FastAPI) -> AsyncGenerator[None]:
             get_intelligence_provider.cache_clear()
 
 
-def create_app() -> FastAPI:
-    """Create and configure the FastAPI application."""
-    settings = get_settings()
+def create_app(settings: Settings | None = None) -> FastAPI:
+    """Create and configure the FastAPI application.
+
+    Passing an explicit `settings` bypasses the cached `get_settings()` factory
+    and is the supported seam for integration tests that need a custom
+    `skills_dir` (or other overrides) without mutating process-wide env vars.
+    """
+    resolved_settings = settings or get_settings()
 
     configure_logging(
-        log_level=settings.log_level,
-        json_output=settings.app_env == "production",
-        redacted_keys=settings.log_redacted_keys,
-        max_value_length=settings.log_max_value_length,
+        log_level=resolved_settings.log_level,
+        json_output=resolved_settings.app_env == "production",
+        redacted_keys=resolved_settings.log_redacted_keys,
+        max_value_length=resolved_settings.log_max_value_length,
     )
 
-    is_prod = settings.app_env == "production"
+    is_prod = resolved_settings.app_env == "production"
     application = FastAPI(
         title="PDF Data Extraction API",
         description="Self-hosted PDF data extraction microservice",
@@ -51,14 +62,17 @@ def create_app() -> FastAPI:
         lifespan=_lifespan,
     )
 
-    configure_middleware(application, cors_origins=settings.cors_origins)
+    configure_middleware(application, cors_origins=resolved_settings.cors_origins)
     register_exception_handlers(application)
 
-    # Health/readiness at root, outside /api/v1/
-    application.include_router(health_router)
+    default_docling = SkillDoclingConfig(
+        ocr=resolved_settings.docling_ocr_default,
+        table_mode=resolved_settings.docling_table_mode_default,
+    )
+    loader = SkillLoader(default_docling=default_docling)
+    application.state.skill_manifest = SkillManifest(loader.load(resolved_settings.skills_dir))
 
-    # Business routes under /api/v1/ are added by individual feature slices
-    # as they are implemented (the extraction feature lands in PDFX-E006).
+    application.include_router(health_router)
 
     return application
 

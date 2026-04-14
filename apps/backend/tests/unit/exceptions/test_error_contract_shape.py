@@ -16,6 +16,7 @@ EXPECTED_CODES = {
     "VALIDATION_FAILED",
     "INTERNAL_ERROR",
     "SKILL_VALIDATION_FAILED",
+    "SKILL_NOT_FOUND",
 }
 
 PRUNED_CODES = {
@@ -54,6 +55,7 @@ def test_no_stale_generated_error_files() -> None:
         "validation_failed_error",
         "internal_error",
         "skill_validation_failed_error",
+        "skill_not_found_error",
     }
     stale = {"conflict_error", "rate_limited_error", "widget_not_found_error"}
     present_stems = {p.stem for p in GENERATED_DIR.glob("*_error.py")}

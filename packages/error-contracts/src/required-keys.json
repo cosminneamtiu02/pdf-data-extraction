@@ -5,7 +5,8 @@
     "NOT_FOUND",
     "VALIDATION_FAILED",
     "INTERNAL_ERROR",
-    "SKILL_VALIDATION_FAILED"
+    "SKILL_VALIDATION_FAILED",
+    "SKILL_NOT_FOUND"
   ],
   "params_by_key": {
     "NOT_FOUND": [],
@@ -16,6 +17,10 @@
     "INTERNAL_ERROR": [],
     "SKILL_VALIDATION_FAILED": [
       "reason"
+    ],
+    "SKILL_NOT_FOUND": [
+      "name",
+      "version"
     ]
   }
 }
