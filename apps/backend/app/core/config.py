@@ -1,5 +1,8 @@
 """Application configuration via pydantic-settings."""
 
+from typing import Annotated
+
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -14,4 +17,4 @@ class Settings(BaseSettings):
     app_env: str = "development"
     log_level: str = "info"
     cors_origins: list[str] = ["http://localhost:5173"]
-    structured_output_max_retries: int = 3
+    structured_output_max_retries: Annotated[int, Field(ge=0)] = 3

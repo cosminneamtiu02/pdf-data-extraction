@@ -14,6 +14,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 import pytest
+from pydantic import ValidationError as PydanticValidationError
 from structlog.testing import capture_logs
 
 from app.core.config import Settings
@@ -269,3 +270,41 @@ async def test_settings_default_max_retries_is_three() -> None:
     settings = Settings()
 
     assert settings.structured_output_max_retries == 3
+
+
+def test_settings_rejects_negative_max_retries() -> None:
+    """Regression: a negative max_retries used to silently yield 0 total attempts.
+
+    With `-1`, `max_total_attempts` was `0`, the retry loop body never executed,
+    and `StructuredOutputError(attempts=0, failure_reasons=[])` was raised even
+    for perfectly valid input. The fix constrains the field at the Settings
+    layer so a broken value is rejected at configuration time.
+    """
+    with pytest.raises(PydanticValidationError):
+        Settings(structured_output_max_retries=-1)
+
+
+async def test_zero_retries_yields_exactly_one_total_attempt_on_valid_input() -> None:
+    validator = _build_validator(max_retries=0)
+
+    result = await validator.validate_and_retry(
+        raw_text='{"foo": "bar"}',
+        output_schema=_FOO_STRING_SCHEMA,
+        regeneration_callable=_never_called(),
+    )
+
+    assert result.attempts == 1
+
+
+async def test_zero_retries_raises_immediately_on_invalid_input() -> None:
+    validator = _build_validator(max_retries=0)
+
+    with pytest.raises(StructuredOutputError) as excinfo:
+        await validator.validate_and_retry(
+            raw_text="not json",
+            output_schema=_FOO_STRING_SCHEMA,
+            regeneration_callable=_never_called(),
+        )
+
+    assert excinfo.value.attempts == 1
+    assert len(excinfo.value.failure_reasons) == 1
