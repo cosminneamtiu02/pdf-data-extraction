@@ -21,13 +21,12 @@ import asyncio
 from typing import TYPE_CHECKING, Any, cast
 
 import langextract
+from langextract.core.base_model import BaseLanguageModel
 from langextract.core.data import AnnotatedDocument, ExampleData, Extraction
 
 from app.features.extraction.extraction.raw_extraction import RawExtraction
 
 if TYPE_CHECKING:
-    from langextract.core.base_model import BaseLanguageModel
-
     from app.features.extraction.intelligence.intelligence_provider import IntelligenceProvider
     from app.features.extraction.skills.skill import Skill
     from app.features.extraction.skills.skill_example import SkillExample
@@ -54,9 +53,20 @@ class ExtractionEngine:
         examples = self._build_examples(skill.examples)
         # The `provider` parameter is typed as the internal Protocol because
         # that is what the rest of the codebase passes around, but LangExtract
-        # requires a `BaseLanguageModel` subclass. `OllamaGemmaProvider` is
-        # both — the dual-interface design of PDFX-E004-F002. At this seam we
-        # cast once so pyright sees the LangExtract-facing shape.
+        # invokes `model.infer(...)` directly — so the instance must also be
+        # a `BaseLanguageModel` subclass. `OllamaGemmaProvider` is both (the
+        # dual-interface design of PDFX-E004-F002); any future provider wired
+        # into `ExtractionEngine.extract` MUST satisfy the same contract. We
+        # enforce this at runtime so a mis-wired caller fails fast with a
+        # clear TypeError instead of an opaque AttributeError inside the
+        # worker thread.
+        if not isinstance(provider, BaseLanguageModel):
+            msg = (
+                "ExtractionEngine requires a provider that is both an "
+                "IntelligenceProvider and a langextract BaseLanguageModel; "
+                f"got {type(provider).__name__}"
+            )
+            raise TypeError(msg)
         model = cast("BaseLanguageModel", provider)
 
         result = await asyncio.to_thread(

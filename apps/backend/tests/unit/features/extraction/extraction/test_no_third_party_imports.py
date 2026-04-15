@@ -17,12 +17,14 @@ from pathlib import Path
 
 _EXTRACTION_ROOT = Path(__file__).resolve().parents[5] / "app" / "features" / "extraction"
 
-# LangExtract imports are permitted inside the extraction subpackage itself
-# (the engine) and optionally in the intelligence subpackage for plugin
-# registration of OllamaGemmaProvider (PDFX-E004-F002).
-_ALLOWED_SUBPATHS = (
-    Path("extraction"),
-    Path("intelligence") / "ollama_gemma_provider.py",
+# LangExtract imports are permitted only in the engine file itself, and in
+# the intelligence subpackage's plugin registration file (PDFX-E004-F002).
+# Every other file under `features/extraction/` must be langextract-free.
+_ALLOWED_FILES = frozenset(
+    {
+        Path("extraction") / "extraction_engine.py",
+        Path("intelligence") / "ollama_gemma_provider.py",
+    },
 )
 
 _FORBIDDEN_ROOT = "langextract"
@@ -44,22 +46,13 @@ def _imports_langextract(source: str) -> bool:
     return False
 
 
-def _is_allowed(rel: Path) -> bool:
-    return any(
-        rel == allowed or (allowed.suffix == "" and allowed in rel.parents)
-        for allowed in _ALLOWED_SUBPATHS
-    )
-
-
-def test_langextract_imports_are_contained_to_extraction_subpackage() -> None:
+def test_langextract_imports_are_contained_to_extraction_engine() -> None:
     offenders: list[str] = []
     for py_file in _EXTRACTION_ROOT.rglob("*.py"):
         rel = py_file.relative_to(_EXTRACTION_ROOT)
-        if _is_allowed(rel):
+        if rel in _ALLOWED_FILES:
             continue
         if _imports_langextract(py_file.read_text()):
             offenders.append(str(rel))
 
-    assert not offenders, (
-        f"files outside of the allowed extraction layer import langextract: {offenders}"
-    )
+    assert not offenders, f"files outside of extraction_engine.py import langextract: {offenders}"

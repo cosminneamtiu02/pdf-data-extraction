@@ -12,10 +12,15 @@ from __future__ import annotations
 
 import inspect
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
+from langextract.core.base_model import BaseLanguageModel
 from langextract.core.data import AnnotatedDocument, CharInterval, Extraction
+from langextract.core.types import ScoredOutput
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator, Sequence
 
 from app.features.extraction.extraction import extraction_engine as engine_module
 from app.features.extraction.extraction.extraction_engine import ExtractionEngine
@@ -24,10 +29,11 @@ from app.features.extraction.skills.skill import Skill
 from app.features.extraction.skills.skill_example import SkillExample
 
 
-class _FakeProvider:
-    """Minimal IntelligenceProvider double. LangExtract bypasses `generate`
-    via the `infer` path (see dual-interface note in the engine docstring),
-    so unit tests that mock `langextract.extract` never exercise either.
+class _FakeProvider(BaseLanguageModel):
+    """Dual-interface double: satisfies both IntelligenceProvider.generate
+    AND BaseLanguageModel.infer (as ExtractionEngine now enforces at runtime).
+    `langextract.extract` is monkeypatched in these tests, so neither method
+    body is actually exercised — we just need the isinstance guard to pass.
     """
 
     async def generate(
@@ -38,6 +44,15 @@ class _FakeProvider:
         _ = prompt
         _ = output_schema
         return GenerationResult(data={}, attempts=1, raw_output="{}")
+
+    def infer(
+        self,
+        batch_prompts: Sequence[str],
+        **kwargs: Any,
+    ) -> Iterator[Sequence[ScoredOutput]]:
+        _ = kwargs
+        for _ in batch_prompts:
+            yield [ScoredOutput(score=1.0, output="{}")]
 
 
 def _build_skill(field_names: tuple[str, ...]) -> Skill:
@@ -269,6 +284,28 @@ async def test_extract_passes_skill_prompt_and_examples_to_langextract(
 
 def test_extract_method_is_async() -> None:
     assert inspect.iscoroutinefunction(ExtractionEngine.extract)
+
+
+async def test_extract_rejects_provider_that_is_not_a_base_language_model() -> None:
+    """A pure IntelligenceProvider (no BaseLanguageModel) must be rejected
+    fast at the engine boundary, not deep inside langextract where the error
+    would be an opaque AttributeError raised from a worker thread.
+    """
+
+    class _GenerateOnly:
+        async def generate(
+            self,
+            prompt: str,
+            output_schema: dict[str, Any],
+        ) -> GenerationResult:
+            _ = prompt
+            _ = output_schema
+            return GenerationResult(data={}, attempts=1, raw_output="{}")
+
+    skill = _build_skill(("name",))
+
+    with pytest.raises(TypeError, match="langextract BaseLanguageModel"):
+        await ExtractionEngine().extract("hello", skill, _GenerateOnly())  # type: ignore[arg-type]
 
 
 def test_raw_extraction_type_does_not_import_langextract() -> None:
