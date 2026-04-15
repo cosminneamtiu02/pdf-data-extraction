@@ -7,7 +7,7 @@ import structlog
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from app.api.middleware import RequestIdMiddleware
+from app.api.request_id_middleware import RequestIdMiddleware
 
 HEX32 = re.compile(r"^[a-f0-9]{32}$")
 
