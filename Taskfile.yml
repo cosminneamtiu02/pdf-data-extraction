@@ -19,11 +19,12 @@ tasks:
 
   # ── Check (Claude runs this before declaring done) ───────────
   check:
-    desc: Run ALL checks — lint, types, arch, tests, error contracts
+    desc: Run ALL checks — lint, types, arch, skills, tests, error contracts
     cmds:
       - task: check:lint
       - task: check:types
       - task: check:arch
+      - task: skills:validate
       - task: check:test
       - task: check:errors
 
@@ -36,7 +37,7 @@ tasks:
   check:types:
     desc: Run the type checker
     cmds:
-      - cd {{.BACKEND_DIR}} && uv run pyright app/
+      - cd {{.BACKEND_DIR}} && uv run pyright app/ scripts/
 
   check:arch:
     desc: Run import-linter architecture checks
@@ -90,7 +91,7 @@ tasks:
 
   # ── Linting & Formatting ─────────────────────────────────────
   lint:
-    desc: Run the linter
+    desc: Run the linter (format checking lives in the separate `format:check` target)
     dir: "{{.BACKEND_DIR}}"
     cmds:
       - uv run ruff check .
@@ -109,10 +110,13 @@ tasks:
 
   # ── Skills ───────────────────────────────────────────────────
   skills:validate:
-    desc: "STUB (fails) — real validator lands with PDFX-E002-F004. Not a passing gate."
+    desc: Validate skill YAMLs without booting FastAPI (dev-loop target; SKILLS_DIR optional)
     dir: "{{.BACKEND_DIR}}"
+    vars:
+      SKILLS_DIR: '{{.SKILLS_DIR | default ""}}'
     cmds:
-      - sh -c 'echo "skills:validate is a stub. Real implementation lands with PDFX-E002-F004. Do not rely on this task as a validation gate." >&2; exit 1'
+      # Quote SKILLS_DIR so paths containing spaces survive shell tokenization.
+      - uv run python -m scripts.validate_skills{{if .SKILLS_DIR}} "{{.SKILLS_DIR}}"{{end}}
 
   # ── Code Generation ──────────────────────────────────────────
   errors:check:
