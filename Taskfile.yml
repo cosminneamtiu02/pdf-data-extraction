@@ -28,9 +28,10 @@ tasks:
       - task: check:errors
 
   check:lint:
-    desc: Run the linter
+    desc: Run the linter and verify formatting (read-only)
     cmds:
       - task: lint
+      - task: format:check
 
   check:types:
     desc: Run the type checker
@@ -99,6 +100,12 @@ tasks:
     dir: "{{.BACKEND_DIR}}"
     cmds:
       - uv run ruff format .
+
+  format:check:
+    desc: Verify formatting without rewriting files (CI parity with ruff format --check)
+    dir: "{{.BACKEND_DIR}}"
+    cmds:
+      - uv run ruff format --check .
 
   # ── Skills ───────────────────────────────────────────────────
   skills:validate:
