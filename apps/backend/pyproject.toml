@@ -66,10 +66,13 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = [
     "S101",    # assert allowed in tests
+    "S603",    # subprocess calls with controlled argv are safe in tests
     "ANN",     # type annotations relaxed in tests
     "PLR2004", # magic values allowed in tests
     "PLC0415", # imports inside functions allowed in test fixtures
     "E501",    # long docstrings in tests
+    "TC002",   # `from __future__ import annotations` makes TC002/TC003 noisy
+    "TC003",
 ]
 "app/exceptions/_generated/**/*.py" = [
     "E501",    # generated code may have long lines
@@ -96,4 +99,4 @@ fail_under = 80
 [tool.pyright]
 pythonVersion = "3.13"
 typeCheckingMode = "strict"
-include = ["app"]
+include = ["app", "scripts"]
