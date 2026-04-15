@@ -4,7 +4,7 @@ import re
 
 import pytest
 import structlog
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from httpx import ASGITransport, AsyncClient
 
 from app.api.request_id_middleware import RequestIdMiddleware
@@ -90,3 +90,41 @@ async def test_concurrent_requests_each_get_distinct_ids(app: FastAPI) -> None:
     captured = app.state.captured
     captured_ids = {c["request_id"] for c in captured}
     assert {id1, id2}.issubset(captured_ids)
+
+
+class _SentinelError(Exception):
+    """Sentinel exception used only by the exception-propagation test below."""
+
+
+async def test_original_exception_propagates_when_call_next_raises() -> None:
+    """If `call_next` raises inside the middleware, the original error must
+    propagate unchanged (not be masked by an `UnboundLocalError` or by any
+    post-`finally` access to an unassigned `response`), and the `request_id`
+    contextvar must still be unbound on the exception path.
+    """
+    from starlette.requests import Request as StarletteRequest
+    from starlette.types import Receive, Scope, Send
+
+    async def _noop_asgi_app(_scope: Scope, _receive: Receive, _send: Send) -> None:
+        return None
+
+    boom_message = "original error"
+
+    async def _call_next_raising(_request: StarletteRequest) -> Response:
+        raise _SentinelError(boom_message)
+
+    middleware = RequestIdMiddleware(_noop_asgi_app)
+    scope: Scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/_raise",
+        "headers": [],
+    }
+    # BaseHTTPMiddleware.dispatch expects a fastapi.Request, but at runtime it
+    # only uses Starlette Request attributes, so a StarletteRequest satisfies
+    # the contract for this unit test.
+    request = StarletteRequest(scope)  # type: ignore[arg-type]
+    with pytest.raises(_SentinelError, match=boom_message):
+        await middleware.dispatch(request, _call_next_raising)
+
+    assert "request_id" not in structlog.contextvars.get_contextvars()
