@@ -207,6 +207,7 @@ async def test_max_retries_setting_controls_total_attempts() -> None:
 
     assert len(prompts) == 5
     failed_events = [e for e in logs if e.get("event") == "structured_output_failed"]
+    assert len(failed_events) == 1
     assert failed_events[0]["attempts"] == 6
 
 
@@ -311,6 +312,7 @@ async def test_zero_retries_raises_immediately_on_invalid_input() -> None:
         )
 
     failed_events = [e for e in logs if e.get("event") == "structured_output_failed"]
+    assert len(failed_events) == 1
     assert failed_events[0]["attempts"] == 1
     assert len(failed_events[0]["causes"]) == 1
     assert "last_raw_output" not in failed_events[0]

@@ -176,15 +176,20 @@ class OllamaGemmaProvider(BaseLanguageModel):
                 cause="invalid_json_shape",
                 shape=type(decoded).__name__,
             )
-            raise IntelligenceUnavailableError
+            raise IntelligenceUnavailableError from None
         # Pyright's isinstance narrowing gives us `dict[Unknown, Unknown]`;
         # cast to the shape Ollama's contract promises. Runtime keys are
         # already guaranteed str because JSON object keys are always strings.
+        # The string-literal form of the type expression is the project-wide
+        # convention for `cast` calls, enforced by ruff's `TC006`. Pyright
+        # parses it identically to the unquoted form, so static checking is
+        # not weakened — only the runtime cost of evaluating the type
+        # expression is avoided.
         body = cast("dict[str, Any]", decoded)
         response_text = body.get("response")
         if not isinstance(response_text, str):
             _logger.warning("intelligence_unavailable", cause="missing_response_field")
-            raise IntelligenceUnavailableError
+            raise IntelligenceUnavailableError from None
         return response_text
 
     async def _raw_generate_batch(self, batch_prompts: Sequence[str]) -> list[str]:
