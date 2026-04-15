@@ -194,7 +194,9 @@ def test_main_rejects_extra_positional_arguments(
     code = main()
 
     captured = capsys.readouterr()
-    assert code == 2
+    # Spec mandates a single non-zero exit code; usage errors share `1` with
+    # validation failures so callers don't need to decode multiple statuses.
+    assert code == 1
     assert captured.out == ""
     assert "expected at most 1 positional argument" in captured.err
 

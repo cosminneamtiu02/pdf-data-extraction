@@ -39,9 +39,10 @@ def validate(skills_dir: Path | str) -> int:
     `SkillLoader` emits a `skill_manifest_empty` structlog warning on
     empty directories; structlog's default `PrintLoggerFactory` writes
     to stdout, which would contaminate the promised single result line.
-    The `redirect_stdout(sys.stderr)` wrapper keeps stdout clean for the
-    function's own output regardless of how the caller has (or hasn't)
-    configured structlog, without mutating any global logging state.
+    The `redirect_stdout(sys.stderr)` wrapper keeps this function's
+    stdout output clean regardless of how the caller has (or hasn't)
+    configured structlog, without needing to reconfigure structlog or
+    the standard logging system.
     """
     skills_dir = Path(skills_dir)
     loader = SkillLoader()
@@ -82,9 +83,11 @@ def _default_skills_dir() -> Path:
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point. Accepts at most one positional argument: the skills directory.
 
-    Extra positional arguments are rejected with a non-zero exit code so a
-    typo like `validate_skills ./skills /does/not/exist` surfaces loudly
+    Extra positional arguments are rejected with exit code 1 so a typo
+    like `validate_skills ./skills /does/not/exist` surfaces loudly
     instead of silently validating the first path and dropping the rest.
+    The spec mandates a single non-zero exit code for any failure, so
+    usage errors share exit code 1 with validation failures.
     """
     args = sys.argv[1:] if argv is None else argv
     if len(args) > 1:
@@ -92,7 +95,7 @@ def main(argv: list[str] | None = None) -> int:
             "usage: python -m scripts.validate_skills [<skills_dir>]\n"
             f"error: expected at most 1 positional argument, got {len(args)}\n",
         )
-        return 2
+        return 1
     skills_dir = Path(args[0]) if args else _default_skills_dir()
     return validate(skills_dir)
 
