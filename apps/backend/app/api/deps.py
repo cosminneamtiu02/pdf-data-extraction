@@ -12,13 +12,14 @@ are lazily built on first access and cached on `app.state` so repeated
 requests to the same app share one instance.
 
 Concurrency note: the lazy-init paths use double-checked locking guarded
-by a module-level `threading.Lock`. Without the lock, two concurrent
+by a module-level `threading.RLock`. Without the lock, two concurrent
 first-requests on the same app could both observe `None` on `app.state`,
 both build a fresh dependency, and only the second's would be stored —
 the first's `OllamaGemmaProvider` would leak its open `httpx.AsyncClient`
 because lifespan cleanup only sees the stored instance. The lock is held
-only for the brief construction critical section, so contention beyond
-the very first request per app is zero.
+only for the brief construction critical section, and it is re-entrant
+because `get_intelligence_provider()` builds the validator through the same
+guard when the provider is the first dependency touched.
 """
 
 import threading
@@ -37,7 +38,7 @@ from app.features.extraction.intelligence.structured_output_validator import (
     StructuredOutputValidator,
 )
 
-_dep_init_lock = threading.Lock()
+_dep_init_lock = threading.RLock()
 
 
 def get_settings(request: Request) -> Settings:
