@@ -69,12 +69,12 @@ if TYPE_CHECKING:
 # shape — object with a top-level `extractions` ARRAY — which is what the
 # Ollama/Gemma prompt asks for and what LangExtract's resolver expects to
 # parse, without leaking into field-level semantics. The validator's
-# fence-strip + JSON parse + retry loop runs on every call.
-_LANGEXTRACT_WRAPPER_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {"extractions": {"type": "array"}},
-    "required": ["extractions"],
-}
+# fence-strip + JSON parse + retry loop runs on every call. Centralized in
+# `intelligence/langextract_wrapper_schema.py` so this entry path and the
+# direct plugin path in `OllamaGemmaProvider.infer` cannot drift.
+from app.features.extraction.intelligence.langextract_wrapper_schema import (
+    LANGEXTRACT_WRAPPER_SCHEMA,
+)
 
 
 class _ValidatingLangExtractAdapter(BaseLanguageModel):
@@ -118,7 +118,7 @@ class _ValidatingLangExtractAdapter(BaseLanguageModel):
     ) -> Iterator[Sequence[ScoredOutput]]:
         for prompt in batch_prompts:
             future = asyncio.run_coroutine_threadsafe(
-                self._inner.generate(prompt, _LANGEXTRACT_WRAPPER_SCHEMA),
+                self._inner.generate(prompt, LANGEXTRACT_WRAPPER_SCHEMA),
                 self._main_loop,
             )
             result = future.result()

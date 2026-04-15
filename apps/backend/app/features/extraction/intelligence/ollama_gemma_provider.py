@@ -54,17 +54,15 @@ if TYPE_CHECKING:
     from app.features.extraction.intelligence.generation_result import GenerationResult
 
 # LangExtract wraps its extracted fields inside a top-level `extractions`
-# array. On the `infer` (plugin) entry path, the provider has no knowledge of
-# the skill's own `output_schema` — only the envelope LangExtract's resolver
-# will parse — so this is the schema the `StructuredOutputValidator` gets to
-# enforce. It must match the one declared in `extraction_engine.py` under
-# `_LANGEXTRACT_WRAPPER_SCHEMA` byte-for-byte so both entry paths (adapter
-# wrap vs. direct plugin) run the same validator contract.
-_LANGEXTRACT_WRAPPER_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {"extractions": {"type": "array"}},
-    "required": ["extractions"],
-}
+# array. On the `infer` (plugin) entry path, the provider has no knowledge
+# of the skill's own `output_schema` — only the envelope LangExtract's
+# resolver will parse — so this is the schema the `StructuredOutputValidator`
+# gets to enforce. The constant is centralized in
+# `langextract_wrapper_schema.py` so the adapter wrap path and the direct
+# plugin path cannot drift; re-exported here so existing imports keep working.
+from app.features.extraction.intelligence.langextract_wrapper_schema import (
+    LANGEXTRACT_WRAPPER_SCHEMA,
+)
 
 _CONNECT_ERROR_MESSAGE = "Ollama connection failed"
 _TIMEOUT_MESSAGE = "Ollama request timed out"
@@ -197,7 +195,7 @@ class OllamaGemmaProvider(BaseLanguageModel):
         # the `_ValidatingLangExtractAdapter` in `extraction_engine.py` uses.
         outputs: list[str] = []
         for prompt in batch_prompts:
-            result = await self.generate(prompt, _LANGEXTRACT_WRAPPER_SCHEMA)
+            result = await self.generate(prompt, LANGEXTRACT_WRAPPER_SCHEMA)
             outputs.append(json.dumps(result.data))
         return outputs
 
