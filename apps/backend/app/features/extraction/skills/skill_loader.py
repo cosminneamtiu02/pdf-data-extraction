@@ -31,9 +31,12 @@ class SkillLoader:
 
         Raises `SkillValidationFailedError` aggregating all discovered
         problems when `skills_dir` is missing, any file fails to validate,
-        or two files collide on the same `(name, version)` key. Emits a
-        `skill_manifest_empty` warning and returns an empty dict when
-        `skills_dir` exists but contains no two-level YAML files.
+        two files collide on the same `(name, version)` key, or any
+        `.yaml`/`.yml` file under `skills_dir` does not live at the strict
+        two-level `<skills_dir>/<name>/<version>.yaml` path. Emits a
+        `skill_manifest_empty` warning and returns an empty dict only when
+        `skills_dir` exists and contains no valid two-level YAML files and
+        no stray `.yaml`/`.yml` files at all.
         """
         if not skills_dir.is_dir():
             raise SkillValidationFailedError(
@@ -45,7 +48,10 @@ class SkillLoader:
         origins: dict[tuple[str, int], Path] = {}
         problems: list[str] = []
 
-        for path in sorted(skills_dir.glob("*/*.yaml")):
+        valid_layout = set(skills_dir.glob("*/*.yaml"))
+        problems.extend(_stray_yaml_problems(skills_dir, valid_layout))
+
+        for path in sorted(valid_layout):
             if not path.is_file():
                 continue
             try:
@@ -87,6 +93,42 @@ class SkillLoader:
             _logger.warning("skill_manifest_empty", skills_dir=str(skills_dir))
 
         return loaded
+
+
+def _stray_yaml_problems(skills_dir: Path, valid_layout: set[Path]) -> list[str]:
+    """Return one problem string per misplaced YAML file under `skills_dir`.
+
+    Catches top-level YAMLs, three-level-deep YAMLs, and `.yml`-extension
+    files — any of which would be silently ignored by the strict two-level
+    `<name>/<version>.yaml` glob `load()` uses. Reporting them keeps
+    misplaced skills from disappearing from the manifest without a signal.
+
+    Walks `skills_dir` once, filters to actual files with a YAML suffix, and
+    interpolates the real `skills_dir` path plus the path relative to it so
+    the operator gets an actionable, greppable error. The `.yml`-extension
+    case is reported distinctly from a generic stray file so it is obvious
+    when the problem is an extension typo rather than a layout violation.
+    """
+    stray_yaml_files = sorted(
+        path
+        for path in skills_dir.rglob("*")
+        if path.is_file() and path.suffix in {".yaml", ".yml"} and path not in valid_layout
+    )
+
+    problems: list[str] = []
+    for stray in stray_yaml_files:
+        relative = stray.relative_to(skills_dir)
+        if stray.suffix == ".yml":
+            problems.append(
+                f"{stray}: unsupported '.yml' extension at '{relative}' — "
+                f"expected .yaml file under '{skills_dir}/<name>/<version>.yaml'",
+            )
+            continue
+        problems.append(
+            f"{stray}: stray YAML file at '{relative}' — "
+            f"expected '{skills_dir}/<name>/<version>.yaml' layout",
+        )
+    return problems
 
 
 def _reason_of(exc: SkillValidationFailedError) -> str:

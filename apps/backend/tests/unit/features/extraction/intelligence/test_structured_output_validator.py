@@ -2,7 +2,7 @@
 
 Covers cleanup (markdown fences, prose prefixes, leading-brace fast path),
 parsing (JSONDecodeError → retry), schema validation (single + multiple field
-errors), retry behavior (success on Nth attempt, exhaustion → StructuredOutputError),
+errors), retry behavior (success on Nth attempt, exhaustion → StructuredOutputFailedError),
 configurability via Settings.structured_output_max_retries, and structlog
 emission of `structured_output_retry` events on each retry.
 
@@ -18,11 +18,9 @@ from pydantic import ValidationError as PydanticValidationError
 from structlog.testing import capture_logs
 
 from app.core.config import Settings
+from app.exceptions import StructuredOutputFailedError
 from app.features.extraction.intelligence.correction_prompt_builder import (
     CorrectionPromptBuilder,
-)
-from app.features.extraction.intelligence.structured_output_error import (
-    StructuredOutputError,
 )
 from app.features.extraction.intelligence.structured_output_validator import (
     StructuredOutputValidator,
@@ -175,7 +173,7 @@ async def test_consistently_invalid_raises_after_four_total_attempts() -> None:
     validator = _build_validator()
     call, prompts = _scripted_callable(["never valid", "never valid", "never valid"])
 
-    with pytest.raises(StructuredOutputError) as excinfo:
+    with capture_logs() as logs, pytest.raises(StructuredOutputFailedError) as excinfo:
         await validator.validate_and_retry(
             raw_text="never valid",
             output_schema=_FOO_STRING_SCHEMA,
@@ -183,19 +181,24 @@ async def test_consistently_invalid_raises_after_four_total_attempts() -> None:
         )
 
     assert len(prompts) == 3
-    err = excinfo.value
-    assert err.attempts == 4
-    assert err.last_raw_output == "never valid"
-    assert len(err.failure_reasons) == 4
-    assert "last_raw_output" in err.details
-    assert err.details["attempts"] == 4
+    assert excinfo.value.code == "STRUCTURED_OUTPUT_FAILED"
+    assert excinfo.value.http_status == 502
+    failed_events = [e for e in logs if e.get("event") == "structured_output_failed"]
+    assert len(failed_events) == 1
+    event = failed_events[0]
+    assert event["attempts"] == 4
+    # Raw output and value-laden failure_reasons are removed — logs only
+    # carry sanitized cause codes now.
+    assert "last_raw_output" not in event
+    assert "failure_reasons" not in event
+    assert len(event["causes"]) == 4
 
 
 async def test_max_retries_setting_controls_total_attempts() -> None:
     validator = _build_validator(max_retries=5)
     call, prompts = _scripted_callable(["bad"] * 5)
 
-    with pytest.raises(StructuredOutputError) as excinfo:
+    with capture_logs() as logs, pytest.raises(StructuredOutputFailedError):
         await validator.validate_and_retry(
             raw_text="bad",
             output_schema=_FOO_STRING_SCHEMA,
@@ -203,7 +206,9 @@ async def test_max_retries_setting_controls_total_attempts() -> None:
         )
 
     assert len(prompts) == 5
-    assert excinfo.value.attempts == 6
+    failed_events = [e for e in logs if e.get("event") == "structured_output_failed"]
+    assert len(failed_events) == 1
+    assert failed_events[0]["attempts"] == 6
 
 
 async def test_multiple_missing_fields_aggregate_into_correction_reason() -> None:
@@ -245,7 +250,7 @@ async def test_retry_emits_structlog_event_per_attempt() -> None:
     retry_events = [e for e in logs if e.get("event") == "structured_output_retry"]
     assert len(retry_events) == 1
     assert retry_events[0]["attempt"] == 1
-    assert "reason" in retry_events[0]
+    assert "cause" in retry_events[0]
 
 
 async def test_trailing_prose_after_valid_json_succeeds_in_one_attempt() -> None:
@@ -299,12 +304,94 @@ async def test_zero_retries_yields_exactly_one_total_attempt_on_valid_input() ->
 async def test_zero_retries_raises_immediately_on_invalid_input() -> None:
     validator = _build_validator(max_retries=0)
 
-    with pytest.raises(StructuredOutputError) as excinfo:
+    with capture_logs() as logs, pytest.raises(StructuredOutputFailedError):
         await validator.validate_and_retry(
             raw_text="not json",
             output_schema=_FOO_STRING_SCHEMA,
             regeneration_callable=_never_called(),
         )
 
-    assert excinfo.value.attempts == 1
-    assert len(excinfo.value.failure_reasons) == 1
+    failed_events = [e for e in logs if e.get("event") == "structured_output_failed"]
+    assert len(failed_events) == 1
+    assert failed_events[0]["attempts"] == 1
+    assert len(failed_events[0]["causes"]) == 1
+    assert "last_raw_output" not in failed_events[0]
+
+
+async def test_structured_output_failed_error_is_domain_error_subclass() -> None:
+    from app.exceptions.base import DomainError
+
+    assert issubclass(StructuredOutputFailedError, DomainError)
+    assert StructuredOutputFailedError.code == "STRUCTURED_OUTPUT_FAILED"
+    assert StructuredOutputFailedError.http_status == 502
+
+
+async def test_structured_output_failed_log_omits_raw_output_and_field_values() -> None:
+    """Logs must not leak raw model output, PDF content, or validation-error values.
+
+    Regression guard: JSONSchema Draft7 validation error messages include the
+    offending value verbatim (e.g. "'SSN-999-12-3456' is not of type 'integer'").
+    The repo's redaction keys in Settings only strip exact keys like `raw_output`
+    and `extracted_value`; the `last_raw_output` key and embedded error strings
+    slip past the filter. The only safe contract is: never log raw output, and
+    log sanitized path-only codes instead of raw failure reasons.
+    """
+    validator = _build_validator(max_retries=1)
+
+    sensitive_value = "SSN-999-12-3456"
+    raw_with_sensitive = '{"foo": "' + sensitive_value + '"}'
+    # Schema wants integer; raw has string → validation error text embeds the
+    # offending string value into its message.
+    schema_requiring_int: dict[str, Any] = {
+        "type": "object",
+        "required": ["foo"],
+        "properties": {"foo": {"type": "integer"}},
+    }
+    call, _prompts = _scripted_callable([raw_with_sensitive])
+
+    with capture_logs() as logs, pytest.raises(StructuredOutputFailedError):
+        await validator.validate_and_retry(
+            raw_text=raw_with_sensitive,
+            output_schema=schema_requiring_int,
+            regeneration_callable=call,
+        )
+
+    all_log_text = "\n".join(repr(e) for e in logs)
+    assert sensitive_value not in all_log_text, f"Sensitive value leaked into logs: {all_log_text}"
+
+    failed = next(e for e in logs if e.get("event") == "structured_output_failed")
+    # Raw output is removed entirely — no field to leak from.
+    assert "last_raw_output" not in failed
+    # failure_reasons (which contained value-laden error messages) is replaced
+    # with `causes`, a list of sanitized path-only codes.
+    assert "failure_reasons" not in failed
+    assert "causes" in failed
+    assert all(isinstance(c, str) for c in failed["causes"])
+    # Schema-violation codes look like "schema_violation:<json_paths>" —
+    # containing only the JSON paths, never user values.
+    assert any("schema_violation" in c for c in failed["causes"])
+
+
+async def test_structured_output_retry_log_uses_sanitized_cause_field() -> None:
+    """The per-attempt retry log emits `cause`, not `reason`.
+
+    Regression guard: the previous `reason=<full_error_text>` field leaked
+    validation-error messages (which embed user values) into logs. The new
+    contract emits `cause` with a sanitized category code ("schema_violation",
+    "json_parse_error", etc.) plus optional path metadata.
+    """
+    validator = _build_validator()
+    call, _prompts = _scripted_callable(['{"foo": "bar"}'])
+
+    with capture_logs() as logs:
+        await validator.validate_and_retry(
+            raw_text="not json at all",
+            output_schema=_FOO_STRING_SCHEMA,
+            regeneration_callable=call,
+        )
+
+    retry = next(e for e in logs if e.get("event") == "structured_output_retry")
+    assert "cause" in retry
+    assert isinstance(retry["cause"], str)
+    # Legacy field name must be gone.
+    assert "reason" not in retry

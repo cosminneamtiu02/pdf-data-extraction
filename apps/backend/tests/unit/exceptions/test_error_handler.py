@@ -32,7 +32,7 @@ def _create_test_app_with_handler() -> FastAPI:
         return {"ok": True}
 
     # Add request_id middleware for the handler to read
-    from app.api.middleware import RequestIdMiddleware
+    from app.api.request_id_middleware import RequestIdMiddleware
 
     test_app.add_middleware(RequestIdMiddleware)
 

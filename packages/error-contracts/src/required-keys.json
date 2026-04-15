@@ -10,7 +10,9 @@
     "PDF_INVALID",
     "PDF_PASSWORD_PROTECTED",
     "PDF_TOO_MANY_PAGES",
-    "PDF_NO_TEXT_EXTRACTABLE"
+    "PDF_NO_TEXT_EXTRACTABLE",
+    "INTELLIGENCE_UNAVAILABLE",
+    "STRUCTURED_OUTPUT_FAILED"
   ],
   "params_by_key": {
     "NOT_FOUND": [],
@@ -33,6 +35,8 @@
       "limit",
       "actual"
     ],
-    "PDF_NO_TEXT_EXTRACTABLE": []
+    "PDF_NO_TEXT_EXTRACTABLE": [],
+    "INTELLIGENCE_UNAVAILABLE": [],
+    "STRUCTURED_OUTPUT_FAILED": []
   }
 }

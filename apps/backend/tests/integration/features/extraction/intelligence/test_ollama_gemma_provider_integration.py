@@ -1,8 +1,10 @@
-"""Integration tests for OllamaGemmaProvider wired through the FastAPI app.
+"""Integration tests for OllamaGemmaProvider.
 
 Uses `respx` to intercept outbound `httpx` calls against the configured Ollama
-base URL. The provider is built via the real `get_intelligence_provider`
-factory so the Depends()/lifespan wiring is exercised end-to-end in-process.
+base URL. The provider is constructed directly so the `generate()` and retry
+paths are exercised without going through FastAPI's DI layer — the DI layer's
+job (`create_app(settings=...)` → `app.state.settings` → `Depends(get_…)`) is
+covered by `tests/integration/test_settings_dependency_propagation.py`.
 
 Also verifies the LangExtract plugin discovery path: importing the provider
 module triggers the `@register(r"^gemma", ...)` decorator, and
@@ -11,25 +13,22 @@ module triggers the `@register(r"^gemma", ...)` decorator, and
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from collections.abc import Iterator
+from typing import Any
 
 import httpx
-import pytest
 import respx
 from langextract import factory as lx_factory
 from langextract.providers.router import resolve
 
-from app.api.deps import (
-    get_correction_prompt_builder,
-    get_intelligence_provider,
-    get_settings,
-    get_structured_output_validator,
+from app.core.config import Settings
+from app.features.extraction.intelligence.correction_prompt_builder import (
+    CorrectionPromptBuilder,
 )
 from app.features.extraction.intelligence.ollama_gemma_provider import (
     OllamaGemmaProvider,
+)
+from app.features.extraction.intelligence.structured_output_validator import (
+    StructuredOutputValidator,
 )
 
 _NAME_SCHEMA: dict[str, Any] = {
@@ -39,29 +38,18 @@ _NAME_SCHEMA: dict[str, Any] = {
 }
 
 
-@pytest.fixture(autouse=True)
-def _reset_lru_caches() -> Iterator[None]:
-    """Clear the @lru_cache singletons between tests so each test gets its own provider."""
-    get_settings.cache_clear()
-    get_correction_prompt_builder.cache_clear()
-    get_structured_output_validator.cache_clear()
-    get_intelligence_provider.cache_clear()
-    yield
-    get_settings.cache_clear()
-    get_correction_prompt_builder.cache_clear()
-    get_structured_output_validator.cache_clear()
-    get_intelligence_provider.cache_clear()
-
-
-def test_provider_is_singleton_across_calls() -> None:
-    first = get_intelligence_provider()
-    second = get_intelligence_provider()
-    assert first is second
+def _build_provider(settings: Settings | None = None) -> OllamaGemmaProvider:
+    real_settings = settings or Settings()  # type: ignore[reportCallIssue]  # pydantic-settings loads fields from env
+    validator = StructuredOutputValidator(
+        settings=real_settings,
+        correction_prompt_builder=CorrectionPromptBuilder(),
+    )
+    return OllamaGemmaProvider(settings=real_settings, validator=validator)
 
 
 @respx.mock
 async def test_generate_sends_configured_model_tag_through_respx() -> None:
-    settings = get_settings()
+    settings = Settings()  # type: ignore[reportCallIssue]  # pydantic-settings loads fields from env
     route = respx.post(f"{settings.ollama_base_url}/api/generate").mock(
         return_value=httpx.Response(
             200,
@@ -69,8 +57,11 @@ async def test_generate_sends_configured_model_tag_through_respx() -> None:
         ),
     )
 
-    provider = get_intelligence_provider()
-    result = await provider.generate("hi", _NAME_SCHEMA)
+    provider = _build_provider(settings)
+    try:
+        result = await provider.generate("hi", _NAME_SCHEMA)
+    finally:
+        await provider.aclose()
 
     assert result.data == {"name": "Alice"}
     assert result.attempts == 1
@@ -82,7 +73,7 @@ async def test_generate_sends_configured_model_tag_through_respx() -> None:
 
 @respx.mock
 async def test_retry_loop_calls_post_twice_on_malformed_first_response() -> None:
-    settings = get_settings()
+    settings = Settings()  # type: ignore[reportCallIssue]  # pydantic-settings loads fields from env
     route = respx.post(f"{settings.ollama_base_url}/api/generate").mock(
         side_effect=[
             httpx.Response(200, json={"response": "not valid json"}),
@@ -90,30 +81,35 @@ async def test_retry_loop_calls_post_twice_on_malformed_first_response() -> None
         ],
     )
 
-    provider = get_intelligence_provider()
-    result = await provider.generate("hi", _NAME_SCHEMA)
+    provider = _build_provider(settings)
+    try:
+        result = await provider.generate("hi", _NAME_SCHEMA)
+    finally:
+        await provider.aclose()
 
     assert result.attempts == 2
     assert result.data == {"name": "Alice"}
     assert route.call_count == 2
 
 
-async def test_lifespan_shutdown_closes_the_http_client() -> None:
+async def test_lifespan_shutdown_closes_provider_on_app_state() -> None:
+    """`_lifespan` closes whatever `OllamaGemmaProvider` is on `app.state`.
+
+    This test builds a provider directly and installs it on `app.state`,
+    then drives the lifespan context manually (httpx's `ASGITransport` does
+    not fire lifespan events). Mirrors what uvicorn does on startup/shutdown.
+    """
     from app.main import create_app
 
     app = create_app()
-    provider_before = get_intelligence_provider()
-    assert provider_before.http_client.is_closed is False
+    settings: Settings = app.state.settings
+    provider = _build_provider(settings)
+    app.state.intelligence_provider = provider
 
-    # httpx's ASGITransport does not drive FastAPI lifespan events, so we
-    # invoke the app's lifespan context manager directly. This mirrors what
-    # uvicorn does on startup/shutdown and is the idiomatic test path.
     async with app.router.lifespan_context(app):
-        provider_during = get_intelligence_provider()
-        assert provider_during is provider_before
-        assert provider_during.http_client.is_closed is False
+        assert provider.http_client.is_closed is False
 
-    assert provider_before.http_client.is_closed is True
+    assert provider.http_client.is_closed is True
 
 
 def test_langextract_plugin_discovery_resolves_to_ollama_gemma_provider() -> None:

@@ -22,6 +22,8 @@ EXPECTED_CODES = {
     "PDF_PASSWORD_PROTECTED",
     "PDF_TOO_MANY_PAGES",
     "PDF_NO_TEXT_EXTRACTABLE",
+    "INTELLIGENCE_UNAVAILABLE",
+    "STRUCTURED_OUTPUT_FAILED",
 }
 
 PRUNED_CODES = {
@@ -65,6 +67,8 @@ def test_no_stale_generated_error_files() -> None:
         "pdf_password_protected_error",
         "pdf_too_many_pages_error",
         "pdf_no_text_extractable_error",
+        "intelligence_unavailable_error",
+        "structured_output_failed_error",
     }
     stale = {"conflict_error", "rate_limited_error", "widget_not_found_error"}
     present_stems = {p.stem for p in GENERATED_DIR.glob("*_error.py")}
