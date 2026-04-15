@@ -144,7 +144,7 @@ def test_skill_layer_does_not_transitively_import_docling() -> None:
         "assert 'docling' not in sys.modules, "
         "f'docling leaked: {sorted(k for k in sys.modules if \"docling\" in k)}'\n"
     )
-    result = subprocess.run(  # noqa: S603
+    result = subprocess.run(
         [sys.executable, "-c", code],
         capture_output=True,
         text=True,
