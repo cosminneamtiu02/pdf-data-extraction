@@ -1,70 +1,45 @@
-"""Request middleware — request ID, access logging, CORS."""
+"""Middleware wiring — assembles the full middleware stack onto the FastAPI app.
 
-import re
-import time
-import uuid
+Individual middleware classes live one-per-file in this package
+(`request_id_middleware.py`, `access_log_middleware.py`) per CLAUDE.md's
+"one class per file" rule. This module only owns the stack assembly order.
 
-import structlog
-from fastapi import FastAPI, Request, Response
+Registration order vs. execution order
+--------------------------------------
+Starlette/FastAPI's ``app.add_middleware`` *prepends* to the middleware stack,
+so the order of ``add_middleware`` calls in :func:`configure_middleware` is
+the **reverse** of the runtime execution order. The desired execution order
+(outermost first) is::
+
+    CORS -> RequestId -> AccessLog -> route handler
+
+which means the calls in :func:`configure_middleware` must be registered in
+the opposite sequence (``AccessLog`` first, ``CORS`` last). Do not reorder
+those calls without also flipping this expectation — getting it wrong silently
+changes which middleware sees the request first and breaks CORS preflight,
+request-id propagation, and access-log correlation.
+"""
+
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
-logger = structlog.get_logger(__name__)
-
-# Valid 32-char lowercase hex pattern for X-Request-Id (PDFX-E007-F003).
-_REQUEST_ID_PATTERN = re.compile(r"^[a-f0-9]{32}$")
-
-
-class RequestIdMiddleware(BaseHTTPMiddleware):
-    """Attach a 32-char hex request id to every request and response.
-
-    Format mandated by PDFX-E007-F003: `uuid.uuid4().hex` (32 lowercase hex chars,
-    no dashes). Honors a client-supplied `X-Request-Id` header only when it
-    already matches the format, otherwise generates a fresh id.
-    """
-
-    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        client_id = request.headers.get("X-Request-Id", "")
-        request_id = client_id if _REQUEST_ID_PATTERN.match(client_id) else uuid.uuid4().hex
-        request.state.request_id = request_id
-
-        structlog.contextvars.clear_contextvars()
-        structlog.contextvars.bind_contextvars(request_id=request_id)
-
-        try:
-            response = await call_next(request)
-        finally:
-            structlog.contextvars.unbind_contextvars("request_id")
-
-        response.headers["X-Request-Id"] = request_id
-        return response
-
-
-class AccessLogMiddleware(BaseHTTPMiddleware):
-    """Log every request with method, path, status, and duration."""
-
-    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        start = time.perf_counter()
-        response = await call_next(request)
-        duration_ms = (time.perf_counter() - start) * 1000
-
-        logger.info(
-            "http_request",
-            method=request.method,
-            path=request.url.path,
-            status_code=response.status_code,
-            duration_ms=round(duration_ms, 2),
-        )
-        return response
+from app.api.access_log_middleware import AccessLogMiddleware
+from app.api.request_id_middleware import RequestIdMiddleware
 
 
 def configure_middleware(app: FastAPI, cors_origins: list[str]) -> None:
     """Attach all middleware to the FastAPI app.
 
-    Order matters — outermost middleware runs first. The stack from outside in:
-    1. CORS (handles preflight before anything else)
-    2. RequestId (sets request_id for all downstream middleware and handlers)
-    3. AccessLog (logs after response is generated, includes request_id from contextvars)
+    Execution order (outermost first), once Starlette has built the stack::
+
+        1. CORS         (handles preflight before anything else)
+        2. RequestId    (sets request_id for all downstream middleware and handlers)
+        3. AccessLog    (logs after response is generated, reads request_id from contextvars)
+
+    The ``add_middleware`` calls below appear in the **reverse** of that
+    execution order because Starlette/FastAPI prepends each newly added
+    middleware to the front of the stack. See the module docstring for why
+    flipping these calls breaks CORS preflight and request-id propagation.
     """
     app.add_middleware(AccessLogMiddleware)
     app.add_middleware(RequestIdMiddleware)
