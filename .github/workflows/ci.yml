@@ -41,12 +41,21 @@ jobs:
       - name: Architecture check (import-linter)
         run: uv run lint-imports --config architecture/import-linter-contracts.ini
 
-      - name: Unit + Integration tests
-        # Must match `task test:integration` / `task check` locally: both
-        # exclude @pytest.mark.slow so the gate is reproducible without a
-        # real Ollama on the runner. Keeping them in sync prevents a silent
-        # regression the moment a `@pytest.mark.slow` test is added.
-        run: uv run pytest tests/unit/ tests/integration/ -v -m "not slow"
+      - name: Unit tests
+        # Must match `task test:unit` locally: no marker filter so any test
+        # under tests/unit/ runs (including slow-marked unit tests, if any).
+        # Splitting unit from integration here prevents a silent coverage
+        # drop if a slow-marked unit test lands — the previous combined
+        # step applied `-m "not slow"` to both suites and would have
+        # skipped such a test on CI while `task test:unit` still ran it.
+        run: uv run pytest tests/unit/ -v
+
+      - name: Integration tests
+        # Must match `task test:integration` locally: excludes
+        # @pytest.mark.slow so the gate is reproducible without a real
+        # Ollama on the runner. Slow-marked integration tests are opt-in
+        # via `task test:slow`.
+        run: uv run pytest tests/integration/ -v -m "not slow"
 
       - name: Contract tests
         run: uv run pytest tests/contract/ -v
