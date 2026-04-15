@@ -373,14 +373,25 @@ async def test_extract_with_zero_declared_fields_returns_empty_without_calling_l
     assert patch_extract.calls == []  # type: ignore[attr-defined]
 
 
-async def test_extract_with_empty_text_returns_empty_list_without_invoking_langextract(
+async def test_extract_with_empty_text_returns_placeholders_without_invoking_langextract(
     patch_extract: Any,
 ) -> None:
-    skill = _build_skill(("name",))
+    """Empty input text must still honor the "every declared field always
+    present" invariant (CLAUDE.md:104). The engine short-circuits LangExtract
+    — no prompt is worth sending for empty text — but returns one placeholder
+    `RawExtraction` per declared field so downstream assembly can still look
+    each field up by name and see `status=missing`.
+    """
+
+    skill = _build_skill(("name", "age", "email"))
 
     results = await ExtractionEngine().extract("", skill, _FakeProvider())
 
-    assert results == []
+    assert [r.field_name for r in results] == ["name", "age", "email"]
+    assert all(r.value is None for r in results)
+    assert all(r.grounded is False for r in results)
+    assert all(r.char_offset_start is None for r in results)
+    assert all(r.char_offset_end is None for r in results)
     assert patch_extract.calls == []  # type: ignore[attr-defined]
 
 
