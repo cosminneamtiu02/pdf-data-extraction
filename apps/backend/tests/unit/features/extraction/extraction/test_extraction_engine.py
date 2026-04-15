@@ -594,7 +594,7 @@ def test_raw_extraction_type_does_not_import_langextract() -> None:
         "assert 'langextract' not in sys.modules, "
         "sorted(k for k in sys.modules if 'langextract' in k)\n"
     )
-    result = subprocess.run(  # noqa: S603
+    result = subprocess.run(
         [sys.executable, "-c", code],
         capture_output=True,
         check=False,
