@@ -15,6 +15,7 @@ No real Docling, no real PyMuPDF, no real PDFs.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -339,6 +340,53 @@ async def test_parse_logs_structured_event_for_no_text_extractable() -> None:
 # ---------------------------------------------------------------------------
 # Exception wrapping discipline — "no silent fallbacks"
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Preflight offloading — event loop must stay responsive
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_parse_preflight_does_not_block_concurrent_parses() -> None:
+    """Two concurrent parses must overlap their preflight waits.
+
+    Regression guard: `_pdf_preflight` used to be called synchronously inside
+    async `parse`. The default preflight opens the PDF with PyMuPDF (a
+    blocking C call). A large or slow-to-open PDF would stall every other
+    ASGI handler on the same event loop. The fix offloads preflight to
+    `asyncio.to_thread`, letting two concurrent parses' sleeps run in
+    parallel threads — so total wall-clock time stays near one preflight's
+    duration instead of two.
+    """
+    preflight_duration = 0.2
+
+    def _slow_blocking_preflight(_pdf_bytes: bytes) -> int:
+        time.sleep(preflight_duration)  # blocks the current thread
+        return 1
+
+    parser = DoclingDocumentParser(
+        converter_factory=_factory_returning(_valid_single_block_doc(1)),
+        pdf_preflight=_slow_blocking_preflight,
+    )
+
+    start = time.monotonic()
+    results = await asyncio.gather(
+        parser.parse(b"%PDF-fake-a", _DEFAULT_CONFIG),
+        parser.parse(b"%PDF-fake-b", _DEFAULT_CONFIG),
+    )
+    elapsed = time.monotonic() - start
+
+    assert len(results) == 2
+    # Serialized (bug): elapsed ~= 2 x 0.2s = 0.4s (preflight holds the loop
+    # during time.sleep, so the second parse cannot start until the first
+    # finishes its preflight).
+    # Parallel (fixed): elapsed ~= 0.2s + overhead (both preflights sleep in
+    # separate threads via asyncio.to_thread).
+    assert elapsed < 0.32, (
+        f"two concurrent parses took {elapsed:.3f}s; expected <0.32s — "
+        "preflight appears to block the event loop"
+    )
 
 
 @pytest.mark.asyncio

@@ -383,7 +383,13 @@ class DoclingDocumentParser:
         # BEFORE Docling runs. This order is load-bearing — Docling's full
         # pipeline (layout analysis, OCR) is the expensive cost the page-count
         # cap is meant to defend against (PDFX-E003-F004).
-        preflight_page_count = self._pdf_preflight(pdf_bytes)
+        #
+        # The default preflight opens the PDF with PyMuPDF (a blocking C
+        # call), so we offload it to a worker thread to keep the FastAPI
+        # event loop responsive for concurrent requests. Test-injected
+        # preflights are also offloaded — the parser does not distinguish
+        # between real and fake preflights at the call site.
+        preflight_page_count = await asyncio.to_thread(self._pdf_preflight, pdf_bytes)
 
         if preflight_page_count > self._max_pdf_pages:
             _log.info(
