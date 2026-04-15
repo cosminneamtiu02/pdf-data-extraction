@@ -1,10 +1,11 @@
-"""Containment scan: `langextract` is only allowed inside `extraction/`.
+"""Containment scan: `langextract` is only allowed in allowlisted files.
 
-This is the mechanical guarantee behind AC4 of PDFX-E004-F003: "LangExtract
-imports appear only in `extraction_engine.py`." The test walks the entire
-`app/features/extraction/` subtree and rejects any `import langextract` (or
-`from langextract...`) outside of files in `features/extraction/extraction/`
-or the intelligence-layer plugin registration file(s) permitted by the spec.
+This is the mechanical guarantee behind AC4 of PDFX-E004-F003: LangExtract
+imports are allowed only inside the extraction engine (`extraction/
+extraction_engine.py`) and the intelligence-layer plugin registration file
+(`intelligence/ollama_gemma_provider.py`, PDFX-E004-F002). The test walks
+the entire `app/features/extraction/` subtree and rejects any
+`import langextract` / `from langextract...` outside of those two files.
 
 Once PDFX-E007-F004 adds import-linter contracts, this test becomes a
 defensive double-check.

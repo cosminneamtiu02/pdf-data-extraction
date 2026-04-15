@@ -15,13 +15,18 @@ class RawExtraction:
     """One field extracted by LangExtract, translated into feature-owned shape.
 
     `field_name` mirrors the key declared in the skill's `output_schema`.
-    `value` is the extracted value (None only if LangExtract reported a key
-    with no body, which is a degenerate case kept for forward compatibility).
+    `value` is the extracted value, or `None` when either:
+      (a) the engine emitted a placeholder for a declared field that
+          LangExtract did not return (the "every declared field always
+          present" API-stability invariant), or
+      (b) LangExtract reported a key with no body (degenerate case).
     `char_offset_start` and `char_offset_end` are byte-free integer offsets
     into the `concatenated_text` argument passed to `ExtractionEngine.extract`;
-    they are both None for ungrounded values (model world knowledge).
+    they are both None for ungrounded values (model world knowledge) and
+    for placeholder rows.
     `grounded` summarises whether a source span exists — downstream
     `SpanResolver` uses it to decide whether to look up a bounding box at all.
+    Placeholder rows always have `grounded=False`.
     `attempts` is reserved for forward compatibility; LangExtract 1.2.x does
     not surface retry counts, so the engine fills it with 1.
     """

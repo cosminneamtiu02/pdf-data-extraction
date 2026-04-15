@@ -269,6 +269,55 @@ async def test_extract_returns_results_in_declared_schema_order(
     assert [r.field_name for r in results] == ["city", "age", "name"]
 
 
+async def test_extract_works_with_skill_from_schema_using_mappingproxy(
+    patch_extract: Any,
+) -> None:
+    """Real skills loaded via `Skill.from_schema` wrap `output_schema` and
+    its nested `properties` in `MappingProxyType`. The engine must treat
+    those as Mappings, not require a plain `dict`, otherwise declared
+    fields would come back empty and every real extraction would short-
+    circuit to `[]`.
+    """
+
+    from app.features.extraction.skills.skill_yaml_schema import SkillYamlSchema
+
+    schema = SkillYamlSchema(
+        name="mappingproxy-skill",
+        version=1,
+        description=None,
+        prompt="Extract name and age.",
+        examples=[
+            SkillExample(input="Alice is 30.", output={"name": "Alice", "age": "30"}),
+        ],
+        output_schema={
+            "type": "object",
+            "required": ["name", "age"],
+            "properties": {
+                "name": {"type": "string"},
+                "age": {"type": "string"},
+            },
+        },
+    )
+    skill = Skill.from_schema(schema)
+
+    text = "Alice is 30 years old."
+    patch_extract(
+        AnnotatedDocument(
+            extractions=[
+                _extraction("name", "Alice", 0, 5),
+                _extraction("age", "30", 9, 11),
+            ],
+            text=text,
+        ),
+    )
+
+    results = await ExtractionEngine().extract(text, skill, _FakeProvider())
+
+    assert [r.field_name for r in results] == ["name", "age"]
+    assert results[0].value == "Alice"
+    assert results[1].value == "30"
+
+
 async def test_extract_with_zero_declared_fields_returns_empty_without_calling_langextract(
     patch_extract: Any,
 ) -> None:
@@ -409,17 +458,23 @@ async def test_extract_wraps_provider_in_validating_adapter(
     assert isinstance(model, _ValidatingLangExtractAdapter)
 
 
-def test_validating_adapter_infer_routes_through_provider_generate() -> None:
+async def test_validating_adapter_infer_routes_through_provider_generate() -> None:
     """The adapter's `infer` must call `inner.generate(prompt, wrapper_schema)`
-    per prompt and yield one `ScoredOutput` per call carrying the
-    JSON-serialized generate-result data, so LangExtract sees
-    validator-cleaned text.
+    per prompt via `run_coroutine_threadsafe(..., main_loop)` and yield
+    one `ScoredOutput` per call carrying the JSON-serialized generate-
+    result data. Run the adapter from a worker thread via `asyncio.to_thread`
+    so the bridge path matches how the engine invokes LangExtract.
     """
+    import asyncio as _asyncio
 
     provider = _FakeProvider()
-    adapter = _ValidatingLangExtractAdapter(provider)
+    main_loop = _asyncio.get_running_loop()
+    adapter = _ValidatingLangExtractAdapter(provider, main_loop)
 
-    results = list(adapter.infer(["prompt-a", "prompt-b"]))
+    def _run_infer() -> list[list[Any]]:
+        return [list(batch) for batch in adapter.infer(["prompt-a", "prompt-b"])]
+
+    results = await _asyncio.to_thread(_run_infer)
 
     assert len(provider.calls) == 2
     assert provider.calls[0][0] == "prompt-a"
@@ -437,15 +492,20 @@ def test_validating_adapter_infer_routes_through_provider_generate() -> None:
     assert json.loads(results[0][0].output) == {"ok": True}
 
 
-def test_validating_adapter_runs_whole_batch_in_a_single_event_loop() -> None:
-    """The adapter must NOT call `asyncio.run` per prompt, because providers
-    like `OllamaGemmaProvider` hold loop-bound `httpx.AsyncClient` pools —
-    a fresh loop per prompt would cause a "loop is closed" error on prompt
-    two. Assert that every prompt's `generate` runs on the same event loop
-    instance by capturing `asyncio.get_running_loop()` inside generate().
+async def test_validating_adapter_routes_generate_back_to_main_event_loop() -> None:
+    """Every `provider.generate` coroutine scheduled from LangExtract's
+    sync `infer` path must execute on the application's main event loop
+    (captured in `ExtractionEngine.extract`). `OllamaGemmaProvider`'s
+    shared `httpx.AsyncClient` connection pool is bound to that loop, so
+    running the coroutine on a different loop would break on the second
+    prompt with a "Future attached to a different loop" error. Assert
+    every prompt's coroutine runs on the captured main loop.
     """
+    import asyncio as _asyncio
 
     captured_loops: list[int] = []
+    main_loop = _asyncio.get_running_loop()
+    expected_loop_id = id(main_loop)
 
     class _LoopCapturingProvider:
         async def generate(
@@ -455,8 +515,6 @@ def test_validating_adapter_runs_whole_batch_in_a_single_event_loop() -> None:
         ) -> GenerationResult:
             _ = prompt
             _ = output_schema
-            import asyncio as _asyncio
-
             captured_loops.append(id(_asyncio.get_running_loop()))
             return GenerationResult(
                 data={"ok": True},
@@ -464,12 +522,16 @@ def test_validating_adapter_runs_whole_batch_in_a_single_event_loop() -> None:
                 raw_output='{"ok": true}',
             )
 
-    adapter = _ValidatingLangExtractAdapter(_LoopCapturingProvider())
-    list(adapter.infer(["p1", "p2", "p3"]))
+    adapter = _ValidatingLangExtractAdapter(_LoopCapturingProvider(), main_loop)
+
+    def _run_infer() -> None:
+        list(adapter.infer(["p1", "p2", "p3"]))
+
+    await _asyncio.to_thread(_run_infer)
 
     assert len(captured_loops) == 3
-    assert len(set(captured_loops)) == 1, (
-        f"expected all prompts on one event loop, got {captured_loops}"
+    assert all(lid == expected_loop_id for lid in captured_loops), (
+        f"expected all prompts on main loop {expected_loop_id}, got {captured_loops}"
     )
 
 

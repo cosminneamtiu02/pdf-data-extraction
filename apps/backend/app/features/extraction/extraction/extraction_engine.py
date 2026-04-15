@@ -1,8 +1,11 @@
 """ExtractionEngine — thin async wrapper around `langextract.extract`.
 
-This is the only file in the extraction feature permitted to import
-`langextract`. The containment rule is enforced mechanically by the AST-scan
-test `tests/unit/features/extraction/extraction/test_no_third_party_imports.py`
+Within the `features/extraction/` subtree, the only files permitted to
+import `langextract` are this module and
+`app/features/extraction/intelligence/ollama_gemma_provider.py` (the
+registered LangExtract community plugin from PDFX-E004-F002). The
+containment rule is enforced mechanically by the AST-scan test
+`tests/unit/features/extraction/extraction/test_no_third_party_imports.py`
 until the full `import-linter` contract arrives in PDFX-E007-F004.
 
 The engine takes a `Skill`, a pre-concatenated document text, and an
@@ -39,6 +42,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, cast
 
 import langextract
@@ -78,34 +82,45 @@ class _ValidatingLangExtractAdapter(BaseLanguageModel):
 
     Lives inside `extraction_engine.py` so LangExtract containment stays
     at one file. Not a public export.
+
+    **Event-loop bridging.** `ExtractionEngine.extract` runs
+    `langextract.extract` inside `asyncio.to_thread`, so this adapter's
+    `infer` executes on a worker thread with no running loop of its own.
+    `provider.generate` must still run on the application's main event
+    loop — `get_intelligence_provider()` is `@lru_cache`d, returning a
+    single `OllamaGemmaProvider` whose `httpx.AsyncClient` connection
+    pool is bound to that one loop. Calling `generate` from a fresh
+    loop (e.g., `asyncio.run` inside the worker thread) would trigger
+    "Event loop is closed" or "Future attached to a different loop"
+    errors on the second invocation. The adapter therefore captures
+    the caller's main loop in `__init__` and schedules each generate
+    coroutine back onto it via `asyncio.run_coroutine_threadsafe`,
+    blocking on the returned `concurrent.futures.Future` from the
+    worker thread — LangExtract's own orchestration is synchronous,
+    so the blocking call is expected.
     """
 
-    def __init__(self, inner: IntelligenceProvider) -> None:
+    def __init__(
+        self,
+        inner: IntelligenceProvider,
+        main_loop: asyncio.AbstractEventLoop,
+    ) -> None:
         super().__init__()
         self._inner = inner
+        self._main_loop = main_loop
 
     def infer(
         self,
         batch_prompts: Sequence[str],
         **kwargs: Any,  # noqa: ARG002 - LangExtract passes orchestrator kwargs that we do not consume
     ) -> Iterator[Sequence[ScoredOutput]]:
-        # Run the entire batch under ONE `asyncio.run` so every prompt
-        # shares one event loop. Per-prompt `asyncio.run` would create a
-        # fresh loop each time, which breaks providers like
-        # `OllamaGemmaProvider` that hold a loop-bound `httpx.AsyncClient`
-        # connection pool: the second prompt would hit a client whose pool
-        # is bound to a closed loop. See the sync/async-bridge note in
-        # `ollama_gemma_provider.py`.
-        results = asyncio.run(self._generate_batch(list(batch_prompts)))
-        for data in results:
-            yield [ScoredOutput(score=1.0, output=json.dumps(data))]
-
-    async def _generate_batch(self, prompts: list[str]) -> list[dict[str, Any]]:
-        outputs: list[dict[str, Any]] = []
-        for prompt in prompts:
-            result = await self._inner.generate(prompt, _LANGEXTRACT_WRAPPER_SCHEMA)
-            outputs.append(result.data)
-        return outputs
+        for prompt in batch_prompts:
+            future = asyncio.run_coroutine_threadsafe(
+                self._inner.generate(prompt, _LANGEXTRACT_WRAPPER_SCHEMA),
+                self._main_loop,
+            )
+            result = future.result()
+            yield [ScoredOutput(score=1.0, output=json.dumps(result.data))]
 
 
 class ExtractionEngine:
@@ -136,7 +151,12 @@ class ExtractionEngine:
             return []
 
         examples = self._build_examples(skill.examples)
-        adapter = _ValidatingLangExtractAdapter(provider)
+        # Capture the running loop so the adapter, once LangExtract calls
+        # it from the worker thread, can schedule `provider.generate`
+        # coroutines back onto THIS loop via `run_coroutine_threadsafe`.
+        # That keeps the shared httpx client pool on its original loop.
+        main_loop = asyncio.get_running_loop()
+        adapter = _ValidatingLangExtractAdapter(provider, main_loop)
 
         result = await asyncio.to_thread(
             self._invoke_langextract,
@@ -261,7 +281,10 @@ def _declared_field_names(skill: Skill) -> tuple[str, ...]:
     of insertion into the JSONSchema is preserved (Python dicts are
     ordered) and becomes the output order of `RawExtraction`.
     """
+    # `Skill.from_schema` wraps nested schema maps in `MappingProxyType`, so
+    # `properties` is typically not a plain `dict` at runtime. Accept any
+    # `Mapping` so loader-produced skills filter correctly.
     properties_obj: Any = skill.output_schema.get("properties")
-    if not isinstance(properties_obj, dict):
+    if not isinstance(properties_obj, Mapping):
         return ()
-    return tuple(str(name) for name in cast("dict[Any, Any]", properties_obj))
+    return tuple(str(name) for name in cast("Mapping[Any, Any]", properties_obj))

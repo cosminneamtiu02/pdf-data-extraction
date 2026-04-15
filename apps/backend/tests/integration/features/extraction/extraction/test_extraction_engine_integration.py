@@ -31,8 +31,10 @@ class _FakeProvider:
     Returns canned parsed extraction payloads (already validator-clean) from
     `generate` — the engine's internal adapter json.dumps the data back into
     text for LangExtract's resolver to parse. The `output_schema` parameter
-    is ignored here because the engine always passes the permissive
-    `{"type": "object"}` schema on the LangExtract path.
+    is ignored here because this fake does not perform schema validation;
+    the engine supplies LangExtract's wrapper schema
+    (`{"type": "object", "required": ["extractions"], ...}`) and the canned
+    payload is already shaped to satisfy that contract.
     """
 
     def __init__(self, canned_data: dict[str, Any]) -> None:
