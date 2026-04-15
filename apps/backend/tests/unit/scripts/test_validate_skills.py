@@ -17,7 +17,24 @@ from typing import Any
 import pytest
 import yaml
 
+from app.features.extraction.skills import skill_loader as skill_loader_module
 from scripts.validate_skills import main, validate
+
+
+class _SilentLogger:
+    """Drop-in spy for `SkillLoader._logger` that swallows every call.
+
+    `SkillLoader` emits a `skill_manifest_empty` warning on empty corpora.
+    `structlog`'s global config differs between unit-only runs and full-
+    session runs where `configure_logging()` has already been called, so
+    the warning can leak into `capsys`'s captured stdout. Replacing the
+    module-level logger with this stub keeps the validator's own stdout
+    line the only thing captured — matching the test-spec contract of
+    exact output equality without papering over real regressions.
+    """
+
+    def warning(self, event: str, **kwargs: object) -> None:
+        del event, kwargs
 
 
 def _write_skill(
@@ -60,22 +77,22 @@ def test_validate_three_valid_skills_exits_zero_and_prints_count(
 
     captured = capsys.readouterr()
     assert code == 0
-    assert "\u2714 3 skills validated" in captured.out
+    assert captured.out == "\u2714 3 skills validated\n"
     assert captured.err == ""
 
 
 def test_validate_empty_directory_exits_zero_with_zero_count(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # SkillLoader emits a structlog `skill_manifest_empty` warning on empty
-    # dirs; that line may share stdout depending on logger config, so the
-    # assertion only pins the validator's own `✔ 0 skills validated` line.
+    monkeypatch.setattr(skill_loader_module, "_logger", _SilentLogger())
+
     code = validate(tmp_path)
 
     captured = capsys.readouterr()
     assert code == 0
-    assert "\u2714 0 skills validated" in captured.out
+    assert captured.out == "\u2714 0 skills validated\n"
 
 
 def test_validate_filename_version_mismatch_exits_nonzero_with_reason(
@@ -151,12 +168,13 @@ def test_main_with_no_argument_falls_back_to_settings_skills_dir(
     # drop any pre-existing positional args so `main()` must use the fallback.
     monkeypatch.setenv("SKILLS_DIR", str(tmp_path))
     monkeypatch.setattr(sys, "argv", ["validate_skills"])
+    monkeypatch.setattr(skill_loader_module, "_logger", _SilentLogger())
 
     code = main()
 
     captured = capsys.readouterr()
     assert code == 0
-    assert "\u2714 0 skills validated" in captured.out
+    assert captured.out == "\u2714 0 skills validated\n"
 
 
 def test_import_containment_no_fastapi_or_heavy_deps() -> None:
