@@ -28,13 +28,16 @@ from app.exceptions import SkillValidationFailedError
 from app.features.extraction.skills.skill_loader import SkillLoader
 
 
-def validate(skills_dir: Path) -> int:
+def validate(skills_dir: Path | str) -> int:
     """Validate `skills_dir` and return a process exit code.
 
-    Returns 0 on full success (including the empty-directory case, which
-    `SkillLoader` treats as a warn-and-continue). Returns 1 on any
-    aggregated validation failure, with the reason written to stderr.
+    Accepts either a `Path` or a string path and normalizes to `Path`
+    before delegating to `SkillLoader`. Returns 0 on full success
+    (including the empty-directory case, which `SkillLoader` treats as a
+    warn-and-continue). Returns 1 on any aggregated validation failure,
+    with the reason written to stderr.
     """
+    skills_dir = Path(skills_dir)
     loader = SkillLoader()
     try:
         loaded = loader.load(skills_dir)
