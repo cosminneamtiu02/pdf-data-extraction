@@ -110,7 +110,13 @@ def test_load_top_level_yaml_raises_stray_file_error(tmp_path: Path) -> None:
 
     reason = _reason(exc_info.value)
     assert str(stray) in reason
-    assert "stray" in reason.lower()
+    assert "stray YAML file" in reason
+    # The error must include the actionable expected layout, with the actual
+    # `skills_dir` path interpolated rather than a literal `<skills_dir>`.
+    assert f"{tmp_path}/<name>/<version>.yaml" in reason
+    assert "<skills_dir>" not in reason
+    # And the relative-to-`skills_dir` path so operators can grep the offender.
+    assert "'stray.yaml'" in reason
 
 
 def test_load_three_level_nested_yaml_raises_stray_file_error(tmp_path: Path) -> None:
@@ -121,7 +127,10 @@ def test_load_three_level_nested_yaml_raises_stray_file_error(tmp_path: Path) ->
     with pytest.raises(SkillValidationFailedError) as exc_info:
         SkillLoader().load(tmp_path)
 
-    assert str(nested) in _reason(exc_info.value)
+    reason = _reason(exc_info.value)
+    assert str(nested) in reason
+    assert "stray YAML file" in reason
+    assert "'invoice/archive/1.yaml'" in reason
 
 
 def test_load_yml_extension_raises_stray_file_error(tmp_path: Path) -> None:
@@ -134,7 +143,11 @@ def test_load_yml_extension_raises_stray_file_error(tmp_path: Path) -> None:
 
     reason = _reason(exc_info.value)
     assert str(wrong_ext) in reason
-    assert ".yml" in reason
+    # The `.yml` case is called out distinctly from a generic stray file so
+    # operators see it's an extension typo, not a layout violation.
+    assert "unsupported '.yml' extension" in reason
+    assert "'invoice/1.yml'" in reason
+    assert f"{tmp_path}/<name>/<version>.yaml" in reason
 
 
 def test_load_filename_version_mismatch_raises(tmp_path: Path) -> None:

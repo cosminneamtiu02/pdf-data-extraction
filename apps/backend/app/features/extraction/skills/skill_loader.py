@@ -34,8 +34,9 @@ class SkillLoader:
         two files collide on the same `(name, version)` key, or any
         `.yaml`/`.yml` file under `skills_dir` does not live at the strict
         two-level `<skills_dir>/<name>/<version>.yaml` path. Emits a
-        `skill_manifest_empty` warning and returns an empty dict when
-        `skills_dir` exists but contains no two-level YAML files.
+        `skill_manifest_empty` warning and returns an empty dict only when
+        `skills_dir` exists and contains no valid two-level YAML files and
+        no stray `.yaml`/`.yml` files at all.
         """
         if not skills_dir.is_dir():
             raise SkillValidationFailedError(
@@ -101,13 +102,33 @@ def _stray_yaml_problems(skills_dir: Path, valid_layout: set[Path]) -> list[str]
     files — any of which would be silently ignored by the strict two-level
     `<name>/<version>.yaml` glob `load()` uses. Reporting them keeps
     misplaced skills from disappearing from the manifest without a signal.
+
+    Walks `skills_dir` once, filters to actual files with a YAML suffix, and
+    interpolates the real `skills_dir` path plus the path relative to it so
+    the operator gets an actionable, greppable error. The `.yml`-extension
+    case is reported distinctly from a generic stray file so it is obvious
+    when the problem is an extension typo rather than a layout violation.
     """
-    all_yaml_files = set(skills_dir.rglob("*.yaml")) | set(skills_dir.rglob("*.yml"))
-    return [
-        f"{stray}: stray YAML file — expected <skills_dir>/<name>/<version>.yaml layout"
-        for stray in sorted(all_yaml_files - valid_layout)
-        if stray.is_file()
-    ]
+    stray_yaml_files = sorted(
+        path
+        for path in skills_dir.rglob("*")
+        if path.is_file() and path.suffix in {".yaml", ".yml"} and path not in valid_layout
+    )
+
+    problems: list[str] = []
+    for stray in stray_yaml_files:
+        relative = stray.relative_to(skills_dir)
+        if stray.suffix == ".yml":
+            problems.append(
+                f"{stray}: unsupported '.yml' extension at '{relative}' — "
+                f"expected .yaml file under '{skills_dir}/<name>/<version>.yaml'",
+            )
+            continue
+        problems.append(
+            f"{stray}: stray YAML file at '{relative}' — "
+            f"expected '{skills_dir}/<name>/<version>.yaml' layout",
+        )
+    return problems
 
 
 def _reason_of(exc: SkillValidationFailedError) -> str:
