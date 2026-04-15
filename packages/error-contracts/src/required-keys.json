@@ -6,7 +6,13 @@
     "VALIDATION_FAILED",
     "INTERNAL_ERROR",
     "SKILL_VALIDATION_FAILED",
-    "SKILL_NOT_FOUND"
+    "SKILL_NOT_FOUND",
+    "PDF_INVALID",
+    "PDF_PASSWORD_PROTECTED",
+    "PDF_TOO_MANY_PAGES",
+    "PDF_NO_TEXT_EXTRACTABLE",
+    "INTELLIGENCE_UNAVAILABLE",
+    "STRUCTURED_OUTPUT_FAILED"
   ],
   "params_by_key": {
     "NOT_FOUND": [],
@@ -22,6 +28,15 @@
     "SKILL_NOT_FOUND": [
       "name",
       "version"
-    ]
+    ],
+    "PDF_INVALID": [],
+    "PDF_PASSWORD_PROTECTED": [],
+    "PDF_TOO_MANY_PAGES": [
+      "limit",
+      "actual"
+    ],
+    "PDF_NO_TEXT_EXTRACTABLE": [],
+    "INTELLIGENCE_UNAVAILABLE": [],
+    "STRUCTURED_OUTPUT_FAILED": []
   }
 }
