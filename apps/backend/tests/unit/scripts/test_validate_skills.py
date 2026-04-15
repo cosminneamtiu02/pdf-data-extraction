@@ -142,6 +142,26 @@ def test_validate_missing_directory_exits_nonzero_with_message(
     assert "does not exist or is not a directory" in captured.err
 
 
+def test_module_invocation_against_empty_dir_keeps_stdout_clean(tmp_path: Path) -> None:
+    """Regression: `SkillLoader` warns on empty corpora via structlog; the CLI
+    must route that warning to stderr so stdout stays a single clean result
+    line. Runs the real entry point in a subprocess — any regression in
+    `_configure_cli_logging` surfaces here, not just in the `_SilentLogger`
+    monkeypatched unit tests.
+    """
+    result = subprocess.run(
+        [sys.executable, "-m", "scripts.validate_skills", str(tmp_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == "\u2714 0 skills validated\n"
+    # The warning is allowed to appear on stderr, or be silently dropped —
+    # the invariant is that stdout is exactly the result line.
+
+
 def test_module_invocation_matches_programmatic_validate(tmp_path: Path) -> None:
     _write_skill(tmp_path, dir_name="invoice", file_name="1.yaml", version=1)
     _write_skill(tmp_path, dir_name="invoice", file_name="2.yaml", version=2)

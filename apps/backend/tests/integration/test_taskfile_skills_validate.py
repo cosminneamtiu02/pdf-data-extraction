@@ -13,7 +13,8 @@ from typing import Any, cast
 
 import yaml
 
-# `apps/backend/tests/integration/...` → repo root is five parents up.
+# `parents[4]` resolves to the repo root:
+# parents[0]=integration → [1]=tests → [2]=backend → [3]=apps → [4]=<repo>.
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 _TASKFILE = _REPO_ROOT / "Taskfile.yml"
 

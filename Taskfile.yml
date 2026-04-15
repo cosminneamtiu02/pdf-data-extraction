@@ -107,7 +107,8 @@ tasks:
     vars:
       SKILLS_DIR: '{{.SKILLS_DIR | default ""}}'
     cmds:
-      - uv run python -m scripts.validate_skills {{.SKILLS_DIR}}
+      # Quote SKILLS_DIR so paths containing spaces survive shell tokenization.
+      - uv run python -m scripts.validate_skills{{if .SKILLS_DIR}} "{{.SKILLS_DIR}}"{{end}}
 
   # ── Code Generation ──────────────────────────────────────────
   errors:check:
