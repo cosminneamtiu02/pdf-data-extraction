@@ -26,14 +26,12 @@ import httpx
 import pytest
 
 from app.core.config import Settings
+from app.exceptions import IntelligenceUnavailableError
 from app.features.extraction.intelligence.correction_prompt_builder import (
     CorrectionPromptBuilder,
 )
 from app.features.extraction.intelligence.intelligence_provider import (
     IntelligenceProvider,
-)
-from app.features.extraction.intelligence.intelligence_unavailable_error import (
-    IntelligenceUnavailableError,
 )
 from app.features.extraction.intelligence.ollama_gemma_provider import (
     OllamaGemmaProvider,
@@ -207,7 +205,7 @@ async def test_generate_connect_error_raises_intelligence_unavailable() -> None:
 
     with pytest.raises(IntelligenceUnavailableError) as excinfo:
         await provider.generate("hi", _NAME_STRING_SCHEMA)
-    assert isinstance(excinfo.value.cause, httpx.ConnectError)
+    assert isinstance(excinfo.value.__cause__, httpx.ConnectError)
 
 
 async def test_generate_timeout_raises_intelligence_unavailable() -> None:
@@ -218,7 +216,7 @@ async def test_generate_timeout_raises_intelligence_unavailable() -> None:
 
     with pytest.raises(IntelligenceUnavailableError) as excinfo:
         await provider.generate("hi", _NAME_STRING_SCHEMA)
-    assert isinstance(excinfo.value.cause, httpx.TimeoutException)
+    assert isinstance(excinfo.value.__cause__, httpx.TimeoutException)
 
 
 async def test_generate_http_500_raises_intelligence_unavailable() -> None:
@@ -231,7 +229,7 @@ async def test_generate_http_500_raises_intelligence_unavailable() -> None:
 
     with pytest.raises(IntelligenceUnavailableError) as excinfo:
         await provider.generate("hi", _NAME_STRING_SCHEMA)
-    assert isinstance(excinfo.value.cause, httpx.HTTPStatusError)
+    assert isinstance(excinfo.value.__cause__, httpx.HTTPStatusError)
 
 
 async def test_generate_http_404_raises_intelligence_unavailable() -> None:
@@ -260,7 +258,7 @@ async def test_generate_raises_intelligence_unavailable_when_body_is_not_json() 
 
     with pytest.raises(IntelligenceUnavailableError) as excinfo:
         await provider.generate("hi", _NAME_STRING_SCHEMA)
-    assert isinstance(excinfo.value.cause, json.JSONDecodeError)
+    assert isinstance(excinfo.value.__cause__, json.JSONDecodeError)
 
 
 async def test_generate_retries_on_bad_json_and_succeeds_on_second_attempt() -> None:
@@ -345,6 +343,14 @@ def test_provider_instance_satisfies_intelligence_provider_protocol() -> None:
     provider = _build_provider(fake_client=fake)
 
     assert isinstance(provider, IntelligenceProvider)
+
+
+def test_intelligence_unavailable_error_is_domain_error_subclass() -> None:
+    from app.exceptions.base import DomainError
+
+    assert issubclass(IntelligenceUnavailableError, DomainError)
+    assert IntelligenceUnavailableError.code == "INTELLIGENCE_UNAVAILABLE"
+    assert IntelligenceUnavailableError.http_status == 503
 
 
 # The `infer` tests below are SYNC pytest functions because `infer` calls

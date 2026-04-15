@@ -6,7 +6,9 @@ export type ErrorCode =
   | "VALIDATION_FAILED"
   | "INTERNAL_ERROR"
   | "SKILL_VALIDATION_FAILED"
-  | "SKILL_NOT_FOUND";
+  | "SKILL_NOT_FOUND"
+  | "INTELLIGENCE_UNAVAILABLE"
+  | "STRUCTURED_OUTPUT_FAILED";
 
 export interface ErrorParamsByCode {
   NOT_FOUND: Record<string, never>;
@@ -14,6 +16,8 @@ export interface ErrorParamsByCode {
   INTERNAL_ERROR: Record<string, never>;
   SKILL_VALIDATION_FAILED: { file: string; reason: string };
   SKILL_NOT_FOUND: { name: string; version: string };
+  INTELLIGENCE_UNAVAILABLE: Record<string, never>;
+  STRUCTURED_OUTPUT_FAILED: Record<string, never>;
 }
 
 export interface ApiErrorPayload<C extends ErrorCode = ErrorCode> {
@@ -23,7 +27,7 @@ export interface ApiErrorPayload<C extends ErrorCode = ErrorCode> {
   request_id: string;
 }
 
-export const ERROR_CODES: readonly ErrorCode[] = ["NOT_FOUND", "VALIDATION_FAILED", "INTERNAL_ERROR", "SKILL_VALIDATION_FAILED", "SKILL_NOT_FOUND"] as const;
+export const ERROR_CODES: readonly ErrorCode[] = ["NOT_FOUND", "VALIDATION_FAILED", "INTERNAL_ERROR", "SKILL_VALIDATION_FAILED", "SKILL_NOT_FOUND", "INTELLIGENCE_UNAVAILABLE", "STRUCTURED_OUTPUT_FAILED"] as const;
 
 export const HTTP_STATUS_BY_CODE: Record<ErrorCode, number> = {
   NOT_FOUND: 404,
@@ -31,4 +35,6 @@ export const HTTP_STATUS_BY_CODE: Record<ErrorCode, number> = {
   INTERNAL_ERROR: 500,
   SKILL_VALIDATION_FAILED: 500,
   SKILL_NOT_FOUND: 404,
+  INTELLIGENCE_UNAVAILABLE: 503,
+  STRUCTURED_OUTPUT_FAILED: 502,
 };

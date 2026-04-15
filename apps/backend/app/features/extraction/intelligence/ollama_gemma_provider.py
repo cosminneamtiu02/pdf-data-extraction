@@ -38,11 +38,9 @@ from langextract.core.types import ScoredOutput
 from langextract.providers.router import register
 
 from app.core.config import Settings
+from app.exceptions import IntelligenceUnavailableError
 from app.features.extraction.intelligence.correction_prompt_builder import (
     CorrectionPromptBuilder,
-)
-from app.features.extraction.intelligence.intelligence_unavailable_error import (
-    IntelligenceUnavailableError,
 )
 from app.features.extraction.intelligence.structured_output_validator import (
     StructuredOutputValidator,
@@ -52,12 +50,6 @@ if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
 
     from app.features.extraction.intelligence.generation_result import GenerationResult
-
-_CONNECT_ERROR_MESSAGE = "Ollama connection failed"
-_TIMEOUT_MESSAGE = "Ollama request timed out"
-_HTTP_ERROR_MESSAGE_TEMPLATE = "Ollama returned HTTP {status}"
-_MISSING_RESPONSE_FIELD_MESSAGE = "Ollama response body missing 'response' string field"
-_INVALID_JSON_BODY_MESSAGE = "Ollama response body is not valid JSON"
 
 _logger = structlog.get_logger(__name__)
 
@@ -144,32 +136,28 @@ class OllamaGemmaProvider(BaseLanguageModel):
             response = await self.http_client.post(self._generate_url, json=payload)
             response.raise_for_status()
         except httpx.ConnectError as exc:
-            _logger.warning("ollama_connect_error", error=str(exc))
-            message = _CONNECT_ERROR_MESSAGE
-            raise IntelligenceUnavailableError(message, cause=exc) from exc
+            _logger.warning("intelligence_unavailable", cause="connect_error", error=str(exc))
+            raise IntelligenceUnavailableError from exc
         except httpx.TimeoutException as exc:
-            _logger.warning("ollama_timeout", error=str(exc))
-            message = _TIMEOUT_MESSAGE
-            raise IntelligenceUnavailableError(message, cause=exc) from exc
+            _logger.warning("intelligence_unavailable", cause="timeout", error=str(exc))
+            raise IntelligenceUnavailableError from exc
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
-            _logger.warning("ollama_http_error", status=status)
-            message = _HTTP_ERROR_MESSAGE_TEMPLATE.format(status=status)
-            raise IntelligenceUnavailableError(message, cause=exc) from exc
+            _logger.warning("intelligence_unavailable", cause="http_5xx", status=status)
+            raise IntelligenceUnavailableError from exc
 
         try:
             body: dict[str, Any] = response.json()
         except (json.JSONDecodeError, ValueError) as exc:
             # Ollama (or an interposing proxy) returned a non-JSON body. Treat
             # the same as unreachability — operators reading the log see the
-            # underlying decode error on the `cause` attribute.
-            _logger.warning("ollama_non_json_body", error=str(exc))
-            message = _INVALID_JSON_BODY_MESSAGE
-            raise IntelligenceUnavailableError(message, cause=exc) from exc
+            # underlying decode error on the log line's `error` field.
+            _logger.warning("intelligence_unavailable", cause="non_json_body", error=str(exc))
+            raise IntelligenceUnavailableError from exc
         response_text = body.get("response")
         if not isinstance(response_text, str):
-            message = _MISSING_RESPONSE_FIELD_MESSAGE
-            raise IntelligenceUnavailableError(message)
+            _logger.warning("intelligence_unavailable", cause="missing_response_field")
+            raise IntelligenceUnavailableError
         return response_text
 
     async def _raw_generate_batch(self, batch_prompts: Sequence[str]) -> list[str]:

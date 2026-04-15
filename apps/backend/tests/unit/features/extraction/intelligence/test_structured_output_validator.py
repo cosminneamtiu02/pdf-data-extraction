@@ -2,7 +2,7 @@
 
 Covers cleanup (markdown fences, prose prefixes, leading-brace fast path),
 parsing (JSONDecodeError → retry), schema validation (single + multiple field
-errors), retry behavior (success on Nth attempt, exhaustion → StructuredOutputError),
+errors), retry behavior (success on Nth attempt, exhaustion → StructuredOutputFailedError),
 configurability via Settings.structured_output_max_retries, and structlog
 emission of `structured_output_retry` events on each retry.
 
@@ -18,11 +18,9 @@ from pydantic import ValidationError as PydanticValidationError
 from structlog.testing import capture_logs
 
 from app.core.config import Settings
+from app.exceptions import StructuredOutputFailedError
 from app.features.extraction.intelligence.correction_prompt_builder import (
     CorrectionPromptBuilder,
-)
-from app.features.extraction.intelligence.structured_output_error import (
-    StructuredOutputError,
 )
 from app.features.extraction.intelligence.structured_output_validator import (
     StructuredOutputValidator,
@@ -175,7 +173,7 @@ async def test_consistently_invalid_raises_after_four_total_attempts() -> None:
     validator = _build_validator()
     call, prompts = _scripted_callable(["never valid", "never valid", "never valid"])
 
-    with pytest.raises(StructuredOutputError) as excinfo:
+    with capture_logs() as logs, pytest.raises(StructuredOutputFailedError) as excinfo:
         await validator.validate_and_retry(
             raw_text="never valid",
             output_schema=_FOO_STRING_SCHEMA,
@@ -183,19 +181,21 @@ async def test_consistently_invalid_raises_after_four_total_attempts() -> None:
         )
 
     assert len(prompts) == 3
-    err = excinfo.value
-    assert err.attempts == 4
-    assert err.last_raw_output == "never valid"
-    assert len(err.failure_reasons) == 4
-    assert "last_raw_output" in err.details
-    assert err.details["attempts"] == 4
+    assert excinfo.value.code == "STRUCTURED_OUTPUT_FAILED"
+    assert excinfo.value.http_status == 502
+    failed_events = [e for e in logs if e.get("event") == "structured_output_failed"]
+    assert len(failed_events) == 1
+    event = failed_events[0]
+    assert event["attempts"] == 4
+    assert event["last_raw_output"] == "never valid"
+    assert len(event["failure_reasons"]) == 4
 
 
 async def test_max_retries_setting_controls_total_attempts() -> None:
     validator = _build_validator(max_retries=5)
     call, prompts = _scripted_callable(["bad"] * 5)
 
-    with pytest.raises(StructuredOutputError) as excinfo:
+    with capture_logs() as logs, pytest.raises(StructuredOutputFailedError):
         await validator.validate_and_retry(
             raw_text="bad",
             output_schema=_FOO_STRING_SCHEMA,
@@ -203,7 +203,8 @@ async def test_max_retries_setting_controls_total_attempts() -> None:
         )
 
     assert len(prompts) == 5
-    assert excinfo.value.attempts == 6
+    failed_events = [e for e in logs if e.get("event") == "structured_output_failed"]
+    assert failed_events[0]["attempts"] == 6
 
 
 async def test_multiple_missing_fields_aggregate_into_correction_reason() -> None:
@@ -299,12 +300,37 @@ async def test_zero_retries_yields_exactly_one_total_attempt_on_valid_input() ->
 async def test_zero_retries_raises_immediately_on_invalid_input() -> None:
     validator = _build_validator(max_retries=0)
 
-    with pytest.raises(StructuredOutputError) as excinfo:
+    with capture_logs() as logs, pytest.raises(StructuredOutputFailedError):
         await validator.validate_and_retry(
             raw_text="not json",
             output_schema=_FOO_STRING_SCHEMA,
             regeneration_callable=_never_called(),
         )
 
-    assert excinfo.value.attempts == 1
-    assert len(excinfo.value.failure_reasons) == 1
+    failed_events = [e for e in logs if e.get("event") == "structured_output_failed"]
+    assert failed_events[0]["attempts"] == 1
+    assert len(failed_events[0]["failure_reasons"]) == 1
+
+
+async def test_structured_output_failed_error_is_domain_error_subclass() -> None:
+    from app.exceptions.base import DomainError
+
+    assert issubclass(StructuredOutputFailedError, DomainError)
+    assert StructuredOutputFailedError.code == "STRUCTURED_OUTPUT_FAILED"
+    assert StructuredOutputFailedError.http_status == 502
+
+
+async def test_structured_output_failed_log_truncates_raw_output_to_500_chars() -> None:
+    validator = _build_validator(max_retries=0)
+    long_raw = "X" * 2000
+
+    with capture_logs() as logs, pytest.raises(StructuredOutputFailedError):
+        await validator.validate_and_retry(
+            raw_text=long_raw,
+            output_schema=_FOO_STRING_SCHEMA,
+            regeneration_callable=_never_called(),
+        )
+
+    failed = next(e for e in logs if e.get("event") == "structured_output_failed")
+    assert len(failed["last_raw_output"]) == 500
+    assert failed["last_raw_output"] == "X" * 500

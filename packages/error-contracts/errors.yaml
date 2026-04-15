@@ -32,3 +32,13 @@ errors:
     params:
       name: string
       version: string
+
+  INTELLIGENCE_UNAVAILABLE:
+    http_status: 503
+    description: The intelligence backend (Ollama) is currently unavailable.
+    params: {}
+
+  STRUCTURED_OUTPUT_FAILED:
+    http_status: 502
+    description: The model failed to produce valid structured output after the maximum number of attempts.
+    params: {}

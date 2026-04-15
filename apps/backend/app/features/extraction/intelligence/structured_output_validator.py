@@ -25,17 +25,17 @@ from jsonschema import Draft7Validator
 from jsonschema.exceptions import ValidationError
 
 from app.core.config import Settings
+from app.exceptions import StructuredOutputFailedError
 from app.features.extraction.intelligence.correction_prompt_builder import (
     CorrectionPromptBuilder,
 )
 from app.features.extraction.intelligence.generation_result import GenerationResult
-from app.features.extraction.intelligence.structured_output_error import (
-    StructuredOutputError,
-)
 
 _logger = structlog.get_logger(__name__)
 
 _FENCE_LANGUAGE_PREFIXES: tuple[str, ...] = ("```json", "```JSON", "```")
+
+_RAW_OUTPUT_LOG_TRUNCATION: int = 500
 
 
 class StructuredOutputValidator:
@@ -90,13 +90,13 @@ class StructuredOutputValidator:
             )
             current_text = await regeneration_callable(correction)
 
-        message = "Structured output validation failed after all retries."
-        raise StructuredOutputError(
-            message,
-            last_raw_output=current_text,
-            failure_reasons=failure_reasons,
+        _logger.error(
+            "structured_output_failed",
             attempts=max_total_attempts,
+            failure_reasons=failure_reasons,
+            last_raw_output=current_text[:_RAW_OUTPUT_LOG_TRUNCATION],
         )
+        raise StructuredOutputFailedError
 
 
 def _clean(raw_text: str) -> str:
