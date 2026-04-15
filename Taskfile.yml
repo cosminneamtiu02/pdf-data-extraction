@@ -44,15 +44,16 @@ tasks:
       - uv run lint-imports --config architecture/import-linter-contracts.ini
 
   check:test:
-    desc: Run unit and integration tests
+    desc: Run unit, integration, and contract tests
     cmds:
       - task: test:unit
       - task: test:integration
+      - task: test:contract
 
   check:errors:
-    desc: Regenerate error contracts from errors.yaml (idempotent when in sync)
+    desc: Fail on generated error contract drift vs errors.yaml
     cmds:
-      - task: errors:generate
+      - task: errors:check
 
   # ── Testing ──────────────────────────────────────────────────
   test:
