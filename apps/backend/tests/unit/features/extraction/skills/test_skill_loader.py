@@ -95,12 +95,59 @@ def test_load_missing_directory_raises(tmp_path: Path) -> None:
     assert "nope" in _reason(exc_info.value)
 
 
-def test_load_ignores_top_level_yaml(tmp_path: Path) -> None:
-    (tmp_path / "stray.yaml").write_text("name: stray\nversion: 1\n", encoding="utf-8")
+def test_load_top_level_yaml_raises_stray_file_error(tmp_path: Path) -> None:
+    """A YAML at the skills_dir root violates the two-level layout. Previously
+    the loader silently skipped it; now it fails loudly so misplaced skills
+    can't disappear from the manifest without an operator signal.
+    """
+    stray = tmp_path / "stray.yaml"
+    stray.write_text("name: stray\nversion: 1\n", encoding="utf-8")
+    # Also include a valid skill so we verify aggregation across the two.
+    _write_skill(tmp_path, dir_name="invoice", file_name="1.yaml", version=1)
 
-    loaded = SkillLoader().load(tmp_path)
+    with pytest.raises(SkillValidationFailedError) as exc_info:
+        SkillLoader().load(tmp_path)
 
-    assert loaded == {}
+    reason = _reason(exc_info.value)
+    assert str(stray) in reason
+    assert "stray YAML file" in reason
+    # The error must include the actionable expected layout, with the actual
+    # `skills_dir` path interpolated rather than a literal `<skills_dir>`.
+    assert f"{tmp_path}/<name>/<version>.yaml" in reason
+    assert "<skills_dir>" not in reason
+    # And the relative-to-`skills_dir` path so operators can grep the offender.
+    assert "'stray.yaml'" in reason
+
+
+def test_load_three_level_nested_yaml_raises_stray_file_error(tmp_path: Path) -> None:
+    (tmp_path / "invoice" / "archive").mkdir(parents=True)
+    nested = tmp_path / "invoice" / "archive" / "1.yaml"
+    nested.write_text("name: invoice\nversion: 1\n", encoding="utf-8")
+
+    with pytest.raises(SkillValidationFailedError) as exc_info:
+        SkillLoader().load(tmp_path)
+
+    reason = _reason(exc_info.value)
+    assert str(nested) in reason
+    assert "stray YAML file" in reason
+    assert "'invoice/archive/1.yaml'" in reason
+
+
+def test_load_yml_extension_raises_stray_file_error(tmp_path: Path) -> None:
+    (tmp_path / "invoice").mkdir()
+    wrong_ext = tmp_path / "invoice" / "1.yml"
+    wrong_ext.write_text("name: invoice\nversion: 1\n", encoding="utf-8")
+
+    with pytest.raises(SkillValidationFailedError) as exc_info:
+        SkillLoader().load(tmp_path)
+
+    reason = _reason(exc_info.value)
+    assert str(wrong_ext) in reason
+    # The `.yml` case is called out distinctly from a generic stray file so
+    # operators see it's an extension typo, not a layout violation.
+    assert "unsupported '.yml' extension" in reason
+    assert "'invoice/1.yml'" in reason
+    assert f"{tmp_path}/<name>/<version>.yaml" in reason
 
 
 def test_load_filename_version_mismatch_raises(tmp_path: Path) -> None:
