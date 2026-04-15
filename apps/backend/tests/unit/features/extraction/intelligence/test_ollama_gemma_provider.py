@@ -375,7 +375,7 @@ def test_infer_yields_one_scored_output_per_prompt() -> None:
 
 
 def test_infer_routes_raw_text_through_structured_output_validator() -> None:
-    # Fenced JSON must be cleaned by `StructuredOutputValidator._clean` before
+    # Fenced JSON must be cleaned by the validator's normalization step before
     # LangExtract's resolver sees it. If `infer` bypassed the validator, the
     # yielded output would still contain the ```json fence.
     fenced = '```json\n{"extractions":[]}\n```'
