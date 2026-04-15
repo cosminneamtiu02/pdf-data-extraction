@@ -55,6 +55,8 @@ from app.features.extraction.extraction.raw_extraction import RawExtraction
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
 
+    from langextract.core.data import CharInterval
+
     from app.features.extraction.intelligence.intelligence_provider import IntelligenceProvider
     from app.features.extraction.skills.skill import Skill
     from app.features.extraction.skills.skill_example import SkillExample
@@ -227,10 +229,14 @@ class ExtractionEngine:
           first-wins.
         """
         extractions = result.extractions or []
+        # Precompute a set for O(1) membership checks during the filter
+        # loop; the `declared_fields` tuple is still the source of truth
+        # for output ordering further down.
+        declared_set = frozenset(declared_fields)
         by_field: dict[str, Extraction] = {}
         for extraction in extractions:
             field_name = extraction.extraction_class
-            if field_name not in declared_fields:
+            if field_name not in declared_set:
                 continue
             if field_name in by_field:
                 continue
@@ -254,9 +260,7 @@ class ExtractionEngine:
                 )
                 continue
 
-            interval = extraction.char_interval
-            start = interval.start_pos if interval is not None else None
-            end = interval.end_pos if interval is not None else None
+            start, end = _sanitize_char_interval(extraction.char_interval)
             grounded = start is not None and end is not None
 
             output.append(
@@ -270,6 +274,33 @@ class ExtractionEngine:
                 ),
             )
         return output
+
+
+def _sanitize_char_interval(
+    interval: CharInterval | None,
+) -> tuple[int | None, int | None]:
+    """Normalize a LangExtract `CharInterval` into sane offsets.
+
+    Returns `(start, end)` suitable for `RawExtraction`:
+      - `(None, None)` when the interval is absent OR structurally invalid
+        (missing endpoints, negative, or `start >= end`).
+      - `(start, end)` when both endpoints are present and form a valid
+        half-open range with non-negative integers.
+
+    Malformed intervals from LangExtract are coerced to ungrounded rather
+    than raising, so a single bad span does not nuke the whole extraction.
+    Downstream coordinate resolution then simply treats that field as
+    inferred/ungrounded.
+    """
+    if interval is None:
+        return None, None
+    start = interval.start_pos
+    end = interval.end_pos
+    if start is None or end is None:
+        return None, None
+    if start < 0 or end < 0 or start >= end:
+        return None, None
+    return start, end
 
 
 def _declared_field_names(skill: Skill) -> tuple[str, ...]:

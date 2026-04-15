@@ -39,10 +39,32 @@ class RawExtraction:
     attempts: int
 
     def __post_init__(self) -> None:
-        if self.grounded and (self.char_offset_start is None or self.char_offset_end is None):
+        if self.grounded:
+            if self.char_offset_start is None or self.char_offset_end is None:
+                msg = (
+                    "grounded=True requires both char_offset_start and char_offset_end "
+                    f"to be set; got start={self.char_offset_start!r}, "
+                    f"end={self.char_offset_end!r} for field_name={self.field_name!r}"
+                )
+                raise ValueError(msg)
+            if self.char_offset_start < 0 or self.char_offset_end < 0:
+                msg = (
+                    "grounded=True requires non-negative offsets; got "
+                    f"start={self.char_offset_start!r}, end={self.char_offset_end!r} "
+                    f"for field_name={self.field_name!r}"
+                )
+                raise ValueError(msg)
+            if self.char_offset_start >= self.char_offset_end:
+                msg = (
+                    "grounded=True requires char_offset_start < char_offset_end; got "
+                    f"start={self.char_offset_start!r}, end={self.char_offset_end!r} "
+                    f"for field_name={self.field_name!r}"
+                )
+                raise ValueError(msg)
+        elif self.char_offset_start is not None or self.char_offset_end is not None:
             msg = (
-                "grounded=True requires both char_offset_start and char_offset_end "
-                f"to be set; got start={self.char_offset_start!r}, "
+                "grounded=False requires both char_offset_start and char_offset_end "
+                f"to be None; got start={self.char_offset_start!r}, "
                 f"end={self.char_offset_end!r} for field_name={self.field_name!r}"
             )
             raise ValueError(msg)

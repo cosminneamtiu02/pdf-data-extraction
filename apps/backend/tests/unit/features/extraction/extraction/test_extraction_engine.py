@@ -318,6 +318,38 @@ async def test_extract_works_with_skill_from_schema_using_mappingproxy(
     assert results[1].value == "30"
 
 
+async def test_extract_normalizes_malformed_langextract_interval_to_ungrounded(
+    patch_extract: Any,
+) -> None:
+    """If LangExtract returns a `char_interval` with negative, equal, or
+    inverted endpoints, the engine must coerce the resulting
+    `RawExtraction` to ungrounded (`grounded=False`, offsets `None`) —
+    otherwise the stricter `RawExtraction.__post_init__` invariants would
+    explode and a single bad span would nuke the whole extraction.
+    """
+
+    text = "Alice is 30."
+    skill = _build_skill(("a", "b", "c"))
+    annotated = AnnotatedDocument(
+        extractions=[
+            _extraction("a", "val", -1, 5),  # negative start
+            _extraction("b", "val", 5, 5),  # equal endpoints
+            _extraction("c", "val", 10, 4),  # start > end
+        ],
+        text=text,
+    )
+    patch_extract(annotated)
+
+    results = await ExtractionEngine().extract(text, skill, _FakeProvider())
+
+    assert [r.field_name for r in results] == ["a", "b", "c"]
+    for raw in results:
+        assert raw.value == "val"
+        assert raw.char_offset_start is None
+        assert raw.char_offset_end is None
+        assert raw.grounded is False
+
+
 async def test_extract_with_zero_declared_fields_returns_empty_without_calling_langextract(
     patch_extract: Any,
 ) -> None:

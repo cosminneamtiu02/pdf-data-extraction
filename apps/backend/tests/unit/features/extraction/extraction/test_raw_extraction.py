@@ -45,6 +45,54 @@ def test_raw_extraction_grounded_with_one_offset_missing_raises() -> None:
         )
 
 
+def test_raw_extraction_ungrounded_with_non_none_offsets_raises() -> None:
+    with pytest.raises(ValueError, match="grounded=False requires both"):
+        RawExtraction(
+            field_name="name",
+            value="Alice",
+            char_offset_start=0,
+            char_offset_end=5,
+            grounded=False,
+            attempts=1,
+        )
+
+
+def test_raw_extraction_grounded_with_negative_offset_raises() -> None:
+    with pytest.raises(ValueError, match="non-negative offsets"):
+        RawExtraction(
+            field_name="name",
+            value="Alice",
+            char_offset_start=-1,
+            char_offset_end=5,
+            grounded=True,
+            attempts=1,
+        )
+
+
+def test_raw_extraction_grounded_with_equal_offsets_raises() -> None:
+    with pytest.raises(ValueError, match="char_offset_start < char_offset_end"):
+        RawExtraction(
+            field_name="name",
+            value="Alice",
+            char_offset_start=5,
+            char_offset_end=5,
+            grounded=True,
+            attempts=1,
+        )
+
+
+def test_raw_extraction_grounded_with_start_greater_than_end_raises() -> None:
+    with pytest.raises(ValueError, match="char_offset_start < char_offset_end"):
+        RawExtraction(
+            field_name="name",
+            value="Alice",
+            char_offset_start=10,
+            char_offset_end=5,
+            grounded=True,
+            attempts=1,
+        )
+
+
 def test_raw_extraction_ungrounded_with_none_offsets_is_valid() -> None:
     raw = RawExtraction(
         field_name="nationality",
