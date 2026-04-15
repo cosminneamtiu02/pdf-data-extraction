@@ -31,7 +31,9 @@ class SkillLoader:
 
         Raises `SkillValidationFailedError` aggregating all discovered
         problems when `skills_dir` is missing, any file fails to validate,
-        or two files collide on the same `(name, version)` key. Emits a
+        two files collide on the same `(name, version)` key, or any
+        `.yaml`/`.yml` file under `skills_dir` does not live at the strict
+        two-level `<skills_dir>/<name>/<version>.yaml` path. Emits a
         `skill_manifest_empty` warning and returns an empty dict when
         `skills_dir` exists but contains no two-level YAML files.
         """
@@ -45,7 +47,10 @@ class SkillLoader:
         origins: dict[tuple[str, int], Path] = {}
         problems: list[str] = []
 
-        for path in sorted(skills_dir.glob("*/*.yaml")):
+        valid_layout = set(skills_dir.glob("*/*.yaml"))
+        problems.extend(_stray_yaml_problems(skills_dir, valid_layout))
+
+        for path in sorted(valid_layout):
             if not path.is_file():
                 continue
             try:
@@ -87,6 +92,22 @@ class SkillLoader:
             _logger.warning("skill_manifest_empty", skills_dir=str(skills_dir))
 
         return loaded
+
+
+def _stray_yaml_problems(skills_dir: Path, valid_layout: set[Path]) -> list[str]:
+    """Return one problem string per misplaced YAML file under `skills_dir`.
+
+    Catches top-level YAMLs, three-level-deep YAMLs, and `.yml`-extension
+    files — any of which would be silently ignored by the strict two-level
+    `<name>/<version>.yaml` glob `load()` uses. Reporting them keeps
+    misplaced skills from disappearing from the manifest without a signal.
+    """
+    all_yaml_files = set(skills_dir.rglob("*.yaml")) | set(skills_dir.rglob("*.yml"))
+    return [
+        f"{stray}: stray YAML file — expected <skills_dir>/<name>/<version>.yaml layout"
+        for stray in sorted(all_yaml_files - valid_layout)
+        if stray.is_file()
+    ]
 
 
 def _reason_of(exc: SkillValidationFailedError) -> str:

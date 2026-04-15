@@ -95,12 +95,46 @@ def test_load_missing_directory_raises(tmp_path: Path) -> None:
     assert "nope" in _reason(exc_info.value)
 
 
-def test_load_ignores_top_level_yaml(tmp_path: Path) -> None:
-    (tmp_path / "stray.yaml").write_text("name: stray\nversion: 1\n", encoding="utf-8")
+def test_load_top_level_yaml_raises_stray_file_error(tmp_path: Path) -> None:
+    """A YAML at the skills_dir root violates the two-level layout. Previously
+    the loader silently skipped it; now it fails loudly so misplaced skills
+    can't disappear from the manifest without an operator signal.
+    """
+    stray = tmp_path / "stray.yaml"
+    stray.write_text("name: stray\nversion: 1\n", encoding="utf-8")
+    # Also include a valid skill so we verify aggregation across the two.
+    _write_skill(tmp_path, dir_name="invoice", file_name="1.yaml", version=1)
 
-    loaded = SkillLoader().load(tmp_path)
+    with pytest.raises(SkillValidationFailedError) as exc_info:
+        SkillLoader().load(tmp_path)
 
-    assert loaded == {}
+    reason = _reason(exc_info.value)
+    assert str(stray) in reason
+    assert "stray" in reason.lower()
+
+
+def test_load_three_level_nested_yaml_raises_stray_file_error(tmp_path: Path) -> None:
+    (tmp_path / "invoice" / "archive").mkdir(parents=True)
+    nested = tmp_path / "invoice" / "archive" / "1.yaml"
+    nested.write_text("name: invoice\nversion: 1\n", encoding="utf-8")
+
+    with pytest.raises(SkillValidationFailedError) as exc_info:
+        SkillLoader().load(tmp_path)
+
+    assert str(nested) in _reason(exc_info.value)
+
+
+def test_load_yml_extension_raises_stray_file_error(tmp_path: Path) -> None:
+    (tmp_path / "invoice").mkdir()
+    wrong_ext = tmp_path / "invoice" / "1.yml"
+    wrong_ext.write_text("name: invoice\nversion: 1\n", encoding="utf-8")
+
+    with pytest.raises(SkillValidationFailedError) as exc_info:
+        SkillLoader().load(tmp_path)
+
+    reason = _reason(exc_info.value)
+    assert str(wrong_ext) in reason
+    assert ".yml" in reason
 
 
 def test_load_filename_version_mismatch_raises(tmp_path: Path) -> None:
