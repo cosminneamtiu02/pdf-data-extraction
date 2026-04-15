@@ -53,7 +53,13 @@ app/features/<feature>/ -- Self-contained vertical slice. The extraction feature
 - Features cannot import from other features.
 - `shared/`, `core/`, and `schemas/` never import from `features/`.
 - Within the extraction feature, the layer DAG is defined in the design spec
-  Section 10 and enforced by `import-linter` contracts added in PDFX-E007-F004.
+  Section 10 and enforced by the `import-linter` contracts in
+  [`apps/backend/architecture/import-linter-contracts.ini`](apps/backend/architecture/import-linter-contracts.ini)
+  (PDFX-E007-F004). The full table of contracts (C1 feature independence,
+  C2a–C2e intra-feature DAG, C3–C6 third-party containment) is documented in
+  [docs/architecture.md](docs/architecture.md#architectural-contracts-pdfx-e007-f004).
+  Every contract carries an inline `#` rationale comment so future maintainers
+  can update them in context.
 - Third-party dependencies are contained to specific implementation files:
   - Docling only in `features/extraction/parsing/docling_document_parser.py`.
   - PyMuPDF (`fitz`) only in `features/extraction/annotation/pdf_annotator.py`
