@@ -1,14 +1,15 @@
 """Integration tests for ExtractionEngine against the real `langextract` library.
 
-These tests wire the engine to a real `langextract.extract` call with a
-`FakeLanguageModel` that returns canned fenced-JSON responses — LangExtract's
-own chunking, source grounding, and result aggregation run for real. The
-only piece faked is the underlying LLM call itself (so we don't need a live
-Ollama + Gemma setup in CI).
+These tests wire the engine to a real `langextract.extract` call. The
+`_FakeProvider` below only implements `IntelligenceProvider.generate`; the
+engine wraps it in its own `_ValidatingLangExtractAdapter` internally, and
+LangExtract's real chunking, source-grounding, and aggregation run for real.
+The only thing faked is the underlying LLM call — no live Ollama + Gemma
+required.
 
-This covers the three integration scenarios in PDFX-E004-F003:
+Covers the three integration scenarios from PDFX-E004-F003:
 
-- `Skill → LangExtract → provider` parameter wiring carries skill data.
+- `Skill → LangExtract → provider.generate` parameter wiring carries skill data.
 - Returned character offsets slice the input text to contain the value.
 - Field names match the skill's `output_schema.properties` keys.
 """
@@ -16,13 +17,7 @@ This covers the three integration scenarios in PDFX-E004-F003:
 from __future__ import annotations
 
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
-
-from langextract.core.base_model import BaseLanguageModel
-from langextract.core.types import ScoredOutput
+from typing import Any
 
 from app.features.extraction.extraction.extraction_engine import ExtractionEngine
 from app.features.extraction.intelligence.generation_result import GenerationResult
@@ -30,39 +25,32 @@ from app.features.extraction.skills.skill import Skill
 from app.features.extraction.skills.skill_example import SkillExample
 
 
-class _FakeModel(BaseLanguageModel):
-    """Minimal dual-interface provider double.
+class _FakeProvider:
+    """Minimal IntelligenceProvider double.
 
-    Satisfies LangExtract's `BaseLanguageModel.infer` abstract method by
-    returning a fenced JSON string with one extraction per declared field.
-    Also implements the internal `generate` method so it conforms to the
-    `IntelligenceProvider` protocol for type-checking, even though the
-    LangExtract path calls `infer`, not `generate`.
+    Returns canned parsed extraction payloads (already validator-clean) from
+    `generate` — the engine's internal adapter json.dumps the data back into
+    text for LangExtract's resolver to parse. The `output_schema` parameter
+    is ignored here because the engine always passes the permissive
+    `{"type": "object"}` schema on the LangExtract path.
     """
 
-    def __init__(self, canned_output: str) -> None:
-        super().__init__()
-        self._canned = canned_output
+    def __init__(self, canned_data: dict[str, Any]) -> None:
+        self._canned = canned_data
         self.received_prompts: list[str] = []
-
-    def infer(
-        self,
-        batch_prompts: Sequence[str],
-        **kwargs: Any,
-    ) -> Iterator[Sequence[ScoredOutput]]:
-        _ = kwargs
-        for prompt in batch_prompts:
-            self.received_prompts.append(prompt)
-            yield [ScoredOutput(score=1.0, output=self._canned)]
 
     async def generate(
         self,
         prompt: str,
         output_schema: dict[str, Any],
     ) -> GenerationResult:
-        _ = prompt
         _ = output_schema
-        return GenerationResult(data={}, attempts=1, raw_output=self._canned)
+        self.received_prompts.append(prompt)
+        return GenerationResult(
+            data=self._canned,
+            attempts=1,
+            raw_output=str(self._canned),
+        )
 
 
 def _skill(field_names: tuple[str, ...]) -> Skill:
@@ -89,35 +77,32 @@ def _skill(field_names: tuple[str, ...]) -> Skill:
 
 async def test_engine_wires_real_langextract_with_three_grounded_fields() -> None:
     text = "Alice is 30 years old and lives in Paris."
-    canned = (
-        "```json\n"
-        '{"extractions":['
-        '{"name":"Alice","name_attributes":{}},'
-        '{"age":"30","age_attributes":{}},'
-        '{"city":"Paris","city_attributes":{}}'
-        "]}\n"
-        "```"
-    )
+    canned = {
+        "extractions": [
+            {"name": "Alice", "name_attributes": {}},
+            {"age": "30", "age_attributes": {}},
+            {"city": "Paris", "city_attributes": {}},
+        ],
+    }
     skill = _skill(("name", "age", "city"))
 
-    results = await ExtractionEngine().extract(text, skill, _FakeModel(canned))
+    results = await ExtractionEngine().extract(text, skill, _FakeProvider(canned))
 
     assert len(results) == 3
-    returned_field_names = {r.field_name for r in results}
-    assert returned_field_names == {"name", "age", "city"}
+    assert {r.field_name for r in results} == {"name", "age", "city"}
 
 
 async def test_engine_returns_offsets_that_slice_input_text() -> None:
     text = "Alice is 30 years old and lives in Paris."
-    canned = (
-        '```json\n{"extractions":['
-        '{"name":"Alice","name_attributes":{}},'
-        '{"city":"Paris","city_attributes":{}}'
-        "]}\n```"
-    )
+    canned = {
+        "extractions": [
+            {"name": "Alice", "name_attributes": {}},
+            {"city": "Paris", "city_attributes": {}},
+        ],
+    }
     skill = _skill(("name", "city"))
 
-    results = await ExtractionEngine().extract(text, skill, _FakeModel(canned))
+    results = await ExtractionEngine().extract(text, skill, _FakeProvider(canned))
 
     by_name = {r.field_name: r for r in results}
     name_extraction = by_name["name"]
@@ -134,14 +119,33 @@ async def test_engine_returns_offsets_that_slice_input_text() -> None:
     assert text[city_extraction.char_offset_start : city_extraction.char_offset_end] == "Paris"
 
 
-async def test_engine_passes_skill_prompt_through_to_model() -> None:
+async def test_engine_passes_skill_prompt_through_to_provider_generate() -> None:
     text = "Alice is 30."
-    canned = '```json\n{"extractions":[{"name":"Alice","name_attributes":{}}]}\n```'
+    canned = {"extractions": [{"name": "Alice", "name_attributes": {}}]}
     skill = _skill(("name",))
-    model = _FakeModel(canned)
+    provider = _FakeProvider(canned)
 
-    await ExtractionEngine().extract(text, skill, model)
+    await ExtractionEngine().extract(text, skill, provider)
 
-    assert model.received_prompts, "FakeModel.infer was never called"
-    joined = "\n".join(model.received_prompts)
+    assert provider.received_prompts, "_FakeProvider.generate was never called"
+    joined = "\n".join(provider.received_prompts)
     assert skill.prompt in joined
+
+
+async def test_engine_drops_extracted_fields_not_in_schema() -> None:
+    """A hallucinated field returned by LangExtract's resolver must be
+    filtered out by the engine, since it is not declared in the skill.
+    """
+
+    text = "Alice is 30 years old."
+    canned = {
+        "extractions": [
+            {"name": "Alice", "name_attributes": {}},
+            {"hallucinated": "bogus", "hallucinated_attributes": {}},
+        ],
+    }
+    skill = _skill(("name",))  # `hallucinated` is NOT declared
+
+    results = await ExtractionEngine().extract(text, skill, _FakeProvider(canned))
+
+    assert {r.field_name for r in results} == {"name"}

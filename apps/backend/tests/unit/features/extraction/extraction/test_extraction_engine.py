@@ -3,56 +3,51 @@
 The engine is a thin wrapper around `langextract.extract`. Unit tests patch
 the module-level `langextract.extract` attribute on the engine module and
 verify the transformation from LangExtract's native `AnnotatedDocument` /
-`Extraction` shape into feature-owned `RawExtraction` instances. End-to-end
-integration with real LangExtract is covered in
-`tests/integration/features/extraction/test_extraction_engine_integration.py`.
+`Extraction` shape into feature-owned `RawExtraction` instances, plus the
+output-schema filtering and the validating LangExtract adapter that routes
+every call through `IntelligenceProvider.generate`. End-to-end integration
+with real LangExtract is covered in
+`tests/integration/features/extraction/extraction/test_extraction_engine_integration.py`.
 """
 
 from __future__ import annotations
 
 import inspect
+import json
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import pytest
-from langextract.core.base_model import BaseLanguageModel
 from langextract.core.data import AnnotatedDocument, CharInterval, Extraction
-from langextract.core.types import ScoredOutput
-
-if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
 
 from app.features.extraction.extraction import extraction_engine as engine_module
-from app.features.extraction.extraction.extraction_engine import ExtractionEngine
+from app.features.extraction.extraction.extraction_engine import (
+    ExtractionEngine,
+    _ValidatingLangExtractAdapter,
+)
 from app.features.extraction.intelligence.generation_result import GenerationResult
 from app.features.extraction.skills.skill import Skill
 from app.features.extraction.skills.skill_example import SkillExample
 
 
-class _FakeProvider(BaseLanguageModel):
-    """Dual-interface double: satisfies both IntelligenceProvider.generate
-    AND BaseLanguageModel.infer (as ExtractionEngine now enforces at runtime).
-    `langextract.extract` is monkeypatched in these tests, so neither method
-    body is actually exercised — we just need the isinstance guard to pass.
+class _FakeProvider:
+    """Minimal IntelligenceProvider double.
+
+    `langextract.extract` is monkeypatched away in these unit tests, so
+    `generate` is not actually invoked by the engine — it only needs to
+    exist so the adapter can be constructed.
     """
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, Any]]] = []
 
     async def generate(
         self,
         prompt: str,
         output_schema: dict[str, Any],
     ) -> GenerationResult:
-        _ = prompt
-        _ = output_schema
-        return GenerationResult(data={}, attempts=1, raw_output="{}")
-
-    def infer(
-        self,
-        batch_prompts: Sequence[str],
-        **kwargs: Any,
-    ) -> Iterator[Sequence[ScoredOutput]]:
-        _ = kwargs
-        for _ in batch_prompts:
-            yield [ScoredOutput(score=1.0, output="{}")]
+        self.calls.append((prompt, output_schema))
+        return GenerationResult(data={"ok": True}, attempts=1, raw_output='{"ok": true}')
 
 
 def _build_skill(field_names: tuple[str, ...]) -> Skill:
@@ -194,6 +189,31 @@ async def test_extract_dedupes_duplicate_field_names_keeping_first(patch_extract
     assert results[0].char_offset_start == 0
 
 
+async def test_extract_drops_fields_not_declared_in_output_schema(
+    patch_extract: Any,
+) -> None:
+    """Hallucinated field names (fields not declared in the skill's
+    `output_schema.properties`) must be filtered out so downstream
+    consumers only ever see fields declared in the skill.
+    """
+
+    text = "Alice is 30."
+    skill = _build_skill(("name", "age"))  # no `hallucinated` in the schema
+    annotated = AnnotatedDocument(
+        extractions=[
+            _extraction("name", "Alice", 0, 5),
+            _extraction("hallucinated", "bogus", None, None),
+            _extraction("age", "30", 9, 11),
+        ],
+        text=text,
+    )
+    patch_extract(annotated)
+
+    results = await ExtractionEngine().extract(text, skill, _FakeProvider())
+
+    assert {r.field_name for r in results} == {"name", "age"}
+
+
 async def test_extract_with_empty_text_returns_empty_list_without_invoking_langextract(
     patch_extract: Any,
 ) -> None:
@@ -282,30 +302,49 @@ async def test_extract_passes_skill_prompt_and_examples_to_langextract(
     assert examples[0].extractions[0].extraction_text == "example-name"
 
 
-def test_extract_method_is_async() -> None:
-    assert inspect.iscoroutinefunction(ExtractionEngine.extract)
-
-
-async def test_extract_rejects_provider_that_is_not_a_base_language_model() -> None:
-    """A pure IntelligenceProvider (no BaseLanguageModel) must be rejected
-    fast at the engine boundary, not deep inside langextract where the error
-    would be an opaque AttributeError raised from a worker thread.
+async def test_extract_wraps_provider_in_validating_adapter(
+    patch_extract: Any,
+) -> None:
+    """The model passed to `langextract.extract` must be the engine's internal
+    `_ValidatingLangExtractAdapter`, not the caller's raw provider — that is
+    how the StructuredOutputValidator routing is guaranteed on every call.
     """
 
-    class _GenerateOnly:
-        async def generate(
-            self,
-            prompt: str,
-            output_schema: dict[str, Any],
-        ) -> GenerationResult:
-            _ = prompt
-            _ = output_schema
-            return GenerationResult(data={}, attempts=1, raw_output="{}")
-
     skill = _build_skill(("name",))
+    patch_extract(AnnotatedDocument(extractions=[], text="hello"))
+    provider = _FakeProvider()
 
-    with pytest.raises(TypeError, match="langextract BaseLanguageModel"):
-        await ExtractionEngine().extract("hello", skill, _GenerateOnly())  # type: ignore[arg-type]
+    await ExtractionEngine().extract("hello", skill, provider)
+
+    call_kwargs = patch_extract.calls[0]  # type: ignore[attr-defined]
+    model = call_kwargs["model"]
+    assert isinstance(model, _ValidatingLangExtractAdapter)
+
+
+def test_validating_adapter_infer_routes_through_provider_generate() -> None:
+    """The adapter's `infer` must call `inner.generate(prompt, {...})` per
+    prompt and yield one `ScoredOutput` per call carrying the JSON-serialized
+    generate-result data, so LangExtract sees validator-cleaned text.
+    """
+
+    provider = _FakeProvider()
+    adapter = _ValidatingLangExtractAdapter(provider)
+
+    results = list(adapter.infer(["prompt-a", "prompt-b"]))
+
+    assert len(provider.calls) == 2
+    assert provider.calls[0][0] == "prompt-a"
+    assert provider.calls[1][0] == "prompt-b"
+    # Permissive schema lets the validator run without false negatives.
+    assert provider.calls[0][1] == {"type": "object"}
+    assert len(results) == 2
+    assert len(results[0]) == 1
+    assert results[0][0].output is not None
+    assert json.loads(results[0][0].output) == {"ok": True}
+
+
+def test_extract_method_is_async() -> None:
+    assert inspect.iscoroutinefunction(ExtractionEngine.extract)
 
 
 def test_raw_extraction_type_does_not_import_langextract() -> None:
