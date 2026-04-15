@@ -92,8 +92,12 @@ async def test_get_validator_dep_uses_app_state_settings(tmp_path: Path) -> None
         transport=ASGITransport(app=app),
         base_url="http://test",
     ) as client:
-        await client.get("/_probe_validator")
+        response = await client.get("/_probe_validator")
 
+    # Assert the route actually succeeded before indexing `captured` — a
+    # non-200 would otherwise surface as an obscure IndexError below.
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
     # The validator binds Settings at construction time; the dep must hand us
     # one whose Settings is the custom instance, not a default-env build.
     assert captured[0]._settings is custom  # noqa: SLF001 — covers dep wiring
@@ -111,16 +115,33 @@ async def test_get_intelligence_provider_dep_uses_app_state_settings(tmp_path: P
         captured.append(provider)
         return {"ok": True}
 
-    async with AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://test",
-    ) as client:
-        await client.get("/_probe_provider")
+    # Drive the lifespan context manually: `httpx.ASGITransport` does NOT fire
+    # lifespan startup/shutdown events, so without this wrapper the provider's
+    # `httpx.AsyncClient` (opened in `OllamaGemmaProvider.__init__`) would
+    # leak past the test — `_lifespan` only sees, and `aclose()`s, the
+    # provider stored on `app.state.intelligence_provider`.
+    async with (
+        app.router.lifespan_context(app),
+        AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as client,
+    ):
+        first_response = await client.get("/_probe_provider")
         # Second request must get the SAME provider instance (app-scoped cache).
-        await client.get("/_probe_provider")
+        second_response = await client.get("/_probe_provider")
 
+    # Assert both routes actually succeeded before asserting on `captured` —
+    # a non-200 would otherwise surface as an obscure length/identity failure.
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert first_response.json() == {"ok": True}
+    assert second_response.json() == {"ok": True}
     assert len(captured) == 2
     assert captured[0] is captured[1]
     # And the provider's internal validator was built from the custom
     # Settings, not a default-env instance.
     assert captured[0]._validator._settings is custom  # noqa: SLF001 — covers dep wiring
+    # Lifespan ran shutdown before we got here, so the cached provider's
+    # underlying client must be closed (no leaked sockets/sessions).
+    assert captured[0].http_client.is_closed is True
