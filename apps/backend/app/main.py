@@ -6,7 +6,6 @@ from contextlib import asynccontextmanager
 import structlog
 from fastapi import FastAPI
 
-from app.api.deps import get_intelligence_provider, get_settings
 from app.api.errors import register_exception_handlers
 from app.api.health_router import router as health_router
 from app.api.middleware import configure_middleware
@@ -23,30 +22,31 @@ _logger = structlog.get_logger(__name__)
 
 
 @asynccontextmanager
-async def _lifespan(_app: FastAPI) -> AsyncGenerator[None]:
+async def _lifespan(app: FastAPI) -> AsyncGenerator[None]:
     try:
         yield
     finally:
         # Only close the provider if something actually constructed one during
-        # the app's lifetime — touching `get_intelligence_provider()` here
-        # otherwise instantiates an `httpx.AsyncClient` for the sole purpose
-        # of immediately closing it.
-        if get_intelligence_provider.cache_info().currsize > 0:
-            await get_intelligence_provider().aclose()
-            # Evict the now-closed provider so any subsequent `create_app()`
-            # / lifespan in the same process (tests, factory reuse) builds a
-            # fresh instance instead of handing out one with a dead client.
-            get_intelligence_provider.cache_clear()
+        # the app's lifetime. The `get_intelligence_provider` dep lazily
+        # builds and caches it on `app.state`, so presence of the attribute
+        # is the signal — no need to instantiate an `httpx.AsyncClient` just
+        # to close it immediately.
+        provider = getattr(app.state, "intelligence_provider", None)
+        if provider is not None:
+            await provider.aclose()
+            del app.state.intelligence_provider
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     """Create and configure the FastAPI application.
 
-    Passing an explicit `settings` bypasses the cached `get_settings()` factory
-    and is the supported seam for integration tests that need a custom
-    `skills_dir` (or other overrides) without mutating process-wide env vars.
+    Passing an explicit `settings` is the supported seam for integration tests
+    that need a custom `skills_dir` (or other overrides) without mutating
+    process-wide env vars. The resolved instance is stored on
+    `application.state.settings` so `get_settings` (and every dependency
+    that depends on it) reads it back through the FastAPI request path.
     """
-    resolved_settings = settings or get_settings()
+    resolved_settings = settings or Settings()  # type: ignore[reportCallIssue]  # pydantic-settings loads fields from env
 
     configure_logging(
         log_level=resolved_settings.log_level,
@@ -65,6 +65,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         openapi_url=None if is_prod else "/openapi.json",
         lifespan=_lifespan,
     )
+
+    application.state.settings = resolved_settings
 
     configure_middleware(application, cors_origins=resolved_settings.cors_origins)
     register_exception_handlers(application)
