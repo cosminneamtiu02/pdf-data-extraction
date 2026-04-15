@@ -356,8 +356,8 @@ def test_provider_instance_satisfies_intelligence_provider_protocol() -> None:
 def test_infer_yields_one_scored_output_per_prompt() -> None:
     fake = _FakeAsyncClient(
         post_outcomes=[
-            _FakeResponse(body={"response": "first raw"}),
-            _FakeResponse(body={"response": "second raw"}),
+            _FakeResponse(body={"response": '{"extractions":[{"a":1}]}'}),
+            _FakeResponse(body={"response": '{"extractions":[{"b":2}]}'}),
         ],
     )
     provider = _build_provider(fake_client=fake)
@@ -366,9 +366,44 @@ def test_infer_yields_one_scored_output_per_prompt() -> None:
 
     assert len(results) == 2
     assert len(results[0]) == 1
-    assert results[0][0].output == "first raw"
     assert results[0][0].score == 1.0
-    assert results[1][0].output == "second raw"
+    # Output is the validator's normalized JSON (reserialized `data` dict),
+    # not the raw model text — proving `infer` routes through the validator.
+    assert json.loads(results[0][0].output) == {"extractions": [{"a": 1}]}
+    assert json.loads(results[1][0].output) == {"extractions": [{"b": 2}]}
+    assert len(fake.post_calls) == 2
+
+
+def test_infer_routes_raw_text_through_structured_output_validator() -> None:
+    # Fenced JSON must be cleaned by `StructuredOutputValidator._clean` before
+    # LangExtract's resolver sees it. If `infer` bypassed the validator, the
+    # yielded output would still contain the ```json fence.
+    fenced = '```json\n{"extractions":[]}\n```'
+    fake = _FakeAsyncClient(post_outcomes=[_FakeResponse(body={"response": fenced})])
+    provider = _build_provider(fake_client=fake)
+
+    results = list(provider.infer(["p1"]))
+
+    assert "```" not in results[0][0].output
+    assert json.loads(results[0][0].output) == {"extractions": []}
+
+
+def test_infer_retries_on_wrapper_schema_violation_then_succeeds() -> None:
+    # First response is valid JSON but does NOT match the LangExtract wrapper
+    # schema (`{"extractions": array}`). Validator retries; second response is
+    # valid. Pins the contract that `infer` enforces the wrapper schema — not
+    # just JSON parseability.
+    fake = _FakeAsyncClient(
+        post_outcomes=[
+            _FakeResponse(body={"response": '{"wrong":"shape"}'}),
+            _FakeResponse(body={"response": '{"extractions":[]}'}),
+        ],
+    )
+    provider = _build_provider(fake_client=fake)
+
+    results = list(provider.infer(["p1"]))
+
+    assert json.loads(results[0][0].output) == {"extractions": []}
     assert len(fake.post_calls) == 2
 
 
@@ -407,9 +442,9 @@ def test_infer_uses_a_single_asyncio_run_for_the_whole_batch(
 
     fake = _FakeAsyncClient(
         post_outcomes=[
-            _FakeResponse(body={"response": "a"}),
-            _FakeResponse(body={"response": "b"}),
-            _FakeResponse(body={"response": "c"}),
+            _FakeResponse(body={"response": '{"extractions":[]}'}),
+            _FakeResponse(body={"response": '{"extractions":[]}'}),
+            _FakeResponse(body={"response": '{"extractions":[]}'}),
         ],
     )
     provider = _build_provider(fake_client=fake)
