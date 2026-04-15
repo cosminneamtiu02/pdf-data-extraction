@@ -294,6 +294,45 @@ async def test_generate_http_503_logs_http_5xx_cause() -> None:
     assert event["status"] == 503
 
 
+async def test_generate_raises_intelligence_unavailable_when_body_json_is_list() -> None:
+    """Non-dict JSON bodies must not leak AttributeError.
+
+    Regression guard: `response.json()` was typed as `dict[str, Any]`, but
+    httpx happily decodes any valid JSON root including lists, strings, or
+    numbers. A response like `[]` would trip the `body.get("response")` call
+    with an AttributeError, bypassing the IntelligenceUnavailableError
+    contract and returning an INTERNAL_ERROR 500 instead.
+    """
+
+    class _ListBodyResponse(_FakeResponse):
+        def json(self) -> Any:  # type: ignore[override]
+            return []
+
+    fake = _FakeAsyncClient(post_outcomes=[_ListBodyResponse()])
+    provider = _build_provider(fake_client=fake)
+
+    with capture_logs() as logs, pytest.raises(IntelligenceUnavailableError):
+        await provider.generate("hi", _NAME_STRING_SCHEMA)
+    event = next(e for e in logs if e.get("event") == "intelligence_unavailable")
+    assert event["cause"] == "invalid_json_shape"
+
+
+async def test_generate_raises_intelligence_unavailable_when_body_json_is_string() -> None:
+    """A bare-string JSON root also lands in the invalid_json_shape bucket."""
+
+    class _StringBodyResponse(_FakeResponse):
+        def json(self) -> Any:  # type: ignore[override]
+            return "just a string"
+
+    fake = _FakeAsyncClient(post_outcomes=[_StringBodyResponse()])
+    provider = _build_provider(fake_client=fake)
+
+    with capture_logs() as logs, pytest.raises(IntelligenceUnavailableError):
+        await provider.generate("hi", _NAME_STRING_SCHEMA)
+    event = next(e for e in logs if e.get("event") == "intelligence_unavailable")
+    assert event["cause"] == "invalid_json_shape"
+
+
 async def test_generate_raises_intelligence_unavailable_when_body_is_not_json() -> None:
     # Ollama (or an interposing proxy) returned a body that response.json()
     # cannot parse. This must map to IntelligenceUnavailableError, not crash

@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 import structlog
@@ -159,13 +159,28 @@ class OllamaGemmaProvider(BaseLanguageModel):
             raise IntelligenceUnavailableError from exc
 
         try:
-            body: dict[str, Any] = response.json()
+            decoded: Any = response.json()
         except (json.JSONDecodeError, ValueError) as exc:
             # Ollama (or an interposing proxy) returned a non-JSON body. Treat
             # the same as unreachability — operators reading the log see the
             # underlying decode error on the log line's `error` field.
             _logger.warning("intelligence_unavailable", cause="non_json_body", error=str(exc))
             raise IntelligenceUnavailableError from exc
+        if not isinstance(decoded, dict):
+            # httpx decodes any valid JSON root, including lists, strings,
+            # and numbers. A non-object root cannot carry Ollama's `response`
+            # field, so short-circuit here rather than blowing up downstream
+            # with an AttributeError on `.get("response")`.
+            _logger.warning(
+                "intelligence_unavailable",
+                cause="invalid_json_shape",
+                shape=type(decoded).__name__,
+            )
+            raise IntelligenceUnavailableError
+        # Pyright's isinstance narrowing gives us `dict[Unknown, Unknown]`;
+        # cast to the shape Ollama's contract promises. Runtime keys are
+        # already guaranteed str because JSON object keys are always strings.
+        body = cast("dict[str, Any]", decoded)
         response_text = body.get("response")
         if not isinstance(response_text, str):
             _logger.warning("intelligence_unavailable", cause="missing_response_field")

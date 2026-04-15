@@ -134,7 +134,7 @@ def _try_parse(cleaned: str) -> tuple[dict[str, Any], None] | tuple[None, _Failu
     except json.JSONDecodeError as exc:
         return None, (
             "json_parse_error",
-            f"json.loads failed: {exc.msg} (line {exc.lineno}, col {exc.colno})",
+            f"JSON decode failed: {exc.msg} (line {exc.lineno}, col {exc.colno})",
         )
     return _coerce_object(value)
 
