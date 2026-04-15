@@ -24,16 +24,15 @@ if TYPE_CHECKING:
 
 import httpx
 import pytest
+from structlog.testing import capture_logs
 
 from app.core.config import Settings
+from app.exceptions import IntelligenceUnavailableError
 from app.features.extraction.intelligence.correction_prompt_builder import (
     CorrectionPromptBuilder,
 )
 from app.features.extraction.intelligence.intelligence_provider import (
     IntelligenceProvider,
-)
-from app.features.extraction.intelligence.intelligence_unavailable_error import (
-    IntelligenceUnavailableError,
 )
 from app.features.extraction.intelligence.ollama_gemma_provider import (
     OllamaGemmaProvider,
@@ -205,9 +204,11 @@ async def test_generate_connect_error_raises_intelligence_unavailable() -> None:
     )
     provider = _build_provider(fake_client=fake)
 
-    with pytest.raises(IntelligenceUnavailableError) as excinfo:
+    with capture_logs() as logs, pytest.raises(IntelligenceUnavailableError) as excinfo:
         await provider.generate("hi", _NAME_STRING_SCHEMA)
-    assert isinstance(excinfo.value.cause, httpx.ConnectError)
+    assert isinstance(excinfo.value.__cause__, httpx.ConnectError)
+    event = next(e for e in logs if e.get("event") == "intelligence_unavailable")
+    assert event["cause"] == "connect_error"
 
 
 async def test_generate_timeout_raises_intelligence_unavailable() -> None:
@@ -216,9 +217,11 @@ async def test_generate_timeout_raises_intelligence_unavailable() -> None:
     )
     provider = _build_provider(fake_client=fake)
 
-    with pytest.raises(IntelligenceUnavailableError) as excinfo:
+    with capture_logs() as logs, pytest.raises(IntelligenceUnavailableError) as excinfo:
         await provider.generate("hi", _NAME_STRING_SCHEMA)
-    assert isinstance(excinfo.value.cause, httpx.TimeoutException)
+    assert isinstance(excinfo.value.__cause__, httpx.TimeoutException)
+    event = next(e for e in logs if e.get("event") == "intelligence_unavailable")
+    assert event["cause"] == "timeout"
 
 
 async def test_generate_http_500_raises_intelligence_unavailable() -> None:
@@ -229,12 +232,22 @@ async def test_generate_http_500_raises_intelligence_unavailable() -> None:
     )
     provider = _build_provider(fake_client=fake)
 
-    with pytest.raises(IntelligenceUnavailableError) as excinfo:
+    with capture_logs() as logs, pytest.raises(IntelligenceUnavailableError) as excinfo:
         await provider.generate("hi", _NAME_STRING_SCHEMA)
-    assert isinstance(excinfo.value.cause, httpx.HTTPStatusError)
+    assert isinstance(excinfo.value.__cause__, httpx.HTTPStatusError)
+    event = next(e for e in logs if e.get("event") == "intelligence_unavailable")
+    assert event["cause"] == "http_5xx"
+    assert event["status"] == 500
 
 
-async def test_generate_http_404_raises_intelligence_unavailable() -> None:
+async def test_generate_http_404_logs_http_4xx_cause() -> None:
+    """4xx responses must log cause=http_4xx, not the generic http_5xx bucket.
+
+    Regression guard: the provider previously logged cause=http_5xx for every
+    HTTPStatusError regardless of actual status. A 404 (model not found), 401
+    (proxy auth), or 400 (malformed request) would all be misreported as a
+    server outage, burying the real operator signal.
+    """
     fake = _FakeAsyncClient(
         post_outcomes=[
             _FakeResponse(status_code=404, status_error=_http_status_error(404)),
@@ -242,8 +255,82 @@ async def test_generate_http_404_raises_intelligence_unavailable() -> None:
     )
     provider = _build_provider(fake_client=fake)
 
-    with pytest.raises(IntelligenceUnavailableError):
+    with capture_logs() as logs, pytest.raises(IntelligenceUnavailableError):
         await provider.generate("hi", _NAME_STRING_SCHEMA)
+    event = next(e for e in logs if e.get("event") == "intelligence_unavailable")
+    assert event["cause"] == "http_4xx"
+    assert event["status"] == 404
+
+
+async def test_generate_http_400_logs_http_4xx_cause() -> None:
+    """Lower 4xx statuses (e.g. bad request) also land in the http_4xx bucket."""
+    fake = _FakeAsyncClient(
+        post_outcomes=[
+            _FakeResponse(status_code=400, status_error=_http_status_error(400)),
+        ],
+    )
+    provider = _build_provider(fake_client=fake)
+
+    with capture_logs() as logs, pytest.raises(IntelligenceUnavailableError):
+        await provider.generate("hi", _NAME_STRING_SCHEMA)
+    event = next(e for e in logs if e.get("event") == "intelligence_unavailable")
+    assert event["cause"] == "http_4xx"
+    assert event["status"] == 400
+
+
+async def test_generate_http_503_logs_http_5xx_cause() -> None:
+    """Upper 5xx statuses stay in the http_5xx bucket alongside 500."""
+    fake = _FakeAsyncClient(
+        post_outcomes=[
+            _FakeResponse(status_code=503, status_error=_http_status_error(503)),
+        ],
+    )
+    provider = _build_provider(fake_client=fake)
+
+    with capture_logs() as logs, pytest.raises(IntelligenceUnavailableError):
+        await provider.generate("hi", _NAME_STRING_SCHEMA)
+    event = next(e for e in logs if e.get("event") == "intelligence_unavailable")
+    assert event["cause"] == "http_5xx"
+    assert event["status"] == 503
+
+
+async def test_generate_raises_intelligence_unavailable_when_body_json_is_list() -> None:
+    """Non-dict JSON bodies must not leak AttributeError.
+
+    Regression guard: `response.json()` was typed as `dict[str, Any]`, but
+    httpx happily decodes any valid JSON root including lists, strings, or
+    numbers. A response like `[]` would trip the `body.get("response")` call
+    with an AttributeError, bypassing the IntelligenceUnavailableError
+    contract and returning an INTERNAL_ERROR 500 instead.
+    """
+
+    class _ListBodyResponse(_FakeResponse):
+        def json(self) -> Any:  # type: ignore[override]
+            return []
+
+    fake = _FakeAsyncClient(post_outcomes=[_ListBodyResponse()])
+    provider = _build_provider(fake_client=fake)
+
+    with capture_logs() as logs, pytest.raises(IntelligenceUnavailableError):
+        await provider.generate("hi", _NAME_STRING_SCHEMA)
+    event = next(e for e in logs if e.get("event") == "intelligence_unavailable")
+    assert event["cause"] == "invalid_json_shape"
+
+
+async def test_generate_raises_intelligence_unavailable_when_body_json_is_string() -> None:
+    """A bare-string JSON root also lands in the invalid_json_shape bucket."""
+
+    class _StringBodyResponse(_FakeResponse):
+        def json(self) -> Any:  # type: ignore[override]
+            return "just a string"
+
+    fake = _FakeAsyncClient(post_outcomes=[_StringBodyResponse()])
+    provider = _build_provider(fake_client=fake)
+
+    with capture_logs() as logs, pytest.raises(IntelligenceUnavailableError):
+        await provider.generate("hi", _NAME_STRING_SCHEMA)
+    event = next(e for e in logs if e.get("event") == "intelligence_unavailable")
+    assert event["cause"] == "invalid_json_shape"
 
 
 async def test_generate_raises_intelligence_unavailable_when_body_is_not_json() -> None:
@@ -258,9 +345,11 @@ async def test_generate_raises_intelligence_unavailable_when_body_is_not_json() 
     fake = _FakeAsyncClient(post_outcomes=[_NonJsonResponse()])
     provider = _build_provider(fake_client=fake)
 
-    with pytest.raises(IntelligenceUnavailableError) as excinfo:
+    with capture_logs() as logs, pytest.raises(IntelligenceUnavailableError) as excinfo:
         await provider.generate("hi", _NAME_STRING_SCHEMA)
-    assert isinstance(excinfo.value.cause, json.JSONDecodeError)
+    assert isinstance(excinfo.value.__cause__, json.JSONDecodeError)
+    event = next(e for e in logs if e.get("event") == "intelligence_unavailable")
+    assert event["cause"] == "non_json_body"
 
 
 async def test_generate_retries_on_bad_json_and_succeeds_on_second_attempt() -> None:
@@ -345,6 +434,14 @@ def test_provider_instance_satisfies_intelligence_provider_protocol() -> None:
     provider = _build_provider(fake_client=fake)
 
     assert isinstance(provider, IntelligenceProvider)
+
+
+def test_intelligence_unavailable_error_is_domain_error_subclass() -> None:
+    from app.exceptions.base import DomainError
+
+    assert issubclass(IntelligenceUnavailableError, DomainError)
+    assert IntelligenceUnavailableError.code == "INTELLIGENCE_UNAVAILABLE"
+    assert IntelligenceUnavailableError.http_status == 503
 
 
 # The `infer` tests below are SYNC pytest functions because `infer` calls

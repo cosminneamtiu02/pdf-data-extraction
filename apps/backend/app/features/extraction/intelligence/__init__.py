@@ -14,9 +14,6 @@ from app.features.extraction.intelligence.generation_result import GenerationRes
 from app.features.extraction.intelligence.intelligence_provider import (
     IntelligenceProvider,
 )
-from app.features.extraction.intelligence.structured_output_error import (
-    StructuredOutputError,
-)
 from app.features.extraction.intelligence.structured_output_validator import (
     StructuredOutputValidator,
 )
@@ -25,6 +22,5 @@ __all__ = [
     "CorrectionPromptBuilder",
     "GenerationResult",
     "IntelligenceProvider",
-    "StructuredOutputError",
     "StructuredOutputValidator",
 ]
