@@ -17,24 +17,7 @@ from typing import Any
 import pytest
 import yaml
 
-from app.features.extraction.skills import skill_loader as skill_loader_module
 from scripts.validate_skills import main, validate
-
-
-class _SilentLogger:
-    """Drop-in spy for `SkillLoader._logger` that swallows every call.
-
-    `SkillLoader` emits a `skill_manifest_empty` warning on empty corpora.
-    `structlog`'s global config differs between unit-only runs and full-
-    session runs where `configure_logging()` has already been called, so
-    the warning can leak into `capsys`'s captured stdout. Replacing the
-    module-level logger with this stub keeps the validator's own stdout
-    line the only thing captured — matching the test-spec contract of
-    exact output equality without papering over real regressions.
-    """
-
-    def warning(self, event: str, **kwargs: object) -> None:
-        del event, kwargs
 
 
 def _write_skill(
@@ -84,10 +67,10 @@ def test_validate_three_valid_skills_exits_zero_and_prints_count(
 def test_validate_empty_directory_exits_zero_with_zero_count(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(skill_loader_module, "_logger", _SilentLogger())
-
+    # The `contextlib.redirect_stdout(sys.stderr)` wrapper in `validate()`
+    # ensures the `skill_manifest_empty` structlog warning never reaches
+    # stdout — no monkeypatching needed.
     code = validate(tmp_path)
 
     captured = capsys.readouterr()
@@ -146,8 +129,9 @@ def test_module_invocation_against_empty_dir_keeps_stdout_clean(tmp_path: Path) 
     """Regression: `SkillLoader` warns on empty corpora via structlog; the CLI
     must route that warning to stderr so stdout stays a single clean result
     line. Runs the real entry point in a subprocess — any regression in
-    `_configure_cli_logging` surfaces here, not just in the `_SilentLogger`
-    monkeypatched unit tests.
+    `validate()`'s `redirect_stdout` wrapper surfaces here, not just in
+    same-process unit tests — a fresh interpreter gives structlog a fresh
+    chance to write to stdout.
     """
     result = subprocess.run(
         [sys.executable, "-m", "scripts.validate_skills", str(tmp_path)],
@@ -188,13 +172,31 @@ def test_main_with_no_argument_falls_back_to_settings_skills_dir(
     # drop any pre-existing positional args so `main()` must use the fallback.
     monkeypatch.setenv("SKILLS_DIR", str(tmp_path))
     monkeypatch.setattr(sys, "argv", ["validate_skills"])
-    monkeypatch.setattr(skill_loader_module, "_logger", _SilentLogger())
 
     code = main()
 
     captured = capsys.readouterr()
     assert code == 0
     assert captured.out == "\u2714 0 skills validated\n"
+
+
+def test_main_rejects_extra_positional_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A typo like `validate_skills ./skills /typo` must not silently succeed.
+
+    Without this guard, `main()` reads only `args[0]` and drops the rest,
+    which hides operator mistakes (original external finding).
+    """
+    monkeypatch.setattr(sys, "argv", ["validate_skills", "./a", "./b"])
+
+    code = main()
+
+    captured = capsys.readouterr()
+    assert code == 2
+    assert captured.out == ""
+    assert "expected at most 1 positional argument" in captured.err
 
 
 def test_import_containment_no_fastapi_or_heavy_deps() -> None:

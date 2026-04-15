@@ -18,10 +18,9 @@ are absent, the default from `Settings` is used.
 
 from __future__ import annotations
 
+import contextlib
 import sys
 from pathlib import Path
-
-import structlog
 
 from app.core.config import Settings
 from app.exceptions import SkillValidationFailedError
@@ -36,11 +35,19 @@ def validate(skills_dir: Path | str) -> int:
     (including the empty-directory case, which `SkillLoader` treats as a
     warn-and-continue). Returns 1 on any aggregated validation failure,
     with the reason written to stderr.
+
+    `SkillLoader` emits a `skill_manifest_empty` structlog warning on
+    empty directories; structlog's default `PrintLoggerFactory` writes
+    to stdout, which would contaminate the promised single result line.
+    The `redirect_stdout(sys.stderr)` wrapper keeps stdout clean for the
+    function's own output regardless of how the caller has (or hasn't)
+    configured structlog, without mutating any global logging state.
     """
     skills_dir = Path(skills_dir)
     loader = SkillLoader()
     try:
-        loaded = loader.load(skills_dir)
+        with contextlib.redirect_stdout(sys.stderr):
+            loaded = loader.load(skills_dir)
     except SkillValidationFailedError as exc:
         sys.stderr.write(_format_error(exc) + "\n")
         return 1
@@ -50,41 +57,42 @@ def validate(skills_dir: Path | str) -> int:
 
 
 def _format_error(exc: SkillValidationFailedError) -> str:
-    """Render a `SkillValidationFailedError` as a single human-readable block."""
+    """Render a `SkillValidationFailedError` as a single human-readable block.
+
+    `SkillLoader` already includes file or directory context inside the
+    aggregated `reason`, so prefer that message verbatim to avoid
+    duplicating paths in CLI stderr output.
+    """
     if exc.params is None:
         return str(exc)
     dumped = exc.params.model_dump()
     file_path = dumped.get("file", "") or ""
     reason = dumped.get("reason", "") or ""
-    if file_path and reason:
-        return f"{file_path}: {reason}"
-    return str(reason) if reason else str(exc)
+    if reason:
+        return str(reason)
+    if file_path:
+        return str(file_path)
+    return str(exc)
 
 
 def _default_skills_dir() -> Path:
     return Settings().skills_dir
 
 
-def _configure_cli_logging() -> None:
-    """Route structlog output to stderr so stdout stays clean for the result line.
-
-    `SkillLoader` emits a `skill_manifest_empty` warning when called against an
-    empty directory (the default `apps/backend/skills/` case). Without this
-    configuration, structlog's default `PrintLoggerFactory` writes to stdout,
-    which would contaminate the single `✔ N skills validated` line that the
-    CLI contract promises. CLI tools put data on stdout and diagnostics on
-    stderr; we enforce that here for the entry-point path only — programmatic
-    `validate()` callers keep whatever structlog config they set up.
-    """
-    structlog.configure(
-        logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
-    )
-
-
 def main(argv: list[str] | None = None) -> int:
-    """CLI entry point. Accepts one positional argument: the skills directory."""
-    _configure_cli_logging()
+    """CLI entry point. Accepts at most one positional argument: the skills directory.
+
+    Extra positional arguments are rejected with a non-zero exit code so a
+    typo like `validate_skills ./skills /does/not/exist` surfaces loudly
+    instead of silently validating the first path and dropping the rest.
+    """
     args = sys.argv[1:] if argv is None else argv
+    if len(args) > 1:
+        sys.stderr.write(
+            "usage: python -m scripts.validate_skills [<skills_dir>]\n"
+            f"error: expected at most 1 positional argument, got {len(args)}\n",
+        )
+        return 2
     skills_dir = Path(args[0]) if args else _default_skills_dir()
     return validate(skills_dir)
 
