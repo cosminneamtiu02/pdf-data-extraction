@@ -108,7 +108,7 @@ async def test_docling_override_flows_from_settings(tmp_path: Path) -> None:
     # pydantic-settings loads the remaining fields from env / defaults
     settings = Settings(  # type: ignore[reportCallIssue]
         skills_dir=tmp_path,
-        docling_ocr_default="on",
+        docling_ocr_default="auto",
         docling_table_mode_default="fast",
     )
     app = create_app(settings)
