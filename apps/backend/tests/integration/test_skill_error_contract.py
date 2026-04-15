@@ -22,7 +22,11 @@ _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def _settings_with_skills(skills_dir: Path) -> Settings:
-    return Settings(skills_dir=skills_dir)  # type: ignore[reportCallIssue]
+    # Pin `app_env` so `configure_logging` always picks the key-value
+    # renderer; otherwise a stray `APP_ENV=production` in the runner env
+    # flips logging to JSON and breaks the `file=` / `reason=` substring
+    # assertions below.
+    return Settings(skills_dir=skills_dir, app_env="development")  # type: ignore[reportCallIssue]
 
 
 async def test_create_app_logs_critical_on_skill_validation_failed(

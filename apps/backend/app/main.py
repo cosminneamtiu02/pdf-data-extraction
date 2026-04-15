@@ -82,6 +82,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "skill_validation_failed",
             file=params.get("file"),
             reason=params.get("reason"),
+            exc_info=True,
         )
         raise
     application.state.skill_manifest = SkillManifest(loaded)
