@@ -148,4 +148,25 @@ async def test_engine_drops_extracted_fields_not_in_schema() -> None:
 
     results = await ExtractionEngine().extract(text, skill, _FakeProvider(canned))
 
-    assert {r.field_name for r in results} == {"name"}
+    assert [r.field_name for r in results] == ["name"]
+
+
+async def test_engine_emits_placeholder_for_missing_declared_field() -> None:
+    """Declared fields missing from LangExtract's output must still appear
+    as placeholder RawExtraction rows so every declared field is present.
+    """
+
+    text = "Alice is 30 years old and lives in Paris."
+    canned = {
+        "extractions": [{"name": "Alice", "name_attributes": {}}],
+    }
+    skill = _skill(("name", "age", "city"))
+
+    results = await ExtractionEngine().extract(text, skill, _FakeProvider(canned))
+
+    assert [r.field_name for r in results] == ["name", "age", "city"]
+    by_field = {r.field_name: r for r in results}
+    assert by_field["age"].value is None
+    assert by_field["age"].grounded is False
+    assert by_field["city"].value is None
+    assert by_field["city"].grounded is False

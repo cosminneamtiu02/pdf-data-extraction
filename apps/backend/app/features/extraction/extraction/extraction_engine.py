@@ -6,11 +6,15 @@ test `tests/unit/features/extraction/extraction/test_no_third_party_imports.py`
 until the full `import-linter` contract arrives in PDFX-E007-F004.
 
 The engine takes a `Skill`, a pre-concatenated document text, and an
-`IntelligenceProvider`, and returns a list of `RawExtraction` — one per
-field DECLARED in `skill.output_schema`, deduped first-wins across
-LangExtract chunks. Hallucinated field names not present in the skill are
-dropped so downstream `SpanResolver` / response assembly never see fields
-the skill did not declare.
+`IntelligenceProvider`, and returns a list of `RawExtraction` — exactly
+one per field declared in `skill.output_schema.properties`, in declared
+order. Fields LangExtract reported but the skill did not declare are
+dropped (hallucinations never leak downstream). Fields the skill declared
+but LangExtract did not return are still emitted as placeholder
+`RawExtraction(value=None, grounded=False)` rows so every declared field
+is present in the output list — matching the project's "every declared
+field always present" API-stability criterion. Duplicate field names
+within LangExtract's output are deduped first-wins.
 
 **StructuredOutputValidator routing.** LangExtract's orchestration calls
 `model.infer(...)` directly, which would bypass the project's validator /
@@ -18,14 +22,17 @@ retry path (the fence-stripping + JSON-parse-with-retry loop that gives the
 service its structured-output success rate). To keep that invariant intact,
 the engine wraps the caller-supplied `IntelligenceProvider` in a private
 `_ValidatingLangExtractAdapter(BaseLanguageModel)`. The adapter's `infer`
-calls `provider.generate(prompt, permissive_schema)` per prompt — which
-routes through `StructuredOutputValidator` — and yields the re-serialized
-cleaned JSON text for LangExtract's resolver to parse. The "permissive
-schema" (`{"type": "object"}`) is deliberate: field-level JSONSchema lives
-in `skill.output_schema` but targets extraction CONTENT, not LangExtract's
-`{"extractions":[...]}` wrapper format. Using the skill schema here would
-always fail. The permissive schema exercises the validator's cleanup and
-retry-on-parse-error behavior without false negatives on the wrapper shape.
+runs the entire batch under ONE `asyncio.run` (so every prompt shares one
+event loop, matching providers that hold loop-bound connection pools) and
+routes each prompt through `provider.generate(prompt, wrapper_schema)` —
+which exercises `StructuredOutputValidator` — then yields the re-serialized
+cleaned JSON text for LangExtract's resolver to parse. The wrapper schema
+is not `skill.output_schema` (which describes extraction CONTENT and would
+always fail against LangExtract's wrapper format) but the LangExtract
+envelope shape: `{"type": "object", "required": ["extractions"],
+"properties": {"extractions": {"type": "array"}}}`. That validates the
+raw model text enough to retry on missing-wrapper failures without leaking
+into field-level semantics.
 """
 
 from __future__ import annotations
@@ -49,13 +56,19 @@ if TYPE_CHECKING:
     from app.features.extraction.skills.skill_example import SkillExample
 
 
-# Permissive schema used for the LangExtract-path validator call. The caller's
-# real field-level schema lives on `skill.output_schema` but describes
-# extraction CONTENT, not LangExtract's wrapper shape — it cannot be used
-# directly on raw model output. This schema still engages the validator's
-# cleanup + JSON-parse + retry loop (which is what we want) while accepting
-# any JSON object as structurally valid (which is what LangExtract needs).
-_PERMISSIVE_OBJECT_SCHEMA: dict[str, Any] = {"type": "object"}
+# Schema for the validator call on the LangExtract path. The caller's real
+# field-level schema (`skill.output_schema`) describes extraction CONTENT,
+# not LangExtract's `{"extractions": [...]}` wrapper, so it cannot be used
+# to validate raw model output directly. This schema enforces the wrapper
+# shape — object with a top-level `extractions` ARRAY — which is what the
+# Ollama/Gemma prompt asks for and what LangExtract's resolver expects to
+# parse, without leaking into field-level semantics. The validator's
+# fence-strip + JSON parse + retry loop runs on every call.
+_LANGEXTRACT_WRAPPER_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {"extractions": {"type": "array"}},
+    "required": ["extractions"],
+}
 
 
 class _ValidatingLangExtractAdapter(BaseLanguageModel):
@@ -76,11 +89,23 @@ class _ValidatingLangExtractAdapter(BaseLanguageModel):
         batch_prompts: Sequence[str],
         **kwargs: Any,  # noqa: ARG002 - LangExtract passes orchestrator kwargs that we do not consume
     ) -> Iterator[Sequence[ScoredOutput]]:
-        for prompt in batch_prompts:
-            result = asyncio.run(
-                self._inner.generate(prompt, _PERMISSIVE_OBJECT_SCHEMA),
-            )
-            yield [ScoredOutput(score=1.0, output=json.dumps(result.data))]
+        # Run the entire batch under ONE `asyncio.run` so every prompt
+        # shares one event loop. Per-prompt `asyncio.run` would create a
+        # fresh loop each time, which breaks providers like
+        # `OllamaGemmaProvider` that hold a loop-bound `httpx.AsyncClient`
+        # connection pool: the second prompt would hit a client whose pool
+        # is bound to a closed loop. See the sync/async-bridge note in
+        # `ollama_gemma_provider.py`.
+        results = asyncio.run(self._generate_batch(list(batch_prompts)))
+        for data in results:
+            yield [ScoredOutput(score=1.0, output=json.dumps(data))]
+
+    async def _generate_batch(self, prompts: list[str]) -> list[dict[str, Any]]:
+        outputs: list[dict[str, Any]] = []
+        for prompt in prompts:
+            result = await self._inner.generate(prompt, _LANGEXTRACT_WRAPPER_SCHEMA)
+            outputs.append(result.data)
+        return outputs
 
 
 class ExtractionEngine:
@@ -101,8 +126,16 @@ class ExtractionEngine:
         if not concatenated_text:
             return []
 
+        declared_fields = _declared_field_names(skill)
+        if not declared_fields:
+            # No declared fields means no API contract to honor — short-
+            # circuit rather than inviting hallucinations through. A skill
+            # with zero output fields is a skill-authoring error caught
+            # upstream by `SkillYamlSchema` validation, but the engine
+            # stays strict here as defense in depth.
+            return []
+
         examples = self._build_examples(skill.examples)
-        allowed_fields = _declared_field_names(skill)
         adapter = _ValidatingLangExtractAdapter(provider)
 
         result = await asyncio.to_thread(
@@ -113,7 +146,7 @@ class ExtractionEngine:
             adapter,
         )
 
-        return self._to_raw_extractions(result, allowed_fields)
+        return self._to_raw_extractions(result, declared_fields)
 
     @staticmethod
     def _invoke_langextract(
@@ -157,20 +190,49 @@ class ExtractionEngine:
     @staticmethod
     def _to_raw_extractions(
         result: AnnotatedDocument,
-        allowed_fields: frozenset[str],
+        declared_fields: tuple[str, ...],
     ) -> list[RawExtraction]:
+        """Map LangExtract's native `Extraction` list to `RawExtraction`.
+
+        Invariants enforced here (from PDFX-E004-F003 AC + the project's
+        "every declared field always present" API-stability rule):
+
+        - Output order matches `declared_fields` exactly.
+        - Fields NOT declared in `skill.output_schema.properties` are
+          dropped (hallucinated / extra fields never leak downstream).
+        - Fields declared but MISSING from LangExtract's output appear as
+          placeholder `RawExtraction(value=None, grounded=False)` rows so
+          downstream assembly can always look them up by field name.
+        - Duplicate field names within LangExtract's output are deduped
+          first-wins.
+        """
         extractions = result.extractions or []
-        seen: set[str] = set()
-        output: list[RawExtraction] = []
+        by_field: dict[str, Extraction] = {}
         for extraction in extractions:
             field_name = extraction.extraction_class
-            if allowed_fields and field_name not in allowed_fields:
-                # Hallucinated / extra field not declared in skill.output_schema:
-                # drop it so downstream consumers only ever see declared fields.
+            if field_name not in declared_fields:
                 continue
-            if field_name in seen:
+            if field_name in by_field:
                 continue
-            seen.add(field_name)
+            by_field[field_name] = extraction
+
+        output: list[RawExtraction] = []
+        for field_name in declared_fields:
+            extraction = by_field.get(field_name)
+            if extraction is None:
+                # Declared but missing — emit a placeholder so callers can
+                # still look this field up by name and see status=missing.
+                output.append(
+                    RawExtraction(
+                        field_name=field_name,
+                        value=None,
+                        char_offset_start=None,
+                        char_offset_end=None,
+                        grounded=False,
+                        attempts=1,
+                    ),
+                )
+                continue
 
             interval = extraction.char_interval
             start = interval.start_pos if interval is not None else None
@@ -190,16 +252,16 @@ class ExtractionEngine:
         return output
 
 
-def _declared_field_names(skill: Skill) -> frozenset[str]:
+def _declared_field_names(skill: Skill) -> tuple[str, ...]:
     """Names of fields declared in the skill's JSONSchema `properties`.
 
-    Returns an empty frozenset if the skill schema has no `properties` block,
-    which disables filtering (the engine accepts everything LangExtract
-    returned — used only as a defensive fallback for skills authored without
-    a structured properties block).
+    Returns an empty tuple if the skill schema has no `properties` block —
+    which `extract` uses as a "strict-empty" signal to return no results
+    rather than letting LangExtract output pass through unfiltered. Order
+    of insertion into the JSONSchema is preserved (Python dicts are
+    ordered) and becomes the output order of `RawExtraction`.
     """
     properties_obj: Any = skill.output_schema.get("properties")
     if not isinstance(properties_obj, dict):
-        return frozenset()
-    keys: list[str] = [str(name) for name in cast("dict[Any, Any]", properties_obj)]
-    return frozenset(keys)
+        return ()
+    return tuple(str(name) for name in cast("dict[Any, Any]", properties_obj))

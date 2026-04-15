@@ -211,7 +211,85 @@ async def test_extract_drops_fields_not_declared_in_output_schema(
 
     results = await ExtractionEngine().extract(text, skill, _FakeProvider())
 
-    assert {r.field_name for r in results} == {"name", "age"}
+    assert [r.field_name for r in results] == ["name", "age"]
+
+
+async def test_extract_emits_placeholder_for_declared_field_missing_from_output(
+    patch_extract: Any,
+) -> None:
+    """Every declared field must appear in the result exactly once, even
+    when LangExtract did not return it. Missing fields become placeholder
+    RawExtraction rows with value=None and grounded=False so downstream
+    assembly can always look them up by name (API-stability guarantee).
+    """
+
+    text = "Alice is 30."
+    skill = _build_skill(("name", "age", "city"))
+    annotated = AnnotatedDocument(
+        extractions=[_extraction("name", "Alice", 0, 5)],
+        text=text,
+    )
+    patch_extract(annotated)
+
+    results = await ExtractionEngine().extract(text, skill, _FakeProvider())
+
+    assert [r.field_name for r in results] == ["name", "age", "city"]
+    name_row, age_row, city_row = results
+    assert name_row.value == "Alice"
+    assert name_row.grounded is True
+    assert age_row.value is None
+    assert age_row.char_offset_start is None
+    assert age_row.char_offset_end is None
+    assert age_row.grounded is False
+    assert city_row.value is None
+    assert city_row.grounded is False
+
+
+async def test_extract_returns_results_in_declared_schema_order(
+    patch_extract: Any,
+) -> None:
+    """Output order must follow the skill's `output_schema.properties`
+    insertion order, not LangExtract's return order.
+    """
+
+    text = "..."
+    skill = _build_skill(("city", "age", "name"))  # intentional non-alpha order
+    annotated = AnnotatedDocument(
+        extractions=[
+            _extraction("name", "Alice", 0, 5),
+            _extraction("age", "30", 9, 11),
+            _extraction("city", "Paris", 35, 40),
+        ],
+        text=text,
+    )
+    patch_extract(annotated)
+
+    results = await ExtractionEngine().extract(text, skill, _FakeProvider())
+
+    assert [r.field_name for r in results] == ["city", "age", "name"]
+
+
+async def test_extract_with_zero_declared_fields_returns_empty_without_calling_langextract(
+    patch_extract: Any,
+) -> None:
+    """A skill whose output_schema has no `properties` (degenerate case)
+    must not invite hallucinated fields through. Engine short-circuits.
+    """
+
+    schema_no_properties: dict[str, Any] = {"type": "object"}
+    skill = Skill(
+        name="empty-skill",
+        version=1,
+        description=None,
+        prompt="do nothing",
+        examples=(SkillExample(input="x", output={}),),
+        output_schema=MappingProxyType(schema_no_properties),
+    )
+
+    results = await ExtractionEngine().extract("some text", skill, _FakeProvider())
+
+    assert results == []
+    assert patch_extract.calls == []  # type: ignore[attr-defined]
 
 
 async def test_extract_with_empty_text_returns_empty_list_without_invoking_langextract(
@@ -225,13 +303,23 @@ async def test_extract_with_empty_text_returns_empty_list_without_invoking_lange
     assert patch_extract.calls == []  # type: ignore[attr-defined]
 
 
-async def test_extract_with_no_extractions_returns_empty_list(patch_extract: Any) -> None:
-    skill = _build_skill(("name",))
+async def test_extract_with_no_langextract_output_returns_placeholders(
+    patch_extract: Any,
+) -> None:
+    """When LangExtract returns nothing but the skill declares fields, the
+    engine emits one placeholder RawExtraction per declared field (value
+    None, grounded False) — the "every declared field always present"
+    invariant.
+    """
+
+    skill = _build_skill(("name", "age"))
     patch_extract(AnnotatedDocument(extractions=[], text="hello"))
 
     results = await ExtractionEngine().extract("hello", skill, _FakeProvider())
 
-    assert results == []
+    assert [r.field_name for r in results] == ["name", "age"]
+    assert all(r.value is None for r in results)
+    assert all(r.grounded is False for r in results)
 
 
 async def test_extract_with_list_return_type_uses_first_document(
@@ -322,9 +410,10 @@ async def test_extract_wraps_provider_in_validating_adapter(
 
 
 def test_validating_adapter_infer_routes_through_provider_generate() -> None:
-    """The adapter's `infer` must call `inner.generate(prompt, {...})` per
-    prompt and yield one `ScoredOutput` per call carrying the JSON-serialized
-    generate-result data, so LangExtract sees validator-cleaned text.
+    """The adapter's `infer` must call `inner.generate(prompt, wrapper_schema)`
+    per prompt and yield one `ScoredOutput` per call carrying the
+    JSON-serialized generate-result data, so LangExtract sees
+    validator-cleaned text.
     """
 
     provider = _FakeProvider()
@@ -335,12 +424,53 @@ def test_validating_adapter_infer_routes_through_provider_generate() -> None:
     assert len(provider.calls) == 2
     assert provider.calls[0][0] == "prompt-a"
     assert provider.calls[1][0] == "prompt-b"
-    # Permissive schema lets the validator run without false negatives.
-    assert provider.calls[0][1] == {"type": "object"}
+    # Wrapper schema: enforces {"extractions": [...]} envelope shape on the
+    # raw model text so the validator retries on missing-wrapper failures,
+    # without conflating skill.output_schema (which describes CONTENT).
+    wrapper_schema = provider.calls[0][1]
+    assert wrapper_schema["type"] == "object"
+    assert wrapper_schema["required"] == ["extractions"]
+    assert wrapper_schema["properties"]["extractions"]["type"] == "array"
     assert len(results) == 2
     assert len(results[0]) == 1
     assert results[0][0].output is not None
     assert json.loads(results[0][0].output) == {"ok": True}
+
+
+def test_validating_adapter_runs_whole_batch_in_a_single_event_loop() -> None:
+    """The adapter must NOT call `asyncio.run` per prompt, because providers
+    like `OllamaGemmaProvider` hold loop-bound `httpx.AsyncClient` pools —
+    a fresh loop per prompt would cause a "loop is closed" error on prompt
+    two. Assert that every prompt's `generate` runs on the same event loop
+    instance by capturing `asyncio.get_running_loop()` inside generate().
+    """
+
+    captured_loops: list[int] = []
+
+    class _LoopCapturingProvider:
+        async def generate(
+            self,
+            prompt: str,
+            output_schema: dict[str, Any],
+        ) -> GenerationResult:
+            _ = prompt
+            _ = output_schema
+            import asyncio as _asyncio
+
+            captured_loops.append(id(_asyncio.get_running_loop()))
+            return GenerationResult(
+                data={"ok": True},
+                attempts=1,
+                raw_output='{"ok": true}',
+            )
+
+    adapter = _ValidatingLangExtractAdapter(_LoopCapturingProvider())
+    list(adapter.infer(["p1", "p2", "p3"]))
+
+    assert len(captured_loops) == 3
+    assert len(set(captured_loops)) == 1, (
+        f"expected all prompts on one event loop, got {captured_loops}"
+    )
 
 
 def test_extract_method_is_async() -> None:
