@@ -88,7 +88,7 @@ def test_skill_output_schema_is_deeply_immutable() -> None:
 
 def test_docling_config_is_merged_not_raw_override() -> None:
     schema = _valid_schema(docling=SkillDoclingConfig(ocr="auto"))
-    default = SkillDoclingConfig(ocr="none", table_mode="fast")
+    default = SkillDoclingConfig(ocr="off", table_mode="fast")
 
     skill = Skill.from_schema(schema, default_docling=default)
 
@@ -127,7 +127,7 @@ def test_from_schema_after_load_from_file_merges_yaml_docling(
     schema = SkillYamlSchema.load_from_file(path)
     skill = Skill.from_schema(
         schema,
-        default_docling=SkillDoclingConfig(ocr="none", table_mode="fast"),
+        default_docling=SkillDoclingConfig(ocr="off", table_mode="fast"),
     )
 
     assert isinstance(skill.docling_config, SkillDoclingConfig)

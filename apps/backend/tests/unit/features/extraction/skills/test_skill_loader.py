@@ -144,11 +144,11 @@ def test_load_applies_docling_defaults(tmp_path: Path) -> None:
     _write_skill(tmp_path, dir_name="invoice", file_name="1.yaml", version=1)
 
     loader = SkillLoader(
-        default_docling=SkillDoclingConfig(ocr="on", table_mode="fast"),
+        default_docling=SkillDoclingConfig(ocr="auto", table_mode="fast"),
     )
     loaded = loader.load(tmp_path)
 
-    assert loaded[("invoice", 1)].docling_config.ocr == "on"
+    assert loaded[("invoice", 1)].docling_config.ocr == "auto"
     assert loaded[("invoice", 1)].docling_config.table_mode == "fast"
 
 
@@ -162,7 +162,7 @@ def test_load_skill_override_beats_default(tmp_path: Path) -> None:
     )
 
     loader = SkillLoader(
-        default_docling=SkillDoclingConfig(ocr="on", table_mode="fast"),
+        default_docling=SkillDoclingConfig(ocr="auto", table_mode="fast"),
     )
     loaded = loader.load(tmp_path)
 

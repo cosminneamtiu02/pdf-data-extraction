@@ -29,9 +29,10 @@ tasks:
       - task: check:errors
 
   check:lint:
-    desc: Run the linter
+    desc: Run the linter and verify formatting (read-only)
     cmds:
       - task: lint
+      - task: format:check
 
   check:types:
     desc: Run the type checker
@@ -45,15 +46,16 @@ tasks:
       - uv run lint-imports --config architecture/import-linter-contracts.ini
 
   check:test:
-    desc: Run unit and integration tests
+    desc: Run unit, integration, and contract tests
     cmds:
       - task: test:unit
       - task: test:integration
+      - task: test:contract
 
   check:errors:
-    desc: Regenerate error contracts from errors.yaml (idempotent when in sync)
+    desc: Fail on generated error contract drift vs errors.yaml
     cmds:
-      - task: errors:generate
+      - task: errors:check
 
   # ── Testing ──────────────────────────────────────────────────
   test:
@@ -100,6 +102,12 @@ tasks:
     dir: "{{.BACKEND_DIR}}"
     cmds:
       - uv run ruff format .
+
+  format:check:
+    desc: Verify formatting without rewriting files (CI parity with ruff format --check)
+    dir: "{{.BACKEND_DIR}}"
+    cmds:
+      - uv run ruff format --check .
 
   # ── Skills ───────────────────────────────────────────────────
   skills:validate:
