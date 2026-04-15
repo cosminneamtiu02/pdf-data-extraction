@@ -7,15 +7,18 @@ only when PDFX-E003-F002 actually needs to pass them to Docling.
 """
 
 from dataclasses import dataclass
+from typing import get_args
 
-_VALID_OCR_MODES: frozenset[str] = frozenset({"auto", "force", "off"})
-_VALID_TABLE_MODES: frozenset[str] = frozenset({"fast", "accurate"})
+from app.core.docling_modes import OcrMode, TableMode
+
+_VALID_OCR_MODES: frozenset[str] = frozenset(get_args(OcrMode))
+_VALID_TABLE_MODES: frozenset[str] = frozenset(get_args(TableMode))
 
 
 @dataclass(frozen=True)
 class DoclingConfig:
-    ocr: str
-    table_mode: str
+    ocr: OcrMode
+    table_mode: TableMode
 
     def __post_init__(self) -> None:
         # Fail fast on typos. `DoclingDocumentParser._default_converter_factory`

@@ -298,3 +298,38 @@ def test_description_and_docling_populate_when_provided(tmp_path: Path) -> None:
     assert schema.docling is not None
     assert schema.docling.ocr == "auto"
     assert schema.docling.table_mode == "fast"
+
+
+@pytest.mark.parametrize(
+    ("field", "bad_value"),
+    [
+        ("ocr", "banana"),
+        ("ocr", "on"),
+        ("table_mode", "turbo"),
+        ("table_mode", "slow"),
+    ],
+)
+def test_docling_rejects_invalid_values_at_load_time(
+    tmp_path: Path, field: str, bad_value: str
+) -> None:
+    """Typos in a skill's `docling:` block must fail at YAML load, not at runtime.
+
+    Prior to PDFX-E002-F001 hardening, `SkillDoclingConfig.ocr` and
+    `.table_mode` were typed as plain `str`, so `ocr: banana` loaded
+    successfully and only surfaced as a runtime `DoclingConfig` ValueError
+    deep in the parser layer — exactly the silent-drift the closed-shape
+    validator is supposed to prevent.
+    """
+    body: dict[str, object] = {
+        "name": "invoice",
+        "version": 1,
+        "prompt": "p",
+        "examples": [{"input": "x", "output": {}}],
+        "output_schema": {"type": "object"},
+        "docling": {field: bad_value},
+    }
+    path = tmp_path / "1.yaml"
+    path.write_text(yaml.safe_dump(body), encoding="utf-8")
+
+    with pytest.raises(ValidationError):
+        SkillYamlSchema.load_from_file(path)
