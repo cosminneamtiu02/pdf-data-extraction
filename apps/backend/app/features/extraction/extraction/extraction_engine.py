@@ -137,12 +137,11 @@ class ExtractionEngine:
         """Run LangExtract against `concatenated_text` using `skill` + `provider`.
 
         Returns one `RawExtraction` per distinct field name declared in
-        `skill.output_schema`. Empty input text short-circuits to an empty
-        result without touching the provider.
+        `skill.output_schema`. Empty input text short-circuits LangExtract
+        but still emits a placeholder row per declared field so the
+        "every declared field always present" invariant (CLAUDE.md:104)
+        holds on the empty-text path too.
         """
-        if not concatenated_text:
-            return []
-
         declared_fields = _declared_field_names(skill)
         if not declared_fields:
             # No declared fields means no API contract to honor — short-
@@ -151,6 +150,18 @@ class ExtractionEngine:
             # upstream by `SkillYamlSchema` validation, but the engine
             # stays strict here as defense in depth.
             return []
+
+        if not concatenated_text:
+            # No prompt is worth sending for empty text, but downstream
+            # assembly still needs one row per declared field. Route
+            # through the same placeholder path `_to_raw_extractions`
+            # uses for declared-but-missing fields so the shape is
+            # identical to the normal "LangExtract returned nothing"
+            # branch.
+            return self._to_raw_extractions(
+                AnnotatedDocument(extractions=[], text=""),
+                declared_fields,
+            )
 
         examples = self._build_examples(skill.examples)
         # Capture the running loop so the adapter, once LangExtract calls
