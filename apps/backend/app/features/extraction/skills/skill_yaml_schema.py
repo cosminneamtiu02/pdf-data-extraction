@@ -56,7 +56,9 @@ class SkillYamlSchema(BaseModel):
                 f"output_schema is not a valid JSONSchema: {exc.message}",
             )
             # If the schema itself is broken, we cannot validate examples against it.
-            raise SkillValidationFailedError(reason="\n".join(problems)) from exc
+            # `file` is filled in by `load_from_file` when it re-raises with the
+            # known path; inner-validator raises never escape unwrapped.
+            raise SkillValidationFailedError(file="", reason="\n".join(problems)) from exc
 
         validator = Draft7Validator(self.output_schema)
         for index, example in enumerate(self.examples):
@@ -74,7 +76,7 @@ class SkillYamlSchema(BaseModel):
                 )
 
         if problems:
-            raise SkillValidationFailedError(reason="\n".join(problems))
+            raise SkillValidationFailedError(file="", reason="\n".join(problems))
 
         return self
 
@@ -85,6 +87,7 @@ class SkillYamlSchema(BaseModel):
         Performs filename-vs-body version consistency checking in addition to
         the Pydantic + JSONSchema validation run by the model validator.
         """
+        file_str = str(path)
         try:
             filename_version = int(path.stem)
         except ValueError as exc:
@@ -92,27 +95,33 @@ class SkillYamlSchema(BaseModel):
                 f"skill filename stem '{path.stem}' is not an integer; "
                 "skill files must be named '<integer>.yaml'"
             )
-            raise SkillValidationFailedError(reason=msg) from exc
+            raise SkillValidationFailedError(file=file_str, reason=msg) from exc
 
         raw_text = path.read_text(encoding="utf-8")
         try:
             data = yaml.safe_load(raw_text)
         except yaml.YAMLError as exc:
-            # Schema errors stay path-free; SkillLoader is the single place that
-            # prepends the file path when aggregating across the manifest walk.
             msg = f"skill YAML is not parseable: {exc}"
-            raise SkillValidationFailedError(reason=msg) from exc
+            raise SkillValidationFailedError(file=file_str, reason=msg) from exc
         if not isinstance(data, dict):
             msg = "skill YAML did not parse to a mapping"
-            raise SkillValidationFailedError(reason=msg)
+            raise SkillValidationFailedError(file=file_str, reason=msg)
 
-        instance = cls.model_validate(data)
+        try:
+            instance = cls.model_validate(data)
+        except SkillValidationFailedError as exc:
+            # Inner-validator raises carry `file=""`; fill in the known path.
+            inner_reason = exc.params.model_dump()["reason"] if exc.params else str(exc)
+            raise SkillValidationFailedError(
+                file=file_str,
+                reason=str(inner_reason),
+            ) from exc
 
         if instance.version != filename_version:
             msg = (
                 f"filename version {filename_version} does not match "
                 f"body version {instance.version}"
             )
-            raise SkillValidationFailedError(reason=msg)
+            raise SkillValidationFailedError(file=file_str, reason=msg)
 
         return instance

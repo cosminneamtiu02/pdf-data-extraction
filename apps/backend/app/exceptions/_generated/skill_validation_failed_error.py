@@ -12,5 +12,5 @@ class SkillValidationFailedError(DomainError):
     code: ClassVar[str] = "SKILL_VALIDATION_FAILED"
     http_status: ClassVar[int] = 500
 
-    def __init__(self, *, reason: str) -> None:
-        super().__init__(params=SkillValidationFailedParams(reason=reason))
+    def __init__(self, *, file: str, reason: str) -> None:
+        super().__init__(params=SkillValidationFailedParams(file=file, reason=reason))

@@ -37,6 +37,7 @@ class SkillLoader:
         """
         if not skills_dir.is_dir():
             raise SkillValidationFailedError(
+                file=str(skills_dir),
                 reason=f"skills_dir '{skills_dir}' does not exist or is not a directory",
             )
 
@@ -77,7 +78,10 @@ class SkillLoader:
             loaded[key] = Skill.from_schema(schema, default_docling=self._default_docling)
 
         if problems:
-            raise SkillValidationFailedError(reason="\n".join(problems))
+            raise SkillValidationFailedError(
+                file=str(skills_dir),
+                reason="\n".join(problems),
+            )
 
         if not loaded:
             _logger.warning("skill_manifest_empty", skills_dir=str(skills_dir))

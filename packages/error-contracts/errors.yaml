@@ -21,8 +21,9 @@ errors:
 
   SKILL_VALIDATION_FAILED:
     http_status: 500
-    description: Skill YAML file failed validation at parse time
+    description: Skill YAML file failed validation at parse time (startup-only; never reaches HTTP response path)
     params:
+      file: string
       reason: string
 
   SKILL_NOT_FOUND:

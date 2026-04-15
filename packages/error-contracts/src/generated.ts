@@ -12,7 +12,7 @@ export interface ErrorParamsByCode {
   NOT_FOUND: Record<string, never>;
   VALIDATION_FAILED: { field: string; reason: string };
   INTERNAL_ERROR: Record<string, never>;
-  SKILL_VALIDATION_FAILED: { reason: string };
+  SKILL_VALIDATION_FAILED: { file: string; reason: string };
   SKILL_NOT_FOUND: { name: string; version: string };
 }
 

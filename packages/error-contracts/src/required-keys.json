@@ -16,6 +16,7 @@
     ],
     "INTERNAL_ERROR": [],
     "SKILL_VALIDATION_FAILED": [
+      "file",
       "reason"
     ],
     "SKILL_NOT_FOUND": [
