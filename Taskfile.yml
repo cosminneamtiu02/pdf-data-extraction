@@ -91,11 +91,10 @@ tasks:
 
   # ── Linting & Formatting ─────────────────────────────────────
   lint:
-    desc: Run the linter and format check (matches CI)
+    desc: Run the linter (format checking lives in the separate `format:check` target)
     dir: "{{.BACKEND_DIR}}"
     cmds:
       - uv run ruff check .
-      - uv run ruff format --check .
 
   format:
     desc: Run the formatter
