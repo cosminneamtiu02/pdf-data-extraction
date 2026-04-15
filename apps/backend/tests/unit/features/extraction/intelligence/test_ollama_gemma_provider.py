@@ -240,7 +240,14 @@ async def test_generate_http_500_raises_intelligence_unavailable() -> None:
     assert event["status"] == 500
 
 
-async def test_generate_http_404_raises_intelligence_unavailable() -> None:
+async def test_generate_http_404_logs_http_4xx_cause() -> None:
+    """4xx responses must log cause=http_4xx, not the generic http_5xx bucket.
+
+    Regression guard: the provider previously logged cause=http_5xx for every
+    HTTPStatusError regardless of actual status. A 404 (model not found), 401
+    (proxy auth), or 400 (malformed request) would all be misreported as a
+    server outage, burying the real operator signal.
+    """
     fake = _FakeAsyncClient(
         post_outcomes=[
             _FakeResponse(status_code=404, status_error=_http_status_error(404)),
@@ -248,8 +255,43 @@ async def test_generate_http_404_raises_intelligence_unavailable() -> None:
     )
     provider = _build_provider(fake_client=fake)
 
-    with pytest.raises(IntelligenceUnavailableError):
+    with capture_logs() as logs, pytest.raises(IntelligenceUnavailableError):
         await provider.generate("hi", _NAME_STRING_SCHEMA)
+    event = next(e for e in logs if e.get("event") == "intelligence_unavailable")
+    assert event["cause"] == "http_4xx"
+    assert event["status"] == 404
+
+
+async def test_generate_http_400_logs_http_4xx_cause() -> None:
+    """Lower 4xx statuses (e.g. bad request) also land in the http_4xx bucket."""
+    fake = _FakeAsyncClient(
+        post_outcomes=[
+            _FakeResponse(status_code=400, status_error=_http_status_error(400)),
+        ],
+    )
+    provider = _build_provider(fake_client=fake)
+
+    with capture_logs() as logs, pytest.raises(IntelligenceUnavailableError):
+        await provider.generate("hi", _NAME_STRING_SCHEMA)
+    event = next(e for e in logs if e.get("event") == "intelligence_unavailable")
+    assert event["cause"] == "http_4xx"
+    assert event["status"] == 400
+
+
+async def test_generate_http_503_logs_http_5xx_cause() -> None:
+    """Upper 5xx statuses stay in the http_5xx bucket alongside 500."""
+    fake = _FakeAsyncClient(
+        post_outcomes=[
+            _FakeResponse(status_code=503, status_error=_http_status_error(503)),
+        ],
+    )
+    provider = _build_provider(fake_client=fake)
+
+    with capture_logs() as logs, pytest.raises(IntelligenceUnavailableError):
+        await provider.generate("hi", _NAME_STRING_SCHEMA)
+    event = next(e for e in logs if e.get("event") == "intelligence_unavailable")
+    assert event["cause"] == "http_5xx"
+    assert event["status"] == 503
 
 
 async def test_generate_raises_intelligence_unavailable_when_body_is_not_json() -> None:

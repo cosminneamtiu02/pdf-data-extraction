@@ -53,6 +53,13 @@ if TYPE_CHECKING:
 
 _logger = structlog.get_logger(__name__)
 
+# HTTP status class boundaries. Extracted as module constants so the 4xx/5xx
+# discriminator in `_raw_generate` is not flagged as a magic number and so the
+# intent ("client error range", "server error range") is self-documenting at
+# the call site.
+_HTTP_CLIENT_ERROR_MIN = 400
+_HTTP_SERVER_ERROR_MIN = 500
+
 
 def _build_generate_url(base_url: str) -> str:
     return f"{base_url.rstrip('/')}/api/generate"
@@ -143,7 +150,12 @@ class OllamaGemmaProvider(BaseLanguageModel):
             raise IntelligenceUnavailableError from exc
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
-            _logger.warning("intelligence_unavailable", cause="http_5xx", status=status)
+            cause = (
+                "http_4xx"
+                if _HTTP_CLIENT_ERROR_MIN <= status < _HTTP_SERVER_ERROR_MIN
+                else "http_5xx"
+            )
+            _logger.warning("intelligence_unavailable", cause=cause, status=status)
             raise IntelligenceUnavailableError from exc
 
         try:

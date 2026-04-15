@@ -16,26 +16,41 @@ the first `{...}` substring via `json.JSONDecoder.raw_decode`. Anything fancier
 correctness bugs.
 """
 
+from __future__ import annotations
+
 import json
-from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
 from jsonschema import Draft7Validator
-from jsonschema.exceptions import ValidationError
 
-from app.core.config import Settings
 from app.exceptions import StructuredOutputFailedError
-from app.features.extraction.intelligence.correction_prompt_builder import (
-    CorrectionPromptBuilder,
-)
 from app.features.extraction.intelligence.generation_result import GenerationResult
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
+    from jsonschema.exceptions import ValidationError
+
+    from app.core.config import Settings
+    from app.features.extraction.intelligence.correction_prompt_builder import (
+        CorrectionPromptBuilder,
+    )
 
 _logger = structlog.get_logger(__name__)
 
 _FENCE_LANGUAGE_PREFIXES: tuple[str, ...] = ("```json", "```JSON", "```")
 
-_RAW_OUTPUT_LOG_TRUNCATION: int = 500
+
+# Each parse/validate helper returns either a successful parse, or a failure
+# represented as `(log_cause, llm_reason)`:
+#   - `log_cause`  — sanitized category code safe to emit to structlog. For
+#                    schema violations, includes only the JSON paths, never
+#                    the offending values.
+#   - `llm_reason` — full error text (may embed offending values). Passed to
+#                    `CorrectionPromptBuilder` so the LLM can self-correct.
+#                    MUST NOT be logged.
+_FailurePair = tuple[str, str]
 
 
 class StructuredOutputValidator:
@@ -56,45 +71,44 @@ class StructuredOutputValidator:
     ) -> GenerationResult:
         max_total_attempts = self._settings.structured_output_max_retries + 1
         current_text = raw_text
-        failure_reasons: list[str] = []
+        log_causes: list[str] = []
 
         for attempt in range(1, max_total_attempts + 1):
-            failure_reason: str | None
             cleaned = _clean(current_text)
-            parsed, parse_error = _try_parse(cleaned)
-            if parse_error is not None:
-                failure_reason = parse_error
+            parsed, parse_failure = _try_parse(cleaned)
+            failure: _FailurePair | None
+            if parse_failure is not None:
+                failure = parse_failure
             else:
-                validation_error = _validate(parsed, output_schema)
-                if validation_error is None:
+                failure = _validate(parsed, output_schema)
+                if failure is None:
                     return GenerationResult(
                         data=parsed,
                         attempts=attempt,
                         raw_output=current_text,
                     )
-                failure_reason = validation_error
 
-            failure_reasons.append(failure_reason)
+            log_cause, llm_reason = failure
+            log_causes.append(log_cause)
             if attempt == max_total_attempts:
                 break
             _logger.info(
                 "structured_output_retry",
                 attempt=attempt,
-                reason=failure_reason,
+                cause=log_cause,
             )
             correction = self._correction_prompt_builder.build(
                 original_prompt=original_prompt,
                 malformed_output=current_text,
                 output_schema=output_schema,
-                failure_reason=failure_reason,
+                failure_reason=llm_reason,
             )
             current_text = await regeneration_callable(correction)
 
         _logger.error(
             "structured_output_failed",
             attempts=max_total_attempts,
-            failure_reasons=failure_reasons,
-            last_raw_output=current_text[:_RAW_OUTPUT_LOG_TRUNCATION],
+            causes=log_causes,
         )
         raise StructuredOutputFailedError
 
@@ -110,21 +124,29 @@ def _clean(raw_text: str) -> str:
     return text.strip()
 
 
-def _try_parse(cleaned: str) -> tuple[dict[str, Any], None] | tuple[None, str]:
+def _try_parse(cleaned: str) -> tuple[dict[str, Any], None] | tuple[None, _FailurePair]:
     brace_index = 0 if cleaned.startswith("{") else cleaned.find("{")
     if brace_index == -1:
-        return None, "no JSON object substring found in raw text"
+        return None, ("no_json_object", "no JSON object substring found in raw text")
     decoder = json.JSONDecoder()
     try:
         value, _end = decoder.raw_decode(cleaned[brace_index:])
     except json.JSONDecodeError as exc:
-        return None, f"json.loads failed: {exc.msg} (line {exc.lineno}, col {exc.colno})"
+        return None, (
+            "json_parse_error",
+            f"json.loads failed: {exc.msg} (line {exc.lineno}, col {exc.colno})",
+        )
     return _coerce_object(value)
 
 
-def _coerce_object(value: object) -> tuple[dict[str, Any], None] | tuple[None, str]:
+def _coerce_object(
+    value: object,
+) -> tuple[dict[str, Any], None] | tuple[None, _FailurePair]:
     if not isinstance(value, dict):
-        return None, f"parsed JSON is {type(value).__name__}, expected object"
+        return None, (
+            "not_object",
+            f"parsed JSON is {type(value).__name__}, expected object",
+        )
     typed: dict[str, Any] = {str(k): v for k, v in value.items()}  # type: ignore[misc]  # value is dict[Unknown, Unknown] from json.loads — narrow to str keys
     return typed, None
 
@@ -132,7 +154,7 @@ def _coerce_object(value: object) -> tuple[dict[str, Any], None] | tuple[None, s
 def _validate(
     parsed: dict[str, Any],
     output_schema: dict[str, Any],
-) -> str | None:
+) -> _FailurePair | None:
     validator = Draft7Validator(output_schema)
     raw_errors: Any = validator.iter_errors(parsed)  # pyright: ignore[reportUnknownMemberType]  # jsonschema's overloaded iter_errors signature is partially typed in the stubs
     errors: list[ValidationError] = sorted(
@@ -141,8 +163,12 @@ def _validate(
     )
     if not errors:
         return None
-    return "; ".join(_format_error(e) for e in errors)
-
-
-def _format_error(error: ValidationError) -> str:
-    return f"{error.json_path}: {error.message}"
+    # For the log: path-only summary — never user values. Duplicate paths are
+    # collapsed so the cause string stays stable when multiple errors target
+    # the same field.
+    paths = sorted({e.json_path for e in errors})
+    log_cause = f"schema_violation:{','.join(paths)}"
+    # For the LLM: full error text so the model can self-correct. This string
+    # may embed user values from the parsed output and MUST stay out of logs.
+    llm_reason = "; ".join(f"{e.json_path}: {e.message}" for e in errors)
+    return (log_cause, llm_reason)

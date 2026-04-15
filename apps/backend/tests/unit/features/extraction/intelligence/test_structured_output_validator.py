@@ -187,8 +187,11 @@ async def test_consistently_invalid_raises_after_four_total_attempts() -> None:
     assert len(failed_events) == 1
     event = failed_events[0]
     assert event["attempts"] == 4
-    assert event["last_raw_output"] == "never valid"
-    assert len(event["failure_reasons"]) == 4
+    # Raw output and value-laden failure_reasons are removed — logs only
+    # carry sanitized cause codes now.
+    assert "last_raw_output" not in event
+    assert "failure_reasons" not in event
+    assert len(event["causes"]) == 4
 
 
 async def test_max_retries_setting_controls_total_attempts() -> None:
@@ -246,7 +249,7 @@ async def test_retry_emits_structlog_event_per_attempt() -> None:
     retry_events = [e for e in logs if e.get("event") == "structured_output_retry"]
     assert len(retry_events) == 1
     assert retry_events[0]["attempt"] == 1
-    assert "reason" in retry_events[0]
+    assert "cause" in retry_events[0]
 
 
 async def test_trailing_prose_after_valid_json_succeeds_in_one_attempt() -> None:
@@ -309,7 +312,8 @@ async def test_zero_retries_raises_immediately_on_invalid_input() -> None:
 
     failed_events = [e for e in logs if e.get("event") == "structured_output_failed"]
     assert failed_events[0]["attempts"] == 1
-    assert len(failed_events[0]["failure_reasons"]) == 1
+    assert len(failed_events[0]["causes"]) == 1
+    assert "last_raw_output" not in failed_events[0]
 
 
 async def test_structured_output_failed_error_is_domain_error_subclass() -> None:
@@ -320,17 +324,72 @@ async def test_structured_output_failed_error_is_domain_error_subclass() -> None
     assert StructuredOutputFailedError.http_status == 502
 
 
-async def test_structured_output_failed_log_truncates_raw_output_to_500_chars() -> None:
-    validator = _build_validator(max_retries=0)
-    long_raw = "X" * 2000
+async def test_structured_output_failed_log_omits_raw_output_and_field_values() -> None:
+    """Logs must not leak raw model output, PDF content, or validation-error values.
+
+    Regression guard: JSONSchema Draft7 validation error messages include the
+    offending value verbatim (e.g. "'SSN-999-12-3456' is not of type 'integer'").
+    The repo's redaction keys in Settings only strip exact keys like `raw_output`
+    and `extracted_value`; the `last_raw_output` key and embedded error strings
+    slip past the filter. The only safe contract is: never log raw output, and
+    log sanitized path-only codes instead of raw failure reasons.
+    """
+    validator = _build_validator(max_retries=1)
+
+    sensitive_value = "SSN-999-12-3456"
+    raw_with_sensitive = '{"foo": "' + sensitive_value + '"}'
+    # Schema wants integer; raw has string → validation error text embeds the
+    # offending string value into its message.
+    schema_requiring_int: dict[str, Any] = {
+        "type": "object",
+        "required": ["foo"],
+        "properties": {"foo": {"type": "integer"}},
+    }
+    call, _prompts = _scripted_callable([raw_with_sensitive])
 
     with capture_logs() as logs, pytest.raises(StructuredOutputFailedError):
         await validator.validate_and_retry(
-            raw_text=long_raw,
-            output_schema=_FOO_STRING_SCHEMA,
-            regeneration_callable=_never_called(),
+            raw_text=raw_with_sensitive,
+            output_schema=schema_requiring_int,
+            regeneration_callable=call,
         )
 
+    all_log_text = "\n".join(repr(e) for e in logs)
+    assert sensitive_value not in all_log_text, f"Sensitive value leaked into logs: {all_log_text}"
+
     failed = next(e for e in logs if e.get("event") == "structured_output_failed")
-    assert len(failed["last_raw_output"]) == 500
-    assert failed["last_raw_output"] == "X" * 500
+    # Raw output is removed entirely — no field to leak from.
+    assert "last_raw_output" not in failed
+    # failure_reasons (which contained value-laden error messages) is replaced
+    # with `causes`, a list of sanitized path-only codes.
+    assert "failure_reasons" not in failed
+    assert "causes" in failed
+    assert all(isinstance(c, str) for c in failed["causes"])
+    # Schema-violation codes look like "schema_violation:<json_paths>" —
+    # containing only the JSON paths, never user values.
+    assert any("schema_violation" in c for c in failed["causes"])
+
+
+async def test_structured_output_retry_log_uses_sanitized_cause_field() -> None:
+    """The per-attempt retry log emits `cause`, not `reason`.
+
+    Regression guard: the previous `reason=<full_error_text>` field leaked
+    validation-error messages (which embed user values) into logs. The new
+    contract emits `cause` with a sanitized category code ("schema_violation",
+    "json_parse_error", etc.) plus optional path metadata.
+    """
+    validator = _build_validator()
+    call, _prompts = _scripted_callable(['{"foo": "bar"}'])
+
+    with capture_logs() as logs:
+        await validator.validate_and_retry(
+            raw_text="not json at all",
+            output_schema=_FOO_STRING_SCHEMA,
+            regeneration_callable=call,
+        )
+
+    retry = next(e for e in logs if e.get("event") == "structured_output_retry")
+    assert "cause" in retry
+    assert isinstance(retry["cause"], str)
+    # Legacy field name must be gone.
+    assert "reason" not in retry
