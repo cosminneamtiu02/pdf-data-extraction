@@ -86,3 +86,14 @@ async def test_structured_output_failed_serializes_as_502_envelope(
     assert body["error"]["params"] == {}
     assert body["error"]["details"] is None
     assert "request_id" in body["error"]
+
+
+# Partial-success boundary: the acceptance criterion "2 of 3 fields succeed,
+# 1 fails → HTTP 200 with per-field status, NOT 502" is deferred to
+# PDFX-E006-F002, which is where the ExtractionService partial-vs-total
+# failure decision actually lives. `StructuredOutputValidator` only raises
+# `StructuredOutputFailedError` for a SINGLE field whose retries are
+# exhausted; the per-field aggregation is outside the intelligence-layer
+# error contract. The test for that boundary belongs to the PDFX-E006-F002
+# integration suite. This comment-stub keeps the acceptance-criterion trace
+# visible from this file.

@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 
 import httpx
 import pytest
+from structlog.testing import capture_logs
 
 from app.core.config import Settings
 from app.exceptions import IntelligenceUnavailableError
@@ -203,9 +204,11 @@ async def test_generate_connect_error_raises_intelligence_unavailable() -> None:
     )
     provider = _build_provider(fake_client=fake)
 
-    with pytest.raises(IntelligenceUnavailableError) as excinfo:
+    with capture_logs() as logs, pytest.raises(IntelligenceUnavailableError) as excinfo:
         await provider.generate("hi", _NAME_STRING_SCHEMA)
     assert isinstance(excinfo.value.__cause__, httpx.ConnectError)
+    event = next(e for e in logs if e.get("event") == "intelligence_unavailable")
+    assert event["cause"] == "connect_error"
 
 
 async def test_generate_timeout_raises_intelligence_unavailable() -> None:
@@ -214,9 +217,11 @@ async def test_generate_timeout_raises_intelligence_unavailable() -> None:
     )
     provider = _build_provider(fake_client=fake)
 
-    with pytest.raises(IntelligenceUnavailableError) as excinfo:
+    with capture_logs() as logs, pytest.raises(IntelligenceUnavailableError) as excinfo:
         await provider.generate("hi", _NAME_STRING_SCHEMA)
     assert isinstance(excinfo.value.__cause__, httpx.TimeoutException)
+    event = next(e for e in logs if e.get("event") == "intelligence_unavailable")
+    assert event["cause"] == "timeout"
 
 
 async def test_generate_http_500_raises_intelligence_unavailable() -> None:
@@ -227,9 +232,12 @@ async def test_generate_http_500_raises_intelligence_unavailable() -> None:
     )
     provider = _build_provider(fake_client=fake)
 
-    with pytest.raises(IntelligenceUnavailableError) as excinfo:
+    with capture_logs() as logs, pytest.raises(IntelligenceUnavailableError) as excinfo:
         await provider.generate("hi", _NAME_STRING_SCHEMA)
     assert isinstance(excinfo.value.__cause__, httpx.HTTPStatusError)
+    event = next(e for e in logs if e.get("event") == "intelligence_unavailable")
+    assert event["cause"] == "http_5xx"
+    assert event["status"] == 500
 
 
 async def test_generate_http_404_raises_intelligence_unavailable() -> None:
@@ -256,9 +264,11 @@ async def test_generate_raises_intelligence_unavailable_when_body_is_not_json() 
     fake = _FakeAsyncClient(post_outcomes=[_NonJsonResponse()])
     provider = _build_provider(fake_client=fake)
 
-    with pytest.raises(IntelligenceUnavailableError) as excinfo:
+    with capture_logs() as logs, pytest.raises(IntelligenceUnavailableError) as excinfo:
         await provider.generate("hi", _NAME_STRING_SCHEMA)
     assert isinstance(excinfo.value.__cause__, json.JSONDecodeError)
+    event = next(e for e in logs if e.get("event") == "intelligence_unavailable")
+    assert event["cause"] == "non_json_body"
 
 
 async def test_generate_retries_on_bad_json_and_succeeds_on_second_attempt() -> None:
