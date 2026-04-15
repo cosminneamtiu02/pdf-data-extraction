@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     skills_dir: Path = Field(default_factory=lambda: _DEFAULT_SKILLS_DIR)
     docling_ocr_default: OcrMode = "auto"
     docling_table_mode_default: TableMode = "fast"
+    max_pdf_pages: Annotated[int, Field(gt=0)] = 200
 
     ollama_base_url: str = "http://host.docker.internal:11434"
     ollama_model: str = "gemma4:e2b"

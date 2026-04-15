@@ -1,15 +1,15 @@
 """Shared FastAPI dependencies.
 
-All three of these factories read through `request.app.state`, which is the
+These factories read through `request.app.state`, which is the
 FastAPI-idiomatic way to bind process-scoped singletons to a specific app
 instance. `create_app(settings=...)` is the supported test seam for
 integration tests that need custom configuration; these dependencies must
 honor that seam rather than fall back to a module-level `lru_cache` (which
 would ignore the per-app override and hand every test the same env-derived
 defaults). `Settings` is instantiated in `create_app` and placed on
-`app.state.settings`; `StructuredOutputValidator` and `OllamaGemmaProvider`
-are lazily built on first access and cached on `app.state` so repeated
-requests to the same app share one instance.
+`app.state.settings`; heavier collaborators are lazily built on first access
+and cached on `app.state` so repeated requests to the same app share one
+instance.
 
 Concurrency note: the lazy-init paths use double-checked locking guarded
 by a module-level `threading.RLock`. Without the lock, two concurrent
@@ -36,6 +36,9 @@ from app.features.extraction.intelligence.ollama_gemma_provider import (
 )
 from app.features.extraction.intelligence.structured_output_validator import (
     StructuredOutputValidator,
+)
+from app.features.extraction.parsing.docling_document_parser import (
+    DoclingDocumentParser,
 )
 
 _dep_init_lock = threading.RLock()
@@ -91,3 +94,23 @@ def get_intelligence_provider(request: Request) -> OllamaGemmaProvider:
                 )
                 state.intelligence_provider = provider
     return provider
+
+
+def get_document_parser(request: Request) -> DoclingDocumentParser:
+    """Return (and lazily cache) the parser bound to this app instance.
+
+    This factory is the integration seam that makes `MAX_PDF_PAGES` a real
+    runtime knob. Docling's lazy import means constructing the parser here
+    does not pull in Docling, so module load and unit-test startup stay cheap.
+    """
+    state = request.app.state
+    parser: DoclingDocumentParser | None = getattr(state, "document_parser", None)
+    if parser is None:
+        with _dep_init_lock:
+            parser = getattr(state, "document_parser", None)
+            if parser is None:
+                parser = DoclingDocumentParser(
+                    max_pdf_pages=get_settings(request).max_pdf_pages,
+                )
+                state.document_parser = parser
+    return parser

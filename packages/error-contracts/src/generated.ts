@@ -7,6 +7,10 @@ export type ErrorCode =
   | "INTERNAL_ERROR"
   | "SKILL_VALIDATION_FAILED"
   | "SKILL_NOT_FOUND"
+  | "PDF_INVALID"
+  | "PDF_PASSWORD_PROTECTED"
+  | "PDF_TOO_MANY_PAGES"
+  | "PDF_NO_TEXT_EXTRACTABLE"
   | "INTELLIGENCE_UNAVAILABLE"
   | "STRUCTURED_OUTPUT_FAILED";
 
@@ -16,6 +20,10 @@ export interface ErrorParamsByCode {
   INTERNAL_ERROR: Record<string, never>;
   SKILL_VALIDATION_FAILED: { file: string; reason: string };
   SKILL_NOT_FOUND: { name: string; version: string };
+  PDF_INVALID: Record<string, never>;
+  PDF_PASSWORD_PROTECTED: Record<string, never>;
+  PDF_TOO_MANY_PAGES: { limit: number; actual: number };
+  PDF_NO_TEXT_EXTRACTABLE: Record<string, never>;
   INTELLIGENCE_UNAVAILABLE: Record<string, never>;
   STRUCTURED_OUTPUT_FAILED: Record<string, never>;
 }
@@ -27,7 +35,7 @@ export interface ApiErrorPayload<C extends ErrorCode = ErrorCode> {
   request_id: string;
 }
 
-export const ERROR_CODES: readonly ErrorCode[] = ["NOT_FOUND", "VALIDATION_FAILED", "INTERNAL_ERROR", "SKILL_VALIDATION_FAILED", "SKILL_NOT_FOUND", "INTELLIGENCE_UNAVAILABLE", "STRUCTURED_OUTPUT_FAILED"] as const;
+export const ERROR_CODES: readonly ErrorCode[] = ["NOT_FOUND", "VALIDATION_FAILED", "INTERNAL_ERROR", "SKILL_VALIDATION_FAILED", "SKILL_NOT_FOUND", "PDF_INVALID", "PDF_PASSWORD_PROTECTED", "PDF_TOO_MANY_PAGES", "PDF_NO_TEXT_EXTRACTABLE", "INTELLIGENCE_UNAVAILABLE", "STRUCTURED_OUTPUT_FAILED"] as const;
 
 export const HTTP_STATUS_BY_CODE: Record<ErrorCode, number> = {
   NOT_FOUND: 404,
@@ -35,6 +43,10 @@ export const HTTP_STATUS_BY_CODE: Record<ErrorCode, number> = {
   INTERNAL_ERROR: 500,
   SKILL_VALIDATION_FAILED: 500,
   SKILL_NOT_FOUND: 404,
+  PDF_INVALID: 400,
+  PDF_PASSWORD_PROTECTED: 400,
+  PDF_TOO_MANY_PAGES: 413,
+  PDF_NO_TEXT_EXTRACTABLE: 422,
   INTELLIGENCE_UNAVAILABLE: 503,
   STRUCTURED_OUTPUT_FAILED: 502,
 };

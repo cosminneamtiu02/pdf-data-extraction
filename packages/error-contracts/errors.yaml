@@ -33,6 +33,29 @@ errors:
       name: string
       version: string
 
+  # PDF failure-mode errors (PDFX-E003-F004)
+  PDF_INVALID:
+    http_status: 400
+    description: The uploaded file is not a valid PDF
+    params: {}
+
+  PDF_PASSWORD_PROTECTED:
+    http_status: 400
+    description: The uploaded PDF is password-protected
+    params: {}
+
+  PDF_TOO_MANY_PAGES:
+    http_status: 413
+    description: PDF page count exceeds the configured maximum
+    params:
+      limit: integer
+      actual: integer
+
+  PDF_NO_TEXT_EXTRACTABLE:
+    http_status: 422
+    description: The PDF contains no extractable text, even after OCR
+    params: {}
+
   INTELLIGENCE_UNAVAILABLE:
     http_status: 503
     description: The intelligence backend (Ollama) is currently unavailable.
