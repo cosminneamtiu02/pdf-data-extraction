@@ -3,6 +3,7 @@
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
+import structlog
 from fastapi import FastAPI
 
 from app.api.deps import get_intelligence_provider, get_settings
@@ -11,11 +12,14 @@ from app.api.health_router import router as health_router
 from app.api.middleware import configure_middleware
 from app.core.config import Settings
 from app.core.logging import configure_logging
+from app.exceptions import SkillValidationFailedError
 from app.features.extraction.skills import (
     SkillDoclingConfig,
     SkillLoader,
     SkillManifest,
 )
+
+_logger = structlog.get_logger(__name__)
 
 
 @asynccontextmanager
@@ -70,7 +74,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         table_mode=resolved_settings.docling_table_mode_default,
     )
     loader = SkillLoader(default_docling=default_docling)
-    application.state.skill_manifest = SkillManifest(loader.load(resolved_settings.skills_dir))
+    try:
+        loaded = loader.load(resolved_settings.skills_dir)
+    except SkillValidationFailedError as exc:
+        params = exc.params.model_dump() if exc.params else {}
+        _logger.critical(
+            "skill_validation_failed",
+            file=params.get("file"),
+            reason=params.get("reason"),
+            exc_info=True,
+        )
+        raise
+    application.state.skill_manifest = SkillManifest(loaded)
 
     application.include_router(health_router)
 
