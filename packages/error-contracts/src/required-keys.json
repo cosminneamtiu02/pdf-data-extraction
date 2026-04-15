@@ -6,7 +6,9 @@
     "VALIDATION_FAILED",
     "INTERNAL_ERROR",
     "SKILL_VALIDATION_FAILED",
-    "SKILL_NOT_FOUND"
+    "SKILL_NOT_FOUND",
+    "INTELLIGENCE_UNAVAILABLE",
+    "STRUCTURED_OUTPUT_FAILED"
   ],
   "params_by_key": {
     "NOT_FOUND": [],
@@ -22,6 +24,8 @@
     "SKILL_NOT_FOUND": [
       "name",
       "version"
-    ]
+    ],
+    "INTELLIGENCE_UNAVAILABLE": [],
+    "STRUCTURED_OUTPUT_FAILED": []
   }
 }
