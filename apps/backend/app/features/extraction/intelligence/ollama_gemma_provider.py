@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 import structlog
@@ -38,11 +38,12 @@ from langextract.core.types import ScoredOutput
 from langextract.providers.router import register
 
 from app.core.config import Settings
+from app.exceptions import IntelligenceUnavailableError
 from app.features.extraction.intelligence.correction_prompt_builder import (
     CorrectionPromptBuilder,
 )
-from app.features.extraction.intelligence.intelligence_unavailable_error import (
-    IntelligenceUnavailableError,
+from app.features.extraction.intelligence.langextract_wrapper_schema import (
+    LANGEXTRACT_WRAPPER_SCHEMA,
 )
 from app.features.extraction.intelligence.structured_output_validator import (
     StructuredOutputValidator,
@@ -53,24 +54,14 @@ if TYPE_CHECKING:
 
     from app.features.extraction.intelligence.generation_result import GenerationResult
 
-# LangExtract wraps its extracted fields inside a top-level `extractions`
-# array. On the `infer` (plugin) entry path, the provider has no knowledge
-# of the skill's own `output_schema` — only the envelope LangExtract's
-# resolver will parse — so this is the schema the `StructuredOutputValidator`
-# gets to enforce. The constant is centralized in
-# `langextract_wrapper_schema.py` so the adapter wrap path and the direct
-# plugin path cannot drift; re-exported here so existing imports keep working.
-from app.features.extraction.intelligence.langextract_wrapper_schema import (
-    LANGEXTRACT_WRAPPER_SCHEMA,
-)
-
-_CONNECT_ERROR_MESSAGE = "Ollama connection failed"
-_TIMEOUT_MESSAGE = "Ollama request timed out"
-_HTTP_ERROR_MESSAGE_TEMPLATE = "Ollama returned HTTP {status}"
-_MISSING_RESPONSE_FIELD_MESSAGE = "Ollama response body missing 'response' string field"
-_INVALID_JSON_BODY_MESSAGE = "Ollama response body is not valid JSON"
-
 _logger = structlog.get_logger(__name__)
+
+# HTTP status class boundaries. Extracted as module constants so the 4xx/5xx
+# discriminator in `_raw_generate` is not flagged as a magic number and so the
+# intent ("client error range", "server error range") is self-documenting at
+# the call site.
+_HTTP_CLIENT_ERROR_MIN = 400
+_HTTP_SERVER_ERROR_MIN = 500
 
 
 def _build_generate_url(base_url: str) -> str:
@@ -155,32 +146,53 @@ class OllamaGemmaProvider(BaseLanguageModel):
             response = await self.http_client.post(self._generate_url, json=payload)
             response.raise_for_status()
         except httpx.ConnectError as exc:
-            _logger.warning("ollama_connect_error", error=str(exc))
-            message = _CONNECT_ERROR_MESSAGE
-            raise IntelligenceUnavailableError(message, cause=exc) from exc
+            _logger.warning("intelligence_unavailable", cause="connect_error", error=str(exc))
+            raise IntelligenceUnavailableError from exc
         except httpx.TimeoutException as exc:
-            _logger.warning("ollama_timeout", error=str(exc))
-            message = _TIMEOUT_MESSAGE
-            raise IntelligenceUnavailableError(message, cause=exc) from exc
+            _logger.warning("intelligence_unavailable", cause="timeout", error=str(exc))
+            raise IntelligenceUnavailableError from exc
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
-            _logger.warning("ollama_http_error", status=status)
-            message = _HTTP_ERROR_MESSAGE_TEMPLATE.format(status=status)
-            raise IntelligenceUnavailableError(message, cause=exc) from exc
+            cause = (
+                "http_4xx"
+                if _HTTP_CLIENT_ERROR_MIN <= status < _HTTP_SERVER_ERROR_MIN
+                else "http_5xx"
+            )
+            _logger.warning("intelligence_unavailable", cause=cause, status=status)
+            raise IntelligenceUnavailableError from exc
 
         try:
-            body: dict[str, Any] = response.json()
+            decoded: Any = response.json()
         except (json.JSONDecodeError, ValueError) as exc:
             # Ollama (or an interposing proxy) returned a non-JSON body. Treat
             # the same as unreachability — operators reading the log see the
-            # underlying decode error on the `cause` attribute.
-            _logger.warning("ollama_non_json_body", error=str(exc))
-            message = _INVALID_JSON_BODY_MESSAGE
-            raise IntelligenceUnavailableError(message, cause=exc) from exc
+            # underlying decode error on the log line's `error` field.
+            _logger.warning("intelligence_unavailable", cause="non_json_body", error=str(exc))
+            raise IntelligenceUnavailableError from exc
+        if not isinstance(decoded, dict):
+            # httpx decodes any valid JSON root, including lists, strings,
+            # and numbers. A non-object root cannot carry Ollama's `response`
+            # field, so short-circuit here rather than blowing up downstream
+            # with an AttributeError on `.get("response")`.
+            _logger.warning(
+                "intelligence_unavailable",
+                cause="invalid_json_shape",
+                shape=type(decoded).__name__,
+            )
+            raise IntelligenceUnavailableError from None
+        # Pyright's isinstance narrowing gives us `dict[Unknown, Unknown]`;
+        # cast to the shape Ollama's contract promises. Runtime keys are
+        # already guaranteed str because JSON object keys are always strings.
+        # The string-literal form of the type expression is the project-wide
+        # convention for `cast` calls, enforced by ruff's `TC006`. Pyright
+        # parses it identically to the unquoted form, so static checking is
+        # not weakened — only the runtime cost of evaluating the type
+        # expression is avoided.
+        body = cast("dict[str, Any]", decoded)
         response_text = body.get("response")
         if not isinstance(response_text, str):
-            message = _MISSING_RESPONSE_FIELD_MESSAGE
-            raise IntelligenceUnavailableError(message)
+            _logger.warning("intelligence_unavailable", cause="missing_response_field")
+            raise IntelligenceUnavailableError from None
         return response_text
 
     async def _validated_generate_batch(self, batch_prompts: Sequence[str]) -> list[str]:
