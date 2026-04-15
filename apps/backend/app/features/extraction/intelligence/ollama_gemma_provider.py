@@ -42,6 +42,9 @@ from app.exceptions import IntelligenceUnavailableError
 from app.features.extraction.intelligence.correction_prompt_builder import (
     CorrectionPromptBuilder,
 )
+from app.features.extraction.intelligence.langextract_wrapper_schema import (
+    LANGEXTRACT_WRAPPER_SCHEMA,
+)
 from app.features.extraction.intelligence.structured_output_validator import (
     StructuredOutputValidator,
 )
@@ -192,21 +195,30 @@ class OllamaGemmaProvider(BaseLanguageModel):
             raise IntelligenceUnavailableError from None
         return response_text
 
-    async def _raw_generate_batch(self, batch_prompts: Sequence[str]) -> list[str]:
-        # Must run every prompt inside the SAME event loop so the shared
+    async def _validated_generate_batch(self, batch_prompts: Sequence[str]) -> list[str]:
+        # Every prompt runs inside the SAME event loop so the shared
         # `httpx.AsyncClient` binds its connection pool to one loop only. If
         # `infer` called `asyncio.run` per prompt, the second prompt would hit
-        # a client whose pool is bound to a closed loop.
-        return [await self._raw_generate(prompt) for prompt in batch_prompts]
+        # a client whose pool is bound to a closed loop. Each prompt routes
+        # through `self.generate`, which runs the `StructuredOutputValidator`
+        # fence-strip + JSON-parse + retry loop against the LangExtract
+        # wrapper schema — so the plugin entry path enforces the same
+        # CLAUDE.md-mandated "no bypass" invariant as the `generate()` path
+        # the `_ValidatingLangExtractAdapter` in `extraction_engine.py` uses.
+        outputs: list[str] = []
+        for prompt in batch_prompts:
+            result = await self.generate(prompt, LANGEXTRACT_WRAPPER_SCHEMA)
+            outputs.append(json.dumps(result.data))
+        return outputs
 
     def infer(
         self,
         batch_prompts: Sequence[str],
         **kwargs: Any,  # noqa: ARG002 - LangExtract passes orchestrator kwargs that we do not consume
     ) -> Iterator[Sequence[ScoredOutput]]:
-        raw_outputs = asyncio.run(self._raw_generate_batch(batch_prompts))
-        for raw in raw_outputs:
-            yield [ScoredOutput(score=1.0, output=raw)]
+        validated_outputs = asyncio.run(self._validated_generate_batch(batch_prompts))
+        for output in validated_outputs:
+            yield [ScoredOutput(score=1.0, output=output)]
 
     async def health_check(self) -> bool:
         try:

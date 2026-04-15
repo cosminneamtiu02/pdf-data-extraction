@@ -51,6 +51,9 @@ from langextract.core.data import AnnotatedDocument, ExampleData, Extraction
 from langextract.core.types import ScoredOutput
 
 from app.features.extraction.extraction.raw_extraction import RawExtraction
+from app.features.extraction.intelligence.langextract_wrapper_schema import (
+    LANGEXTRACT_WRAPPER_SCHEMA,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
@@ -60,21 +63,6 @@ if TYPE_CHECKING:
     from app.features.extraction.intelligence.intelligence_provider import IntelligenceProvider
     from app.features.extraction.skills.skill import Skill
     from app.features.extraction.skills.skill_example import SkillExample
-
-
-# Schema for the validator call on the LangExtract path. The caller's real
-# field-level schema (`skill.output_schema`) describes extraction CONTENT,
-# not LangExtract's `{"extractions": [...]}` wrapper, so it cannot be used
-# to validate raw model output directly. This schema enforces the wrapper
-# shape — object with a top-level `extractions` ARRAY — which is what the
-# Ollama/Gemma prompt asks for and what LangExtract's resolver expects to
-# parse, without leaking into field-level semantics. The validator's
-# fence-strip + JSON parse + retry loop runs on every call.
-_LANGEXTRACT_WRAPPER_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {"extractions": {"type": "array"}},
-    "required": ["extractions"],
-}
 
 
 class _ValidatingLangExtractAdapter(BaseLanguageModel):
@@ -118,7 +106,7 @@ class _ValidatingLangExtractAdapter(BaseLanguageModel):
     ) -> Iterator[Sequence[ScoredOutput]]:
         for prompt in batch_prompts:
             future = asyncio.run_coroutine_threadsafe(
-                self._inner.generate(prompt, _LANGEXTRACT_WRAPPER_SCHEMA),
+                self._inner.generate(prompt, LANGEXTRACT_WRAPPER_SCHEMA),
                 self._main_loop,
             )
             result = future.result()
