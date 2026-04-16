@@ -19,7 +19,27 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@router.get("/ready")
+@router.get(
+    "/ready",
+    responses={
+        200: {
+            "description": "Ollama is reachable and the service is ready.",
+            "content": {
+                "application/json": {
+                    "example": {"status": "ready"},
+                },
+            },
+        },
+        503: {
+            "description": "Ollama is unreachable; service is not ready.",
+            "content": {
+                "application/json": {
+                    "example": {"status": "not_ready", "reason": "ollama_unreachable"},
+                },
+            },
+        },
+    },
+)
 async def ready(
     probe_cache: Annotated[ProbeCache, Depends(get_probe_cache)],
 ) -> JSONResponse:

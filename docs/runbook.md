@@ -67,9 +67,9 @@ task docker:down
 ## Health Checks
 
 - **Liveness**: `GET /health` → `{"status": "ok"}`
-- **Readiness**: `GET /ready` → `{"status": "ready"}` (post-bootstrap stub;
-  during feature-dev PDFX-E007-F001 replaces this with an Ollama-probe-gated
-  version that returns 503 when Ollama is unreachable)
+- **Readiness**: `GET /ready` → `{"status": "ready"}` (200) when Ollama is
+  reachable within the probe TTL (`OLLAMA_PROBE_TTL_SECONDS`, default 10 s),
+  or `{"status": "not_ready", "reason": "ollama_unreachable"}` (503) otherwise
 
 ## Ollama
 

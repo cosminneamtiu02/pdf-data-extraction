@@ -27,9 +27,7 @@ from functools import lru_cache
 
 from fastapi import Request
 
-from app.api.probe_cache import (
-    ProbeCache,  # placed after feature imports for visual grouping
-)
+from app.api.probe_cache import ProbeCache
 from app.core.config import Settings
 
 # Pipeline component imports — these are lightweight classes (no heavy
@@ -156,15 +154,26 @@ def get_extraction_service(request: Request) -> ExtractionService:
 
 
 def get_ollama_health_probe(request: Request) -> OllamaHealthProbe:
-    """Return (and lazily cache) the health probe bound to this app instance."""
+    """Return (and lazily cache) the health probe bound to this app instance.
+
+    The tags URL is built here (reusing ``build_tags_url`` from the
+    provider module) so the probe class does not duplicate the URL
+    construction logic.
+    """
+    from app.features.extraction.intelligence.ollama_gemma_provider import (
+        build_tags_url,
+    )
+
     state = request.app.state
     probe: OllamaHealthProbe | None = getattr(state, "ollama_health_probe", None)
     if probe is None:
         with _dep_init_lock:
             probe = getattr(state, "ollama_health_probe", None)
             if probe is None:
+                settings = get_settings(request)
                 probe = OllamaHealthProbe(
-                    base_url=get_settings(request).ollama_base_url,
+                    tags_url=build_tags_url(settings.ollama_base_url),
+                    timeout_seconds=settings.ollama_probe_timeout_seconds,
                 )
                 state.ollama_health_probe = probe
     return probe

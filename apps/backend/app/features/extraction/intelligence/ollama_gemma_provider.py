@@ -9,11 +9,11 @@ model IDs. The same registered entry point is declared in `pyproject.toml` so
 that fresh LangExtract processes discover the provider via Python's
 `importlib.metadata` entry-points mechanism.
 
-Containment: this is the ONE file in `apps/backend/app/features/extraction/`
-that imports `httpx`. Every other piece of HTTP-to-Ollama knowledge — the URL
-shape `/api/generate`, the `/api/tags` health probe path, the request payload
-schema — lives here and nowhere else. Import-linter contracts land in
-PDFX-E007-F004; until then, two AST-scan unit tests enforce the invariant.
+Containment: this file and ``ollama_health_probe.py`` are the only files in
+``apps/backend/app/features/extraction/`` that import ``httpx`` — authorized
+by the C6 httpx-containment contract in ``import-linter-contracts.ini``.
+The URL builder ``build_tags_url`` lives here and is reused by the probe's
+DI factory so the URL shape is defined once.
 
 Sync/async bridge: LangExtract's orchestration is synchronous, and its
 `BaseLanguageModel.infer` is a sync generator. The provider bridges to our
@@ -68,7 +68,7 @@ def _build_generate_url(base_url: str) -> str:
     return f"{base_url.rstrip('/')}/api/generate"
 
 
-def _build_tags_url(base_url: str) -> str:
+def build_tags_url(base_url: str) -> str:
     return f"{base_url.rstrip('/')}/api/tags"
 
 
@@ -117,7 +117,7 @@ class OllamaGemmaProvider(BaseLanguageModel):
         )
         self._model = model_id or effective_settings.ollama_model
         self._generate_url = _build_generate_url(effective_settings.ollama_base_url)
-        self._tags_url = _build_tags_url(effective_settings.ollama_base_url)
+        self._tags_url = build_tags_url(effective_settings.ollama_base_url)
         self._validator = effective_validator
         self.http_client = http_client or httpx.AsyncClient(
             timeout=httpx.Timeout(effective_settings.ollama_timeout_seconds),

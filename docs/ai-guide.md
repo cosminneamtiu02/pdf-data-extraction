@@ -43,9 +43,10 @@ The post-bootstrap shell ships three generic error codes (`NOT_FOUND`,
 feature-dev lands the corresponding features.
 
 **Health endpoints.** `/health` is a pure liveness probe returning
-`{"status":"ok"}`. `/ready` is a minimal stub returning `{"status":"ready"}`;
-during feature-dev PDFX-E007-F001 replaces it with an Ollama-probe-gated
-version.
+`{"status":"ok"}`. `/ready` is gated on a TTL-cached Ollama probe
+(PDFX-E007-F001): returns 200 when Ollama is reachable within the
+configured TTL, or 503 with `{"status":"not_ready","reason":"ollama_unreachable"}`
+otherwise.
 
 **Architecture enforcement.** `import-linter` is wired in `task lint` with one
 contract: `shared/` and `core/` cannot import from `features/`. The full

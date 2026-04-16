@@ -13,30 +13,28 @@ import structlog
 
 _logger = structlog.get_logger(__name__)
 
-_PROBE_TIMEOUT_SECONDS = 5.0
-
-
-def _build_tags_url(base_url: str) -> str:
-    return f"{base_url.rstrip('/')}/api/tags"
+_DEFAULT_PROBE_TIMEOUT_SECONDS = 5.0
 
 
 class OllamaHealthProbe:
     """Lightweight probe that checks Ollama reachability.
 
-    Constructed with a base URL and an optional pre-built ``httpx.AsyncClient``
-    (test seam). If no client is provided, one is created with a short timeout
-    so a hung Ollama does not back up the readiness check.
+    Constructed with the full tags URL (built by the caller in the DI
+    factory) and an optional pre-built ``httpx.AsyncClient`` (test seam).
+    If no client is provided, one is created with a short timeout so a
+    hung Ollama does not back up the readiness check.
     """
 
     def __init__(
         self,
         *,
-        base_url: str,
+        tags_url: str,
+        timeout_seconds: float = _DEFAULT_PROBE_TIMEOUT_SECONDS,
         http_client: httpx.AsyncClient | None = None,
     ) -> None:
-        self._tags_url = _build_tags_url(base_url)
+        self._tags_url = tags_url
         self._http_client = http_client or httpx.AsyncClient(
-            timeout=httpx.Timeout(_PROBE_TIMEOUT_SECONDS),
+            timeout=httpx.Timeout(timeout_seconds),
         )
 
     async def check(self) -> bool:
@@ -44,8 +42,8 @@ class OllamaHealthProbe:
         try:
             response = await self._http_client.get(self._tags_url)
             response.raise_for_status()
-        except (httpx.RequestError, httpx.HTTPStatusError):
-            _logger.debug("ollama_probe_failed", url=self._tags_url)
+        except httpx.HTTPError:
+            _logger.debug("ollama_probe_failed", url=self._tags_url, exc_info=True)
             return False
         return True
 

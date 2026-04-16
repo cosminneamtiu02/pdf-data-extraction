@@ -2,7 +2,7 @@
 
 The /ready endpoint is gated on a TTL-cached Ollama probe (PDFX-E007-F001).
 These tests override the ``get_probe_cache`` dependency to inject a
-controllable ``ProbeCache`` with a fake probe, so no real Ollama is needed.
+controllable ``ProbeCache`` with a ``FakeProbe``, so no real Ollama is needed.
 """
 
 from __future__ import annotations
@@ -16,34 +16,18 @@ from httpx import ASGITransport, AsyncClient
 from app.api.deps import get_probe_cache
 from app.api.probe_cache import ProbeCache
 from app.main import app
+from tests.conftest import FakeProbe
 
 # ---------------------------------------------------------------------------
-# Fakes
+# Helpers
 # ---------------------------------------------------------------------------
-
-
-class _FakeProbe:
-    """Controllable probe returning scripted boolean results."""
-
-    def __init__(self, results: list[bool]) -> None:
-        self._results = list(results)
-        self.call_count = 0
-
-    async def check(self) -> bool:
-        if self.call_count >= len(self._results):
-            pytest.fail(
-                f"_FakeProbe.check called more times than scripted (call #{self.call_count + 1})"
-            )
-        result = self._results[self.call_count]
-        self.call_count += 1
-        return result
 
 
 def _make_cache(
     results: list[bool],
     ttl: float = 60.0,
-) -> tuple[ProbeCache, _FakeProbe]:
-    probe = _FakeProbe(results=results)
+) -> tuple[ProbeCache, FakeProbe]:
+    probe = FakeProbe(results=results)
     cache = ProbeCache(
         probe=probe,  # type: ignore[arg-type]  # test seam
         ttl_seconds=ttl,
@@ -179,6 +163,16 @@ async def test_openapi_includes_health_and_ready(client: AsyncClient) -> None:
     assert "/ready" in paths, f"/ready missing from OpenAPI paths: {list(paths)}"
     assert "get" in paths["/health"]
     assert "get" in paths["/ready"]
+
+
+async def test_openapi_ready_documents_503(client: AsyncClient) -> None:
+    """OpenAPI spec must declare the 503 response for /ready."""
+    response = await client.get("/openapi.json")
+    spec: dict[str, Any] = response.json()
+    ready_responses = spec["paths"]["/ready"]["get"]["responses"]
+    assert "503" in ready_responses, (
+        f"/ready missing 503 in OpenAPI responses: {list(ready_responses)}"
+    )
 
 
 # ---------------------------------------------------------------------------

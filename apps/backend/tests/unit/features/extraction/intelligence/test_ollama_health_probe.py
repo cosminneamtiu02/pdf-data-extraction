@@ -22,25 +22,20 @@ from app.features.extraction.intelligence.ollama_health_probe import (
 
 
 class _FakeResponse:
-    """Minimal response stub that supports ``raise_for_status``."""
+    """Minimal response stub — only ``raise_for_status`` is called by the probe."""
 
     def __init__(
         self,
         *,
         status_code: int = 200,
-        body: dict[str, Any] | None = None,
         status_error: httpx.HTTPStatusError | None = None,
     ) -> None:
         self.status_code = status_code
-        self._body = body or {}
         self._status_error = status_error
 
     def raise_for_status(self) -> None:
         if self._status_error is not None:
             raise self._status_error
-
-    def json(self) -> dict[str, Any]:
-        return self._body
 
 
 class _FakeAsyncClient:
@@ -78,10 +73,10 @@ def _http_status_error(status: int) -> httpx.HTTPStatusError:
 def _build_probe(
     fake_client: _FakeAsyncClient,
     *,
-    base_url: str = "http://host.docker.internal:11434",
+    tags_url: str = "http://host.docker.internal:11434/api/tags",
 ) -> OllamaHealthProbe:
     return OllamaHealthProbe(
-        base_url=base_url,
+        tags_url=tags_url,
         http_client=fake_client,  # type: ignore[arg-type]  # test seam: FakeAsyncClient quacks like httpx.AsyncClient
     )
 
@@ -92,7 +87,7 @@ def _build_probe(
 
 
 async def test_check_returns_true_on_200() -> None:
-    fake = _FakeAsyncClient(get_outcomes=[_FakeResponse(body={"models": []})])
+    fake = _FakeAsyncClient(get_outcomes=[_FakeResponse()])
     probe = _build_probe(fake)
 
     assert await probe.check() is True

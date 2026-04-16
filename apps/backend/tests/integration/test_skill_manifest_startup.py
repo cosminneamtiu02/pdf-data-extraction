@@ -13,6 +13,7 @@ from app.core.config import Settings
 from app.exceptions import SkillValidationFailedError
 from app.features.extraction.skills import SkillManifest
 from app.main import create_app
+from tests.conftest import FakeProbe
 
 
 def _write_skill(base: Path, *, dir_name: str, **overrides: Any) -> Path:
@@ -62,11 +63,7 @@ async def test_ready_still_returns_200_after_manifest_wiring(tmp_path: Path) -> 
 
     # /ready is now gated on an Ollama probe (PDFX-E007-F001).  Override the
     # probe-cache dependency so this test stays isolated from real Ollama.
-    class _AlwaysReady:
-        async def check(self) -> bool:
-            return True
-
-    cache = ProbeCache(probe=_AlwaysReady(), ttl_seconds=60.0)  # type: ignore[arg-type]  # test seam
+    cache = ProbeCache(probe=FakeProbe(results=[True]), ttl_seconds=60.0)  # type: ignore[arg-type]  # test seam
     app.dependency_overrides[get_probe_cache] = lambda: cache
 
     transport = ASGITransport(app=app)
