@@ -105,6 +105,9 @@ app/features/<feature>/ -- Self-contained vertical slice. The extraction feature
 - Never hardcode an Ollama model tag in source. Always read from `Settings.ollama_model`.
 - Never raise a generic `ValueError` or `RuntimeError` from within the extraction
   pipeline. Raise a `DomainError` subclass generated from `errors.yaml`.
+  Exception: value-object constructor invariants (`__post_init__` / `__init__`)
+  may raise `ValueError` because they guard against programming errors (wrong
+  arguments), not runtime pipeline failures.
 - Never import Docling, LangExtract, PyMuPDF, or the Ollama HTTP client outside
   their designated containment files (the names of which are listed in the
   "Third-party dependencies are contained to specific implementation files"
