@@ -1,0 +1,245 @@
+"""Unit tests for ``scripts.benchmark`` — local latency benchmark script.
+
+Covers the sixteen unit scenarios in PDFX-E007-F005: percentile computation
+(happy path, single value, empty), report formatting (per-fixture table,
+memory section, NFR comparison), fixture discovery (all present, one
+missing, all missing), CLI parsing (--help, defaults, overrides, validation),
+warm-up discard, and pyright strict pass.
+"""
+
+from __future__ import annotations
+
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from scripts.benchmark import (
+    BenchResults,
+    FixtureBenchResult,
+    MemorySnapshot,
+    ModeBenchResult,
+    compute_percentile,
+    discard_warmup,
+    discover_fixtures,
+    format_report,
+    parse_args,
+)
+
+# ---------------------------------------------------------------------------
+# Percentile computation
+# ---------------------------------------------------------------------------
+
+
+def test_compute_percentile_ten_values_returns_correct_p50_and_p95() -> None:
+    """compute_percentile with [1..10] returns p50=5.5 and p95=9.55."""
+    latencies = [float(i) for i in range(1, 11)]
+    assert compute_percentile(latencies, 50) == pytest.approx(5.5)
+    assert compute_percentile(latencies, 95) == pytest.approx(9.55)
+
+
+def test_compute_percentile_single_value_returns_that_value() -> None:
+    """compute_percentile with [42.0] returns 42.0 for both p50 and p95."""
+    assert compute_percentile([42.0], 50) == pytest.approx(42.0)
+    assert compute_percentile([42.0], 95) == pytest.approx(42.0)
+
+
+def test_compute_percentile_empty_list_raises_value_error() -> None:
+    """compute_percentile with [] raises ValueError."""
+    with pytest.raises(ValueError, match="empty"):
+        compute_percentile([], 50)
+
+
+# ---------------------------------------------------------------------------
+# Report formatting
+# ---------------------------------------------------------------------------
+
+
+def _make_mode_result(latencies: list[float]) -> ModeBenchResult:
+    return ModeBenchResult(latencies=latencies)
+
+
+def _make_fixture_result(name: str) -> FixtureBenchResult:
+    return FixtureBenchResult(
+        fixture_name=name,
+        modes={
+            "JSON_ONLY": _make_mode_result([5.0, 6.0, 7.0]),
+            "PDF_ONLY": _make_mode_result([8.0, 9.0, 10.0]),
+            "BOTH": _make_mode_result([11.0, 12.0, 13.0]),
+        },
+    )
+
+
+def _make_results() -> BenchResults:
+    return BenchResults(
+        fixtures=[
+            _make_fixture_result("native_invoice_10p"),
+            _make_fixture_result("scanned_invoice_10p"),
+            _make_fixture_result("table_heavy_5p"),
+        ],
+        memory=MemorySnapshot(rss_before_mb=100.0, rss_after_mb=120.0),
+    )
+
+
+def test_format_report_contains_per_fixture_latency_table() -> None:
+    """Report output contains rows for each fixture x mode with p50/p95."""
+    results = _make_results()
+    report = format_report(results)
+
+    for name in ("native_invoice_10p", "scanned_invoice_10p", "table_heavy_5p"):
+        assert name in report
+
+    for mode in ("JSON_ONLY", "PDF_ONLY", "BOTH"):
+        assert mode in report
+
+    # Should contain statistical labels
+    assert "p50" in report.lower() or "P50" in report
+    assert "p95" in report.lower() or "P95" in report
+
+
+def test_format_report_contains_memory_section() -> None:
+    """Report includes RSS before, RSS after, and delta in MB."""
+    results = _make_results()
+    report = format_report(results)
+
+    assert "100.0" in report or "100.00" in report  # RSS before
+    assert "120.0" in report or "120.00" in report  # RSS after
+    assert "20.0" in report or "20.00" in report  # delta
+
+
+def test_format_report_contains_nfr_comparison() -> None:
+    """Report includes NFR comparison with targets and pass/fail indicators."""
+    results = _make_results()
+    report = format_report(results)
+
+    # NFR targets section header
+    assert "NFR" in report or "Target" in report
+    # Native invoice P50 target (20.0s) should appear since our fixture values are 5-7s
+    assert "PASS" in report or "FAIL" in report
+    # With fixture latencies of 5-7s, native P50 (~6.0) is well under 20.0s target
+    assert "Native Invoice 10P" in report.title() or "native_invoice_10p" in report.lower()
+
+
+# ---------------------------------------------------------------------------
+# Fixture discovery
+# ---------------------------------------------------------------------------
+
+EXPECTED_FIXTURE_FILES = [
+    "native_invoice_10p.pdf",
+    "scanned_invoice_10p.pdf",
+    "table_heavy_5p.pdf",
+]
+
+EXPECTED_FIXTURE_STEMS = [
+    "native_invoice_10p",
+    "scanned_invoice_10p",
+    "table_heavy_5p",
+]
+
+
+def test_discover_fixtures_finds_all_three(tmp_path: Path) -> None:
+    """discover_fixtures returns FixtureInfo with stem names for all three PDFs."""
+    for name in EXPECTED_FIXTURE_FILES:
+        (tmp_path / name).write_bytes(b"%PDF-1.4 stub")
+
+    fixtures = discover_fixtures(tmp_path)
+    assert len(fixtures) == 3
+    names = {f.name for f in fixtures}
+    assert names == set(EXPECTED_FIXTURE_STEMS)
+
+
+def test_discover_fixtures_missing_one_names_missing_file(tmp_path: Path) -> None:
+    """discover_fixtures with one missing file raises error naming it."""
+    (tmp_path / "native_invoice_10p.pdf").write_bytes(b"%PDF-1.4 stub")
+    (tmp_path / "table_heavy_5p.pdf").write_bytes(b"%PDF-1.4 stub")
+
+    with pytest.raises(FileNotFoundError, match=r"scanned_invoice_10p\.pdf"):
+        discover_fixtures(tmp_path)
+
+
+def test_discover_fixtures_empty_dir_lists_all_missing(tmp_path: Path) -> None:
+    """discover_fixtures with empty dir names all three missing files."""
+    with pytest.raises(FileNotFoundError) as exc_info:
+        discover_fixtures(tmp_path)
+
+    msg = str(exc_info.value)
+    for name in EXPECTED_FIXTURE_FILES:
+        assert name in msg
+
+
+# ---------------------------------------------------------------------------
+# CLI parsing
+# ---------------------------------------------------------------------------
+
+
+def test_parse_args_help_exits_zero(capsys: pytest.CaptureFixture[str]) -> None:
+    """--help exits 0 and shows --url, --iterations, --fixtures-dir."""
+    with pytest.raises(SystemExit) as exc_info:
+        parse_args(["--help"])
+
+    assert exc_info.value.code == 0
+    captured = capsys.readouterr()
+    assert "--url" in captured.out
+    assert "--iterations" in captured.out
+    assert "--fixtures-dir" in captured.out
+
+
+def test_parse_args_defaults() -> None:
+    """No args produces config with iterations=10 and default URL."""
+    config = parse_args([])
+    assert config.iterations == 10
+    assert "localhost" in config.url or "127.0.0.1" in config.url
+
+
+def test_parse_args_url_override() -> None:
+    """--url overrides the default base URL."""
+    config = parse_args(["--url", "http://custom:8000"])
+    assert config.url == "http://custom:8000"
+
+
+def test_parse_args_iterations_override() -> None:
+    """--iterations 5 sets iterations to 5."""
+    config = parse_args(["--iterations", "5"])
+    assert config.iterations == 5
+
+
+def test_parse_args_iterations_zero_exits_nonzero() -> None:
+    """--iterations 0 exits non-zero because iterations must be positive."""
+    with pytest.raises(SystemExit) as exc_info:
+        parse_args(["--iterations", "0"])
+
+    assert exc_info.value.code != 0
+
+
+# ---------------------------------------------------------------------------
+# Warm-up discard
+# ---------------------------------------------------------------------------
+
+
+def test_warmup_discard_removes_first_value() -> None:
+    """discard_warmup drops the first (cold-start) value from latencies."""
+    raw = [60.0, 5.0, 5.1, 4.9, 5.0, 5.2, 4.8, 5.1, 5.0, 4.9, 5.0]
+    warmed = discard_warmup(raw)
+    assert len(warmed) == 10
+    assert 60.0 not in warmed
+    # p50 should be near 5.0, not skewed by the 60.0 outlier
+    p50 = compute_percentile(warmed, 50)
+    assert p50 < 10.0
+
+
+# ---------------------------------------------------------------------------
+# Pyright strict
+# ---------------------------------------------------------------------------
+
+
+def test_pyright_strict_passes_on_benchmark_module() -> None:
+    """pyright --strict reports zero errors on scripts/benchmark.py."""
+    result = subprocess.run(
+        [sys.executable, "-m", "pyright", "--pythonversion", "3.13", "scripts/benchmark.py"],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=str(Path(__file__).resolve().parents[3]),  # apps/backend/
+    )
+    assert result.returncode == 0, f"pyright errors:\n{result.stdout}\n{result.stderr}"
