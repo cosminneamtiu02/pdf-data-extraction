@@ -1,22 +1,17 @@
-# Regenerate workspace lockfiles on Dependabot PRs.
+# Regenerate uv lockfiles on Dependabot PRs.
 #
 # WHY THIS EXISTS
 # ---------------
-# Dependabot's pnpm support has a known bug: when a monorepo uses a
-# single root pnpm-lock.yaml with per-workspace package.json files,
-# Dependabot updates the manifest but silently fails to regenerate the
-# root lockfile. CI then rejects every Dependabot PR with
-# ERR_PNPM_OUTDATED_LOCKFILE because `pnpm install --frozen-lockfile`
-# refuses to install with a manifest/lock divergence. The backend has
-# a looser equivalent: `uv sync --dev` regenerates uv.lock on the fly,
-# so the divergence doesn't break CI, but the lockfile in git is still
-# silently out of sync after every Dependabot merge -- which is its
-# own kind of correctness-eroding bug.
+# Dependabot's uv support does not reliably regenerate lockfiles when
+# bumping a pyproject.toml in a multi-package repo. `uv sync --dev`
+# regenerates uv.lock on the fly, so the divergence doesn't break CI
+# immediately, but the lockfile in git is still silently out of sync
+# after every Dependabot merge -- which is its own kind of
+# correctness-eroding bug.
 #
 # This workflow fires on every Dependabot PR, detects which manifest
-# files changed, runs the matching package manager in regeneration
-# mode, and pushes the updated lockfile back to the PR branch as a
-# follow-up commit.
+# files changed, runs `uv lock` in the affected workspace, and pushes
+# the updated lockfile back to the PR branch as a follow-up commit.
 #
 # HOW IT COMPOSES WITH THE AUTO-MERGE WORKFLOW
 # --------------------------------------------
@@ -77,7 +72,7 @@
 #   - docs/automerge.md: the "Lockfile sync" section explains the
 #     architecture and the incident that prompted building this
 #   - docs/decisions.md ADR-010: the auto-merge exception this feeds
-#   - TEMPLATE_FRICTION.md: the "Dependabot pnpm workspace lockfile"
+#   - TEMPLATE_FRICTION.md: the "Dependabot uv workspace lockfile"
 #     entry tracks the underlying upstream bug
 
 name: Dependabot lockfile sync
@@ -136,13 +131,9 @@ jobs:
           echo "Changed files:"
           echo "$CHANGED"
 
-          NEEDS_PNPM=false
           NEEDS_UV_BACKEND=false
           NEEDS_UV_ERROR_CONTRACTS=false
 
-          if echo "$CHANGED" | grep -qE '(apps/frontend|packages/api-client|packages/error-contracts)/package\.json$'; then
-            NEEDS_PNPM=true
-          fi
           if echo "$CHANGED" | grep -qE 'apps/backend/pyproject\.toml$'; then
             NEEDS_UV_BACKEND=true
           fi
@@ -150,27 +141,12 @@ jobs:
             NEEDS_UV_ERROR_CONTRACTS=true
           fi
 
-          echo "needs_pnpm=$NEEDS_PNPM" >> $GITHUB_OUTPUT
           echo "needs_uv_backend=$NEEDS_UV_BACKEND" >> $GITHUB_OUTPUT
           echo "needs_uv_error_contracts=$NEEDS_UV_ERROR_CONTRACTS" >> $GITHUB_OUTPUT
 
-          if [ "$NEEDS_PNPM" = "false" ] && [ "$NEEDS_UV_BACKEND" = "false" ] && [ "$NEEDS_UV_ERROR_CONTRACTS" = "false" ]; then
+          if [ "$NEEDS_UV_BACKEND" = "false" ] && [ "$NEEDS_UV_ERROR_CONTRACTS" = "false" ]; then
             echo "No manifest files changed. This PR probably touches only lockfiles or other files already in sync; nothing to do."
           fi
-
-      - name: Set up Node.js
-        if: steps.loop_guard.outputs.skip != 'true' && steps.changed.outputs.needs_pnpm == 'true'
-        uses: actions/setup-node@v6
-        with:
-          node-version: "22"
-
-      - name: Install pnpm
-        if: steps.loop_guard.outputs.skip != 'true' && steps.changed.outputs.needs_pnpm == 'true'
-        run: npm install -g pnpm@10.33.0
-
-      - name: Regenerate pnpm lockfile
-        if: steps.loop_guard.outputs.skip != 'true' && steps.changed.outputs.needs_pnpm == 'true'
-        run: pnpm install --no-frozen-lockfile --lockfile-only
 
       - name: Set up uv
         if: steps.loop_guard.outputs.skip != 'true' && (steps.changed.outputs.needs_uv_backend == 'true' || steps.changed.outputs.needs_uv_error_contracts == 'true')
@@ -197,7 +173,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           # Stage only lockfile paths to avoid accidentally committing anything else
-          git add -u pnpm-lock.yaml apps/backend/uv.lock packages/error-contracts/uv.lock 2>/dev/null || true
+          git add -u apps/backend/uv.lock packages/error-contracts/uv.lock 2>/dev/null || true
 
           if git diff --cached --quiet; then
             echo "No lockfile changes to commit. Dependabot may have regenerated them correctly, or this PR touches no relevant manifests."
@@ -209,6 +185,6 @@ jobs:
 
           git commit \
             -m "chore(deps): regenerate lockfiles after dependabot bump" \
-            -m "Automated follow-up commit from .github/workflows/dependabot-lockfile-sync.yml. Dependabot's pnpm/uv support does not regenerate monorepo lockfiles when bumping a manifest; this workflow runs the package manager in regeneration mode and pushes the updated lockfile back so CI's frozen-lockfile check passes."
+            -m "Automated follow-up commit from .github/workflows/dependabot-lockfile-sync.yml. Dependabot's uv support does not regenerate workspace lockfiles when bumping a manifest; this workflow runs uv lock in the affected workspace and pushes the updated lockfile back so CI's frozen-lockfile check passes."
 
           git push
