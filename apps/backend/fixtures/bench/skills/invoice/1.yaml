@@ -1,0 +1,55 @@
+name: invoice
+version: 1
+prompt: >
+  Extract the following fields from this invoice document.
+  Return the exact text as it appears in the document.
+examples:
+  - input: |
+      INVOICE #INV-2025-001
+      Date: January 15, 2025
+      Due Date: February 14, 2025
+
+      Bill To:
+      Acme Corp
+      123 Main Street
+
+      From:
+      Widget Supplies Inc.
+
+      Items:
+      Widget A  x10  $50.00
+      Widget B  x5   $75.00
+
+      Subtotal: $875.00
+      Tax: $70.00
+      Total: $945.00
+    output:
+      invoice_number: "INV-2025-001"
+      date: "January 15, 2025"
+      total: "$945.00"
+      due_date: "February 14, 2025"
+      vendor_name: "Widget Supplies Inc."
+output_schema:
+  type: object
+  properties:
+    invoice_number:
+      type: string
+      description: The invoice number or reference code
+    date:
+      type: string
+      description: The invoice date
+    total:
+      type: string
+      description: The total amount including tax
+    due_date:
+      type: string
+      description: The payment due date
+    vendor_name:
+      type: string
+      description: The vendor or supplier name
+  required:
+    - invoice_number
+    - date
+    - total
+    - due_date
+    - vendor_name

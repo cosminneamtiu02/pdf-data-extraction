@@ -118,6 +118,35 @@ tasks:
       # Quote SKILLS_DIR so paths containing spaces survive shell tokenization.
       - uv run python -m scripts.validate_skills{{if .SKILLS_DIR}} "{{.SKILLS_DIR}}"{{end}}
 
+  # ── Benchmarking ─────────────────────────────────────────────
+  bench:serve:
+    desc: Start the backend with bench fixtures as the skill directory (for task bench)
+    dir: "{{.BACKEND_DIR}}"
+    env:
+      SKILLS_DIR: fixtures/bench/skills
+    cmds:
+      - uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+  bench:
+    desc: Run local latency benchmark (start service first with task bench:serve)
+    dir: "{{.BACKEND_DIR}}"
+    vars:
+      BENCH_URL: '{{.BENCH_URL | default "http://localhost:8000"}}'
+      BENCH_ITERATIONS: '{{.BENCH_ITERATIONS | default "10"}}'
+      BENCH_FIXTURES_DIR: '{{.BENCH_FIXTURES_DIR | default "fixtures/bench"}}'
+      BENCH_SKILL_NAME: '{{.BENCH_SKILL_NAME | default "invoice"}}'
+      BENCH_SKILL_VERSION: '{{.BENCH_SKILL_VERSION | default "1"}}'
+      BENCH_SERVICE_PID: '{{.BENCH_SERVICE_PID | default ""}}'
+    env:
+      BENCH_URL: "{{.BENCH_URL}}"
+      BENCH_ITERATIONS: "{{.BENCH_ITERATIONS}}"
+      BENCH_FIXTURES_DIR: "{{.BENCH_FIXTURES_DIR}}"
+      BENCH_SKILL_NAME: "{{.BENCH_SKILL_NAME}}"
+      BENCH_SKILL_VERSION: "{{.BENCH_SKILL_VERSION}}"
+      BENCH_SERVICE_PID: "{{.BENCH_SERVICE_PID}}"
+    cmds:
+      - uv run python -m scripts.benchmark
+
   # ── Code Generation ──────────────────────────────────────────
   errors:check:
     desc: Verify generated error contracts are in sync with errors.yaml (fails on drift)
