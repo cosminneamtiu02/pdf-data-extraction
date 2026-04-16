@@ -43,6 +43,7 @@ from app.features.extraction.intelligence.correction_prompt_builder import (
 )
 from app.features.extraction.intelligence.ollama_gemma_provider import (
     OllamaGemmaProvider,
+    build_tags_url,
 )
 from app.features.extraction.intelligence.ollama_health_probe import (
     OllamaHealthProbe,
@@ -160,10 +161,6 @@ def get_ollama_health_probe(request: Request) -> OllamaHealthProbe:
     provider module) so the probe class does not duplicate the URL
     construction logic.
     """
-    from app.features.extraction.intelligence.ollama_gemma_provider import (
-        build_tags_url,
-    )
-
     state = request.app.state
     probe: OllamaHealthProbe | None = getattr(state, "ollama_health_probe", None)
     if probe is None:

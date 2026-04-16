@@ -1,9 +1,10 @@
 """Health and readiness endpoints — mounted at root, outside /api/v1/."""
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from app.api.deps import get_probe_cache
 from app.api.probe_cache import (
@@ -11,6 +12,15 @@ from app.api.probe_cache import (
 )
 
 router = APIRouter(tags=["health"])
+
+
+class _ReadyResponse(BaseModel):
+    status: Literal["ready"]
+
+
+class _NotReadyResponse(BaseModel):
+    status: Literal["not_ready"]
+    reason: Literal["ollama_unreachable"]
 
 
 @router.get("/health")
@@ -24,19 +34,11 @@ async def health() -> dict[str, str]:
     responses={
         200: {
             "description": "Ollama is reachable and the service is ready.",
-            "content": {
-                "application/json": {
-                    "example": {"status": "ready"},
-                },
-            },
+            "model": _ReadyResponse,
         },
         503: {
             "description": "Ollama is unreachable; service is not ready.",
-            "content": {
-                "application/json": {
-                    "example": {"status": "not_ready", "reason": "ollama_unreachable"},
-                },
-            },
+            "model": _NotReadyResponse,
         },
     },
 )

@@ -41,7 +41,7 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None]:
                 try:
                     if hasattr(obj, "aclose"):
                         await obj.aclose()
-                except (OSError, RuntimeError):
+                except Exception:  # noqa: BLE001 - cleanup must not prevent sibling resources from closing
                     _logger.warning("lifespan_cleanup_failed", attr=attr, exc_info=True)
                 finally:
                     delattr(app.state, attr)

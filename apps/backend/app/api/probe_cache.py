@@ -34,6 +34,9 @@ class ProbeCache:
         self._ttl = ttl_seconds
         self._last_check_time: float = 0.0
         self._last_result: bool = False
+        # asyncio.Lock() is loop-free at construction since Python 3.10;
+        # it binds to the running loop on first ``await``. Safe to create
+        # here even though the DI factory (``get_probe_cache``) is sync.
         self._lock = asyncio.Lock()
 
     async def is_ready(self) -> bool:
