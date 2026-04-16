@@ -267,7 +267,7 @@ cd apps/backend
 uv sync --dev
 
 # 3. Create backend .env (optional — defaults work for most dev loops)
-cp ../../.env.example .env
+cp .env.example .env
 
 # 4. Install error-contracts dependencies
 cd ../../packages/error-contracts

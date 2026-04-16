@@ -48,8 +48,8 @@ SQLAlchemy models in this service). Conversion happens in the service layer.
 ## Environment Variables
 
 - All config via `pydantic-settings` in `core/config.py`.
-- Every new env var added to both the `Settings` class and `.env.example` in
-  the same commit.
+- Every new env var added to both the `Settings` class and
+  `apps/backend/.env.example` in the same commit.
 
 ## Skill YAMLs
 
