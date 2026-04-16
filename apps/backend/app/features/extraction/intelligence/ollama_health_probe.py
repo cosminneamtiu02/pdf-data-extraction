@@ -44,7 +44,7 @@ class OllamaHealthProbe:
         try:
             response = await self._http_client.get(self._tags_url)
             response.raise_for_status()
-        except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError):
+        except (httpx.RequestError, httpx.HTTPStatusError):
             _logger.debug("ollama_probe_failed", url=self._tags_url)
             return False
         return True

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from app.api.probe_cache import ProbeCache
 
 # ---------------------------------------------------------------------------
@@ -19,8 +21,13 @@ class _FakeProbe:
         self.call_count = 0
 
     async def check(self) -> bool:
+        if self.call_count >= len(self._results):
+            pytest.fail(
+                f"_FakeProbe.check called more times than scripted (call #{self.call_count + 1})"
+            )
+        result = self._results[self.call_count]
         self.call_count += 1
-        return self._results[self.call_count - 1]
+        return result
 
 
 # ---------------------------------------------------------------------------
