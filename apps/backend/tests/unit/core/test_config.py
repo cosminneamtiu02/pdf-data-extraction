@@ -1,5 +1,8 @@
 """Tests for the application configuration."""
 
+import pytest
+from pydantic import ValidationError
+
 from app.core.config import Settings
 
 
@@ -53,3 +56,54 @@ def test_settings_ollama_probe_timeout_default() -> None:
     """ollama_probe_timeout_seconds defaults to 5.0."""
     s = Settings()
     assert s.ollama_probe_timeout_seconds == 5.0
+
+
+# -- ollama_base_url validation (issue #64) --------------------------------
+
+
+def test_settings_ollama_base_url_empty_string_rejected() -> None:
+    """An empty string for ollama_base_url must be rejected."""
+    with pytest.raises(ValidationError, match="ollama_base_url"):
+        Settings(ollama_base_url="")
+
+
+def test_settings_ollama_base_url_whitespace_only_rejected() -> None:
+    """A whitespace-only string for ollama_base_url must be rejected."""
+    with pytest.raises(ValidationError, match="ollama_base_url"):
+        Settings(ollama_base_url="   ")
+
+
+def test_settings_ollama_base_url_no_http_scheme_rejected() -> None:
+    """A URL without http:// or https:// scheme must be rejected."""
+    with pytest.raises(ValidationError, match="ollama_base_url"):
+        Settings(ollama_base_url="ftp://localhost:11434")
+
+
+def test_settings_ollama_base_url_bare_hostname_rejected() -> None:
+    """A bare hostname without scheme must be rejected."""
+    with pytest.raises(ValidationError, match="ollama_base_url"):
+        Settings(ollama_base_url="localhost:11434")
+
+
+def test_settings_ollama_base_url_valid_http_accepted() -> None:
+    """A valid http:// URL must be accepted."""
+    s = Settings(ollama_base_url="http://localhost:11434")
+    assert s.ollama_base_url == "http://localhost:11434"
+
+
+def test_settings_ollama_base_url_valid_https_accepted() -> None:
+    """A valid https:// URL must be accepted."""
+    s = Settings(ollama_base_url="https://ollama.example.com")
+    assert s.ollama_base_url == "https://ollama.example.com"
+
+
+def test_settings_ollama_base_url_trailing_slash_stripped() -> None:
+    """Trailing slashes must be stripped from ollama_base_url."""
+    s = Settings(ollama_base_url="http://localhost:11434/")
+    assert s.ollama_base_url == "http://localhost:11434"
+
+
+def test_settings_ollama_base_url_whitespace_stripped() -> None:
+    """Leading/trailing whitespace must be stripped before validation."""
+    s = Settings(ollama_base_url="  http://localhost:11434  ")
+    assert s.ollama_base_url == "http://localhost:11434"

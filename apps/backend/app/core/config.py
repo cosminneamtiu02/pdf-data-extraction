@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import Annotated
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.docling_modes import OcrMode, TableMode
@@ -43,6 +43,19 @@ class Settings(BaseSettings):
 
     ollama_base_url: str = "http://host.docker.internal:11434"
     ollama_model: str = "gemma4:e2b"
+
+    @field_validator("ollama_base_url")
+    @classmethod
+    def _validate_ollama_base_url(cls, v: str) -> str:
+        url = v.strip().rstrip("/")
+        if not url:
+            msg = "ollama_base_url must not be empty"
+            raise ValueError(msg)
+        if not url.startswith(("http://", "https://")):
+            msg = "ollama_base_url must start with http:// or https://"
+            raise ValueError(msg)
+        return url
+
     ollama_timeout_seconds: Annotated[float, Field(gt=0)] = 30.0
     ollama_probe_ttl_seconds: Annotated[float, Field(ge=0)] = 10.0
     ollama_probe_timeout_seconds: Annotated[float, Field(gt=0)] = 5.0
