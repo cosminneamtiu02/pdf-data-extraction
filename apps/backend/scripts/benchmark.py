@@ -20,11 +20,15 @@ from __future__ import annotations
 import argparse
 import os
 import platform
-import resource
 import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+
+try:
+    import resource  # Unix only
+except ModuleNotFoundError:
+    resource = None  # type: ignore[assignment]  # Windows fallback: RSS measurement unavailable
 
 import httpx
 import structlog
@@ -89,7 +93,12 @@ class FixtureBenchResult:
 
 @dataclass(frozen=True, slots=True)
 class MemorySnapshot:
-    """RSS measurements before and after the benchmark."""
+    """Peak (high-water-mark) RSS before and after the benchmark.
+
+    These are the benchmark *client* process's peak RSS, not the service
+    process's.  Operators should check the service process directly for
+    NFR-008 (idle RSS <= 1.5 GB).
+    """
 
     rss_before_mb: float
     rss_after_mb: float
@@ -163,7 +172,13 @@ def discover_fixtures(fixtures_dir: Path) -> list[FixtureInfo]:
 
 
 def _get_rss_mb() -> float:
-    """Return current max RSS in MB (cross-platform)."""
+    """Return peak (high-water-mark) RSS in MB.
+
+    Uses ``resource.getrusage`` on Unix.  Returns 0.0 on Windows where
+    the ``resource`` module is unavailable.
+    """
+    if resource is None:
+        return 0.0
     usage = resource.getrusage(resource.RUSAGE_SELF)
     if platform.system() == "Darwin":
         # macOS: ru_maxrss is in bytes
@@ -211,7 +226,7 @@ def format_report(results: BenchResults) -> str:
 
     # Memory section
     lines.append("")
-    lines.append("Memory (Max RSS of benchmark process)")
+    lines.append("Memory (Peak RSS of benchmark client process)")
     lines.append("-" * 78)
     mem = results.memory
     delta = mem.rss_after_mb - mem.rss_before_mb
