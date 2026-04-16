@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from typing import Annotated
+from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -47,14 +48,24 @@ class Settings(BaseSettings):
     @field_validator("ollama_base_url")
     @classmethod
     def _validate_ollama_base_url(cls, v: str) -> str:
-        url = v.strip().rstrip("/")
-        if not url:
+        stripped = v.strip()
+        if not stripped:
             msg = "ollama_base_url must not be empty"
             raise ValueError(msg)
-        if not url.startswith(("http://", "https://")):
+        if not stripped.startswith(("http://", "https://")):
             msg = "ollama_base_url must start with http:// or https://"
             raise ValueError(msg)
-        return url
+        parsed = urlsplit(stripped)
+        if not parsed.netloc:
+            msg = "ollama_base_url must include a host (e.g. http://localhost:11434)"
+            raise ValueError(msg)
+        if parsed.path.rstrip("/").endswith("/api"):
+            msg = (
+                "ollama_base_url must not include a trailing /api path; "
+                "the client appends /api/generate and /api/tags automatically"
+            )
+            raise ValueError(msg)
+        return stripped.rstrip("/")
 
     ollama_timeout_seconds: Annotated[float, Field(gt=0)] = 30.0
     ollama_probe_ttl_seconds: Annotated[float, Field(ge=0)] = 10.0

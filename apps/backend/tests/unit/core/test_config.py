@@ -63,26 +63,38 @@ def test_settings_ollama_probe_timeout_default() -> None:
 
 def test_settings_ollama_base_url_empty_string_rejected() -> None:
     """An empty string for ollama_base_url must be rejected."""
-    with pytest.raises(ValidationError, match="ollama_base_url"):
+    with pytest.raises(ValidationError, match="must not be empty"):
         Settings(ollama_base_url="")
 
 
 def test_settings_ollama_base_url_whitespace_only_rejected() -> None:
     """A whitespace-only string for ollama_base_url must be rejected."""
-    with pytest.raises(ValidationError, match="ollama_base_url"):
+    with pytest.raises(ValidationError, match="must not be empty"):
         Settings(ollama_base_url="   ")
 
 
 def test_settings_ollama_base_url_no_http_scheme_rejected() -> None:
     """A URL without http:// or https:// scheme must be rejected."""
-    with pytest.raises(ValidationError, match="ollama_base_url"):
+    with pytest.raises(ValidationError, match="must start with"):
         Settings(ollama_base_url="ftp://localhost:11434")
 
 
 def test_settings_ollama_base_url_bare_hostname_rejected() -> None:
     """A bare hostname without scheme must be rejected."""
-    with pytest.raises(ValidationError, match="ollama_base_url"):
+    with pytest.raises(ValidationError, match="must start with"):
         Settings(ollama_base_url="localhost:11434")
+
+
+def test_settings_ollama_base_url_scheme_only_no_host_rejected() -> None:
+    """http:// with no host must be rejected."""
+    with pytest.raises(ValidationError, match="must include a host"):
+        Settings(ollama_base_url="http://")
+
+
+def test_settings_ollama_base_url_trailing_api_path_rejected() -> None:
+    """A URL ending with /api must be rejected to prevent double /api segments."""
+    with pytest.raises(ValidationError, match="must not include a trailing /api"):
+        Settings(ollama_base_url="http://localhost:11434/api")
 
 
 def test_settings_ollama_base_url_valid_http_accepted() -> None:
