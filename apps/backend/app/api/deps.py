@@ -28,6 +28,15 @@ from functools import lru_cache
 from fastapi import Request
 
 from app.core.config import Settings
+
+# Pipeline component imports — these are lightweight classes (no heavy
+# transitive deps).  PdfAnnotator pulls in pymupdf at import time, which
+# is acceptable: pymupdf is a direct dependency and is needed at first
+# extraction request anyway.
+from app.features.extraction.annotation.pdf_annotator import PdfAnnotator
+from app.features.extraction.coordinates.span_resolver import SpanResolver
+from app.features.extraction.coordinates.text_concatenator import TextConcatenator
+from app.features.extraction.extraction.extraction_engine import ExtractionEngine
 from app.features.extraction.intelligence.correction_prompt_builder import (
     CorrectionPromptBuilder,
 )
@@ -118,18 +127,23 @@ def get_document_parser(request: Request) -> DoclingDocumentParser:
 
 
 def get_extraction_service(request: Request) -> ExtractionService:
-    """Return (and lazily cache) the extraction service bound to this app.
-
-    The service is constructed with just ``Settings`` for now (stub).
-    PDFX-E006-F002 will expand the constructor to accept all pipeline
-    components.
-    """
+    """Return (and lazily cache) the extraction service bound to this app."""
     state = request.app.state
     service: ExtractionService | None = getattr(state, "extraction_service", None)
     if service is None:
         with _dep_init_lock:
             service = getattr(state, "extraction_service", None)
             if service is None:
-                service = ExtractionService(settings=get_settings(request))
+                settings = get_settings(request)
+                service = ExtractionService(
+                    skill_manifest=state.skill_manifest,
+                    document_parser=get_document_parser(request),
+                    text_concatenator=TextConcatenator(),
+                    extraction_engine=ExtractionEngine(),
+                    span_resolver=SpanResolver(),
+                    pdf_annotator=PdfAnnotator(),
+                    intelligence_provider=get_intelligence_provider(request),
+                    settings=settings,
+                )
                 state.extraction_service = service
     return service

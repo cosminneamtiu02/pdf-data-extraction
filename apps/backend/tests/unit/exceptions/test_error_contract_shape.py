@@ -24,9 +24,9 @@ EXPECTED_CODES = {
     "PDF_NO_TEXT_EXTRACTABLE",
     "INTELLIGENCE_UNAVAILABLE",
     "STRUCTURED_OUTPUT_FAILED",
-    # Router-level errors (PDFX-E006-F003)
-    "PDF_TOO_LARGE",
+    # Extraction pipeline / router errors (PDFX-E006-F002, PDFX-E006-F003)
     "INTELLIGENCE_TIMEOUT",
+    "PDF_TOO_LARGE",
 }
 
 PRUNED_CODES = {
@@ -71,9 +71,9 @@ def test_no_stale_generated_error_files() -> None:
         "pdf_too_many_pages_error",
         "pdf_no_text_extractable_error",
         "intelligence_unavailable_error",
+        "intelligence_timeout_error",
         "structured_output_failed_error",
         "pdf_too_large_error",
-        "intelligence_timeout_error",
     }
     stale = {"conflict_error", "rate_limited_error", "widget_not_found_error"}
     present_stems = {p.stem for p in GENERATED_DIR.glob("*_error.py")}
