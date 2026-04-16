@@ -77,5 +77,11 @@ def configure_logging(
     root_logger.setLevel(log_level.upper())
 
     # Silence noisy third-party loggers
-    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
-    logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+    noisy_loggers = {
+        "uvicorn.access": logging.WARNING,
+        "sqlalchemy.engine": logging.WARNING,
+        "httpx": logging.WARNING,
+        "httpcore": logging.WARNING,
+    }
+    for logger_name, level in noisy_loggers.items():
+        logging.getLogger(logger_name).setLevel(level)
