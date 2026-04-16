@@ -12,9 +12,10 @@ Design summary (load-bearing; do not re-architect without updating the spec):
 * The parser is a thin coordinator. It delegates PDF parsing to a Docling
   `DocumentConverter`, walks the resulting Docling document, and emits our own
   feature-owned value types (`ParsedDocument`, `TextBlock`, `BoundingBox`).
-* The Docling conversion step is synchronous and CPU-bound. `async parse`
-  offloads it via `asyncio.to_thread` so the FastAPI event loop is never
-  starved while a document is being parsed.
+* Both the converter factory (which lazy-imports Docling and constructs the
+  pipeline) and the conversion step are synchronous and CPU-bound. `async
+  parse` offloads them together in a single `asyncio.to_thread` call so the
+  FastAPI event loop is never starved during cold start or parsing.
 * The concrete Docling objects are obtained through a `converter_factory`
   callable injected via the constructor. The default factory performs a
   *lazy* import of Docling and builds a real `DocumentConverter`; unit tests
@@ -407,8 +408,11 @@ class DoclingDocumentParser:
                 actual=preflight_page_count,
             )
 
-        converter = self._converter_factory(docling_config)
-        document = await asyncio.to_thread(converter.convert, pdf_bytes)
+        def _build_and_convert() -> _DoclingDocumentLike:
+            converter = self._converter_factory(docling_config)
+            return converter.convert(pdf_bytes)
+
+        document = await asyncio.to_thread(_build_and_convert)
 
         parsed = self._to_parsed_document(document)
         if not parsed.blocks:
