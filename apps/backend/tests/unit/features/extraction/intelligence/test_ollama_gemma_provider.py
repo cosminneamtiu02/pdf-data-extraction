@@ -294,6 +294,44 @@ async def test_generate_http_503_logs_http_5xx_cause() -> None:
     assert event["status"] == 503
 
 
+async def test_generate_read_error_raises_intelligence_unavailable() -> None:
+    """httpx.ReadError (e.g. peer reset mid-stream) must not escape as HTTP 500.
+
+    Regression guard for GitHub issue #49: only ConnectError and TimeoutException
+    were caught, so broader RequestError subclasses like ReadError leaked through
+    the domain error boundary.
+    """
+    fake = _FakeAsyncClient(
+        post_outcomes=[
+            httpx.ReadError("peer closed connection without sending complete message body")
+        ],
+    )
+    provider = _build_provider(fake_client=fake)
+
+    with capture_logs() as logs, pytest.raises(IntelligenceUnavailableError) as excinfo:
+        await provider.generate("hi", _NAME_STRING_SCHEMA)
+    assert isinstance(excinfo.value.__cause__, httpx.ReadError)
+    event = next(e for e in logs if e.get("event") == "intelligence_unavailable")
+    assert event["cause"] == "request_error"
+
+
+async def test_generate_remote_protocol_error_raises_intelligence_unavailable() -> None:
+    """httpx.RemoteProtocolError (e.g. malformed HTTP response) must not escape.
+
+    Regression guard for GitHub issue #49.
+    """
+    fake = _FakeAsyncClient(
+        post_outcomes=[httpx.RemoteProtocolError("malformed HTTP message")],
+    )
+    provider = _build_provider(fake_client=fake)
+
+    with capture_logs() as logs, pytest.raises(IntelligenceUnavailableError) as excinfo:
+        await provider.generate("hi", _NAME_STRING_SCHEMA)
+    assert isinstance(excinfo.value.__cause__, httpx.RemoteProtocolError)
+    event = next(e for e in logs if e.get("event") == "intelligence_unavailable")
+    assert event["cause"] == "request_error"
+
+
 async def test_generate_raises_intelligence_unavailable_when_body_json_is_list() -> None:
     """Non-dict JSON bodies must not leak AttributeError.
 
@@ -423,6 +461,32 @@ async def test_health_check_returns_false_on_http_error() -> None:
         get_outcomes=[
             _FakeResponse(status_code=500, status_error=_http_status_error(500)),
         ],
+    )
+    provider = _build_provider(fake_client=fake)
+
+    assert await provider.health_check() is False
+
+
+async def test_health_check_returns_false_on_read_error() -> None:
+    """ReadError during health check must return False, not crash.
+
+    Regression guard for GitHub issue #49.
+    """
+    fake = _FakeAsyncClient(
+        get_outcomes=[httpx.ReadError("peer reset")],
+    )
+    provider = _build_provider(fake_client=fake)
+
+    assert await provider.health_check() is False
+
+
+async def test_health_check_returns_false_on_remote_protocol_error() -> None:
+    """RemoteProtocolError during health check must return False, not crash.
+
+    Regression guard for GitHub issue #49.
+    """
+    fake = _FakeAsyncClient(
+        get_outcomes=[httpx.RemoteProtocolError("malformed HTTP message")],
     )
     provider = _build_provider(fake_client=fake)
 
