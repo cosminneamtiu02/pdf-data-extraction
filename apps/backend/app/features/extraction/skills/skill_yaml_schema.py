@@ -12,9 +12,8 @@ When multiple problems are present, they are aggregated into one
 `SkillValidationFailedError` so the skill author sees them all in one pass.
 """
 
-from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Self, cast
+from typing import Any, Self
 
 import yaml
 from jsonschema import Draft7Validator
@@ -22,6 +21,7 @@ from jsonschema.exceptions import SchemaError
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.exceptions import SkillValidationFailedError
+from app.features.extraction.skills.deep_freeze import thaw
 from app.features.extraction.skills.skill_docling_config import SkillDoclingConfig
 from app.features.extraction.skills.skill_example import SkillExample
 
@@ -72,7 +72,7 @@ class SkillYamlSchema(BaseModel):
             # at construction time.  jsonschema does not recognise
             # MappingProxyType as an ``"object"`` type, so we thaw the
             # frozen value back to plain dicts/lists for validation.
-            errors = sorted(iter_errors(_thaw(example.output)), key=str)
+            errors = sorted(iter_errors(thaw(example.output)), key=str)
             for error in errors:
                 path_parts: list[str] = [str(p) for p in error.absolute_path]
                 path = "/" + "/".join(path_parts)
@@ -130,19 +130,3 @@ class SkillYamlSchema(BaseModel):
             raise SkillValidationFailedError(file=file_str, reason=msg)
 
         return instance
-
-
-def _thaw(value: Any) -> dict[str, Any] | list[Any] | Any:
-    """Recursively convert frozen structures back to plain dicts/lists.
-
-    ``SkillExample`` deep-freezes its ``output`` into ``MappingProxyType`` +
-    tuples. jsonschema's Draft7Validator does not accept ``MappingProxyType``
-    as ``"object"`` type, so we thaw just for validation.
-    """
-    if isinstance(value, Mapping):
-        mapping = cast("Mapping[str, Any]", value)
-        return {str(k): _thaw(v) for k, v in mapping.items()}
-    if isinstance(value, (list, tuple)):
-        seq = cast("list[Any] | tuple[Any, ...]", value)
-        return [_thaw(item) for item in seq]
-    return value

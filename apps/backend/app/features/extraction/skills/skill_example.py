@@ -1,10 +1,11 @@
 """Few-shot example embedded in a skill YAML file."""
 
 from collections.abc import Mapping
-from types import MappingProxyType
-from typing import Any, cast
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict
+
+from app.features.extraction.skills.deep_freeze import deep_freeze_mapping
 
 
 class SkillExample(BaseModel):
@@ -30,17 +31,4 @@ class SkillExample(BaseModel):
         model, so we bypass it via ``object.__setattr__`` — the same
         pattern Pydantic itself uses in ``model_post_init``.
         """
-        object.__setattr__(self, "output", _deep_freeze_mapping(self.output))
-
-
-def _deep_freeze_mapping(value: Mapping[str, Any]) -> Mapping[str, Any]:
-    """Recursively wrap nested mappings in ``MappingProxyType`` and lists in tuples."""
-    return MappingProxyType({str(k): _freeze_any(v) for k, v in value.items()})
-
-
-def _freeze_any(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return _deep_freeze_mapping(cast("Mapping[str, Any]", value))
-    if isinstance(value, list):
-        return tuple(_freeze_any(item) for item in cast("list[Any]", value))
-    return value
+        object.__setattr__(self, "output", deep_freeze_mapping(self.output))
