@@ -9,9 +9,16 @@ from fastapi import FastAPI
 from app.api.errors import register_exception_handlers
 from app.api.health_router import router as health_router
 from app.api.middleware import configure_middleware
+from app.api.probe_cache import ProbeCache
 from app.core.config import Settings
 from app.core.logging import configure_logging
 from app.exceptions import SkillValidationFailedError
+from app.features.extraction.intelligence.ollama_gemma_provider import (
+    build_tags_url,
+)
+from app.features.extraction.intelligence.ollama_health_probe import (
+    OllamaHealthProbe,
+)
 from app.features.extraction.router import router as extraction_router
 from app.features.extraction.skills import (
     SkillDoclingConfig,
@@ -24,6 +31,33 @@ _logger = structlog.get_logger(__name__)
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncGenerator[None]:
+    # --- Startup: build probe + cache eagerly, prime with initial result ---
+    # Respect a pre-existing probe on app.state (test seam: integration tests
+    # pre-populate it with a FakeProbe for deterministic probe behaviour
+    # without relying on host network state).  In production app.state has no
+    # probe at this point, so the real one is always constructed here.
+    settings: Settings = app.state.settings
+
+    probe: OllamaHealthProbe = getattr(app.state, "ollama_health_probe", None) or OllamaHealthProbe(  # type: ignore[assignment]  # test seam allows FakeProbe
+        tags_url=build_tags_url(settings.ollama_base_url),
+        timeout_seconds=settings.ollama_probe_timeout_seconds,
+    )
+    app.state.ollama_health_probe = probe
+
+    cache: ProbeCache = getattr(app.state, "probe_cache", None) or ProbeCache(
+        probe=probe,
+        ttl_seconds=settings.ollama_probe_ttl_seconds,
+    )
+    app.state.probe_cache = cache
+
+    reachable = await probe.check()
+    cache.prime(result=reachable)
+
+    if reachable:
+        _logger.info("ollama_reachable_at_startup")
+    else:
+        _logger.warning("ollama_unreachable_at_startup")
+
     try:
         yield
     finally:

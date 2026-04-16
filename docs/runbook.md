@@ -87,6 +87,31 @@ If `/ready` returns 503 or extraction requests return
 3. From the container: `curl http://host.docker.internal:11434/api/tags` —
    should return the list of installed models.
 
+## Degraded-Mode Startup
+
+The service starts successfully even when Ollama is unreachable at boot.
+This is intentional — not a crash-loop condition.
+
+**What you will see:**
+
+- `ollama_unreachable_at_startup` (WARNING) in logs during boot — the
+  startup probe failed, the service continues in degraded mode.
+- `GET /health` → 200 (`{"status": "ok"}`) — the process is alive.
+- `GET /ready` → 503 (`{"status": "not_ready", ...}`) — the service
+  is not yet ready to serve extraction requests.
+- `POST /api/v1/extract` → 503 (`INTELLIGENCE_UNAVAILABLE`) — extraction
+  requests are cleanly rejected.
+
+**Self-healing:** When Ollama becomes reachable and the next readiness
+probe succeeds (after `OLLAMA_PROBE_TTL_SECONDS` expires), `/ready`
+flips to 200 and extraction requests succeed.  The log emits
+`ollama_reachable_recovered` (INFO) on recovery and
+`ollama_became_unreachable` (WARNING) if it flips back.
+
+**Operator action:** If `/ready` stays 503 indefinitely, follow the
+Ollama troubleshooting steps below.  The service does not need a restart
+to recover — it self-heals automatically.
+
 ## Troubleshooting
 
 ### Backend won't start
