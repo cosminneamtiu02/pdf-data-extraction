@@ -13,7 +13,7 @@ services:
       # See apps/backend/app/core/config.py for all available settings.
       - APP_ENV=production
       - LOG_LEVEL=info
-      - CORS_ORIGINS=${CORS_ORIGINS}
+      - CORS_ORIGINS=${CORS_ORIGINS:-[]}
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
     restart: always
     extra_hosts:

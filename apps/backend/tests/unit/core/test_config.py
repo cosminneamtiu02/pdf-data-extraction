@@ -119,3 +119,57 @@ def test_settings_ollama_base_url_whitespace_stripped() -> None:
     """Leading/trailing whitespace must be stripped before validation."""
     s = Settings(ollama_base_url="  http://localhost:11434  ")
     assert s.ollama_base_url == "http://localhost:11434"
+
+
+# -- cors_origins empty-string coercion (issue #58) --------------------------
+
+
+def test_settings_cors_origins_empty_string_coerced_to_empty_list() -> None:
+    """A programmatic empty string for cors_origins must become an empty list.
+
+    This covers direct ``Settings(cors_origins="")`` input.  The production
+    env-var path is handled by the compose default ``${CORS_ORIGINS:-[]}``;
+    the validator catches the programmatic case where callers may still
+    provide an empty string.
+    """
+    s = Settings(cors_origins="")  # type: ignore[arg-type]
+    assert s.cors_origins == []
+
+
+def test_settings_cors_origins_json_empty_array_accepted() -> None:
+    """A JSON '[]' string for cors_origins must parse to an empty list."""
+    s = Settings(cors_origins="[]")  # type: ignore[arg-type]
+    assert s.cors_origins == []
+
+
+def test_settings_cors_origins_json_array_parsed() -> None:
+    """A JSON array string for cors_origins must parse correctly."""
+    s = Settings(cors_origins='["https://a.com","https://b.com"]')  # type: ignore[arg-type]
+    assert s.cors_origins == ["https://a.com", "https://b.com"]
+
+
+def test_settings_cors_origins_native_list_passthrough() -> None:
+    """A native Python list for cors_origins must pass through unchanged."""
+    s = Settings(cors_origins=["https://example.com"])
+    assert s.cors_origins == ["https://example.com"]
+
+
+def test_settings_cors_origins_malformed_json_raises_clear_error() -> None:
+    """A string starting with '[' but not valid JSON must produce a clear error."""
+    with pytest.raises(ValidationError, match="cors_origins must be a JSON array"):
+        Settings(cors_origins="[not valid json")  # type: ignore[arg-type]
+
+
+def test_settings_cors_origins_empty_array_via_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Production path: compose defaults CORS_ORIGINS to '[]' when unset.
+
+    pydantic-settings JSON-parses env vars for complex types *before*
+    field validators run, so an empty string cannot be intercepted by
+    a @field_validator.  The compose default ``${CORS_ORIGINS:-[]}``
+    ensures the env var is always a valid JSON array.
+    """
+    monkeypatch.setenv("CORS_ORIGINS", "[]")
+    s = Settings(_env_file=None)  # type: ignore[call-arg]
+    assert s.cors_origins == []

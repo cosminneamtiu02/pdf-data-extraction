@@ -1,5 +1,6 @@
 """Application configuration via pydantic-settings."""
 
+import json
 from pathlib import Path
 from typing import Annotated
 from urllib.parse import urlsplit
@@ -44,6 +45,32 @@ class Settings(BaseSettings):
 
     ollama_base_url: str = "http://host.docker.internal:11434"
     ollama_model: str = "gemma4:e2b"
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def _coerce_cors_origins(cls, v: object) -> object:
+        """Support string inputs for ``cors_origins``.
+
+        In production, docker-compose now uses ``${CORS_ORIGINS:-[]}``,
+        so a missing ``CORS_ORIGINS`` env var defaults to ``[]`` and
+        avoids the previous startup crash.
+
+        This validator is primarily for programmatic
+        ``Settings(cors_origins="...")`` usage: it converts ``""`` to
+        ``[]`` and decodes JSON array strings so string inputs behave
+        like native ``list[str]`` values.
+        """
+        if isinstance(v, str):
+            stripped = v.strip()
+            if stripped == "":
+                return []
+            if stripped.startswith("["):
+                try:
+                    return json.loads(stripped)
+                except json.JSONDecodeError as exc:
+                    msg = 'cors_origins must be a JSON array string (e.g. ["https://example.com"])'
+                    raise ValueError(msg) from exc
+        return v
 
     @field_validator("ollama_base_url")
     @classmethod
