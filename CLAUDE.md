@@ -122,7 +122,7 @@ app/features/<feature>/ -- Self-contained vertical slice. The extraction feature
 - Never write implementation before a failing test exists.
 - Never commit without running `task check`.
 - Never use `--no-verify`.
-- Never add an env var without adding to both `Settings` and `.env.example`.
+- Never add an env var without adding to both `Settings` and `apps/backend/.env.example`.
 - Never add an error code without editing `errors.yaml` and running
   `task errors:generate`.
 - Never skip a test level.
