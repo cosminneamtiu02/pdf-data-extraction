@@ -185,6 +185,6 @@ jobs:
 
           git commit \
             -m "chore(deps): regenerate lockfiles after dependabot bump" \
-            -m "Automated follow-up commit from .github/workflows/dependabot-lockfile-sync.yml. Dependabot's uv support does not regenerate workspace lockfiles when bumping a manifest; this workflow runs uv lock in the affected workspace and pushes the updated lockfile back so CI's frozen-lockfile check passes."
+            -m "Automated follow-up commit from .github/workflows/dependabot-lockfile-sync.yml. Dependabot's uv support does not regenerate workspace lockfiles when bumping a manifest; this workflow runs uv lock in the affected workspace and pushes the updated lockfile back to keep uv.lock in sync with manifest changes and avoid manifest-lock drift."
 
           git push
