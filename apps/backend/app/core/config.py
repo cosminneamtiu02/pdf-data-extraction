@@ -49,14 +49,16 @@ class Settings(BaseSettings):
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _coerce_cors_origins(cls, v: object) -> object:
-        """Coerce an empty string to an empty list.
+        """Support string inputs for ``cors_origins``.
 
-        docker-compose.prod.yml injects ``CORS_ORIGINS=${CORS_ORIGINS}``.
-        When the host env var is absent, Compose substitutes an empty string
-        which crashes Pydantic's ``list[str]`` JSON-mode parsing.  This
-        validator converts ``""`` -> ``[]`` before Pydantic sees the value.
-        Non-empty strings that look like JSON arrays are also decoded here so
-        the env-var path works identically to the programmatic path.
+        In production, docker-compose now uses ``${CORS_ORIGINS:-[]}``,
+        so a missing ``CORS_ORIGINS`` env var defaults to ``[]`` and
+        avoids the previous startup crash.
+
+        This validator is primarily for programmatic
+        ``Settings(cors_origins="...")`` usage: it converts ``""`` to
+        ``[]`` and decodes JSON array strings so string inputs behave
+        like native ``list[str]`` values.
         """
         if isinstance(v, str):
             stripped = v.strip()

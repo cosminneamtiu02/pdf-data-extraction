@@ -125,12 +125,12 @@ def test_settings_ollama_base_url_whitespace_stripped() -> None:
 
 
 def test_settings_cors_origins_empty_string_coerced_to_empty_list() -> None:
-    """An empty string for cors_origins must be coerced to an empty list.
+    """A programmatic empty string for cors_origins must become an empty list.
 
-    docker-compose.prod.yml injects CORS_ORIGINS=${CORS_ORIGINS}. When the
-    host env var is absent, Compose substitutes an empty string. Pydantic's
-    JSON-mode parsing of list[str] fails on ''. The validator must coerce
-    '' -> [].
+    This covers direct ``Settings(cors_origins="")`` input.  The production
+    env-var path is handled by the compose default ``${CORS_ORIGINS:-[]}``;
+    the validator catches the programmatic case where callers may still
+    provide an empty string.
     """
     s = Settings(cors_origins="")  # type: ignore[arg-type]
     assert s.cors_origins == []
