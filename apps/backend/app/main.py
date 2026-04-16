@@ -12,6 +12,7 @@ from app.api.middleware import configure_middleware
 from app.core.config import Settings
 from app.core.logging import configure_logging
 from app.exceptions import SkillValidationFailedError
+from app.features.extraction.router import router as extraction_router
 from app.features.extraction.skills import (
     SkillDoclingConfig,
     SkillLoader,
@@ -90,6 +91,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.skill_manifest = SkillManifest(loaded)
 
     application.include_router(health_router)
+    # ExtractionService is a stub until PDFX-E006-F002 merges.  Requests
+    # that reach the stub hit the catch-all handler and return 500
+    # INTERNAL_ERROR, which is correct "not implemented yet" behaviour.
+    # F002 MUST merge before (or together with) this branch.
+    application.include_router(extraction_router, prefix="/api/v1")
 
     return application
 

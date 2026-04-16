@@ -40,6 +40,7 @@ from app.features.extraction.intelligence.structured_output_validator import (
 from app.features.extraction.parsing.docling_document_parser import (
     DoclingDocumentParser,
 )
+from app.features.extraction.service import ExtractionService
 
 _dep_init_lock = threading.RLock()
 
@@ -114,3 +115,21 @@ def get_document_parser(request: Request) -> DoclingDocumentParser:
                 )
                 state.document_parser = parser
     return parser
+
+
+def get_extraction_service(request: Request) -> ExtractionService:
+    """Return (and lazily cache) the extraction service bound to this app.
+
+    The service is constructed with just ``Settings`` for now (stub).
+    PDFX-E006-F002 will expand the constructor to accept all pipeline
+    components.
+    """
+    state = request.app.state
+    service: ExtractionService | None = getattr(state, "extraction_service", None)
+    if service is None:
+        with _dep_init_lock:
+            service = getattr(state, "extraction_service", None)
+            if service is None:
+                service = ExtractionService(settings=get_settings(request))
+                state.extraction_service = service
+    return service

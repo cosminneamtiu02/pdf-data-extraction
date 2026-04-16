@@ -65,3 +65,17 @@ errors:
     http_status: 502
     description: The model failed to produce valid structured output after the maximum number of attempts.
     params: {}
+
+  # Router-level errors (PDFX-E006-F003)
+  PDF_TOO_LARGE:
+    http_status: 413
+    description: The uploaded PDF exceeds the configured byte-size limit
+    params:
+      max_bytes: integer
+      actual_bytes: integer
+
+  INTELLIGENCE_TIMEOUT:
+    http_status: 504
+    description: The extraction pipeline did not complete within the configured timeout budget
+    params:
+      budget_seconds: number

@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 
 from app.features.extraction.schemas.output_mode import OutputMode
 
-_SKILL_VERSION_PATTERN = r"^(latest|[1-9][0-9]*)$"
+SKILL_VERSION_PATTERN = r"^(latest|[1-9][0-9]*)$"
 
 
 class ExtractRequest(BaseModel):
@@ -25,5 +25,5 @@ class ExtractRequest(BaseModel):
     """
 
     skill_name: str
-    skill_version: str = Field(pattern=_SKILL_VERSION_PATTERN)
+    skill_version: str = Field(pattern=SKILL_VERSION_PATTERN)
     output_mode: OutputMode
