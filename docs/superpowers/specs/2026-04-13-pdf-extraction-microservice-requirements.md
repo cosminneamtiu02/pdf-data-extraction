@@ -1268,7 +1268,7 @@ Measurement and enforcement of NFRs.
 | NFR Memory (NFR-008, NFR-009, NFR-010) | Manual | `ps` / `docker stats` spot check documented in runbook; regressions tracked visually |
 | NFR Security (NFR-018, NFR-019, NFR-020) | Unit + Integration | Monkey-patched file I/O and network calls; log record inspection |
 | NFR Maintainability (NFR-024 through NFR-030) | CI gates | `task check` runs pyright strict, ruff, tests, import-linter, error-contract validation |
-| Optional E2E (slow) | Realistic round-trip | One E2E test with a real Ollama + real Gemma 4 + a fixture skill + a fixture PDF, marked `slow`, excluded from default `task check`, runnable via `task test:e2e` |
+| Optional E2E (slow) | Realistic round-trip | One E2E test with a real Ollama + real Gemma 4 + a fixture skill + a fixture PDF, marked `slow`, excluded from default `task check`, runnable via `task test:slow` |
 
 ### Integration Testing Notes
 

@@ -6,7 +6,7 @@ See [`docs/superpowers/specs/`](docs/superpowers/specs/) for the full design and
 
 ## Tech Stack
 
-- **Runtime:** Python 3.13, FastAPI, Pydantic v2, pydantic-settings, structlog
+- **Runtime:** Python 3.13+, FastAPI, Pydantic v2, pydantic-settings, structlog
 - **Extraction:** Docling (PDF parsing + OCR), LangExtract (orchestration), Ollama + Gemma 4 smallest variant (local LLM), PyMuPDF (annotation)
 - **Testing:** pytest + pytest-asyncio, schemathesis (contract), import-linter (architecture)
 - **Tooling:** Taskfile, Ruff, Pyright, uv
@@ -17,7 +17,7 @@ Ollama runs on the host machine (outside the service container) and is reached v
 
 Prerequisites:
 
-- Python 3.13
+- Python 3.13+
 - `uv` (Astral)
 - Docker (optional — only if you want to run the service in a container)
 - Ollama installed on the host, with the smallest Gemma 4 variant pulled (`ollama pull <tag>`)
