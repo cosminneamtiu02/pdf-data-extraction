@@ -119,3 +119,36 @@ def test_settings_ollama_base_url_whitespace_stripped() -> None:
     """Leading/trailing whitespace must be stripped before validation."""
     s = Settings(ollama_base_url="  http://localhost:11434  ")
     assert s.ollama_base_url == "http://localhost:11434"
+
+
+# -- cors_origins empty-string coercion (issue #58) --------------------------
+
+
+def test_settings_cors_origins_empty_string_coerced_to_empty_list() -> None:
+    """An empty string for cors_origins must be coerced to an empty list.
+
+    docker-compose.prod.yml injects CORS_ORIGINS=${CORS_ORIGINS}. When the
+    host env var is absent, Compose substitutes an empty string. Pydantic's
+    JSON-mode parsing of list[str] fails on ''. The validator must coerce
+    '' -> [].
+    """
+    s = Settings(cors_origins="")  # type: ignore[arg-type]
+    assert s.cors_origins == []
+
+
+def test_settings_cors_origins_json_empty_array_accepted() -> None:
+    """A JSON '[]' string for cors_origins must parse to an empty list."""
+    s = Settings(cors_origins="[]")  # type: ignore[arg-type]
+    assert s.cors_origins == []
+
+
+def test_settings_cors_origins_json_array_parsed() -> None:
+    """A JSON array string for cors_origins must parse correctly."""
+    s = Settings(cors_origins='["https://a.com","https://b.com"]')  # type: ignore[arg-type]
+    assert s.cors_origins == ["https://a.com", "https://b.com"]
+
+
+def test_settings_cors_origins_native_list_passthrough() -> None:
+    """A native Python list for cors_origins must pass through unchanged."""
+    s = Settings(cors_origins=["https://example.com"])
+    assert s.cors_origins == ["https://example.com"]

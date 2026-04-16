@@ -1,5 +1,6 @@
 """Application configuration via pydantic-settings."""
 
+import json
 from pathlib import Path
 from typing import Annotated
 from urllib.parse import urlsplit
@@ -44,6 +45,26 @@ class Settings(BaseSettings):
 
     ollama_base_url: str = "http://host.docker.internal:11434"
     ollama_model: str = "gemma4:e2b"
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def _coerce_cors_origins(cls, v: object) -> object:
+        """Coerce an empty string to an empty list.
+
+        docker-compose.prod.yml injects ``CORS_ORIGINS=${CORS_ORIGINS}``.
+        When the host env var is absent, Compose substitutes an empty string
+        which crashes Pydantic's ``list[str]`` JSON-mode parsing.  This
+        validator converts ``""`` -> ``[]`` before Pydantic sees the value.
+        Non-empty strings that look like JSON arrays are also decoded here so
+        the env-var path works identically to the programmatic path.
+        """
+        if isinstance(v, str):
+            stripped = v.strip()
+            if stripped == "":
+                return []
+            if stripped.startswith("["):
+                return json.loads(stripped)
+        return v
 
     @field_validator("ollama_base_url")
     @classmethod
