@@ -55,11 +55,13 @@ app/features/<feature>/ -- Self-contained vertical slice. The extraction feature
 - Within the extraction feature, the layer DAG is defined in the design spec
   Section 10 and enforced by the `import-linter` contracts in
   [`apps/backend/architecture/import-linter-contracts.ini`](apps/backend/architecture/import-linter-contracts.ini)
-  (PDFX-E007-F004). The full table of contracts (C1 feature independence,
-  C2a–C2e intra-feature DAG, C3–C6 third-party containment) is documented in
+  (PDFX-E007-F004). The contracts are documented in
   [docs/architecture.md](docs/architecture.md#architectural-contracts-pdfx-e007-f004).
-  Every contract carries an inline `#` rationale comment so future maintainers
-  can update them in context.
+  Two enforcement layers work together: import-linter (static graph) and
+  AST-scan tests in `test_dynamic_import_containment.py` (dynamic imports,
+  cross-feature imports). Third-party containment contracts (C3-C6) use
+  `source_modules = app` so the entire codebase is covered, not just the
+  extraction feature.
 - Third-party dependencies are contained to specific implementation files:
   - Docling only in `features/extraction/parsing/docling_document_parser.py`.
   - PyMuPDF (`fitz`) only in `features/extraction/annotation/pdf_annotator.py`

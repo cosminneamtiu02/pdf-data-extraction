@@ -85,35 +85,33 @@ directly — those imports are contained to specific implementation files via
 
 The full contract set lives in
 [`apps/backend/architecture/import-linter-contracts.ini`](../apps/backend/architecture/import-linter-contracts.ini)
-and is enforced by `task check:arch` (which `task check` runs as part of every
-PR's gate). Every contract carries a `#` comment block explaining the rule it
-encodes and why. The high-level set:
+and is enforced by `task lint` (which includes `task check:arch`, and `task check`
+runs as part of every PR's gate). Every contract carries a `#` comment block
+explaining the rule it encodes and why.
 
-| Contract | Rule | Type |
-|---|---|---|
-| `shared-no-features` | `app.shared`, `app.core`, `app.schemas` may not import from `app.features` (template legacy, preserved). | `forbidden` |
-| **C1** `c1-feature-independence` | The `app.features.extraction` feature may not import from any sibling feature. Vacuously true today (only one feature exists); becomes load-bearing when a second feature lands. | `independence` |
-| **C2a** `c2a-extraction-layers-leaves-independent` | `parsing`, `intelligence`, `skills`, `annotation` are leaf subpackages — they may not import each other. One time-bounded carve-out: `parsing.docling_config_merger -> skills.skill_docling_config` while the merger awaits its future home in the service layer. | `independence` |
-| **C2b** `c2b-extraction-layers-leaves-no-upward` | The four leaf subpackages may not import from `coordinates` or `extraction` — i.e. no upward imports across the DAG. | `forbidden` |
-| **C2c** `c2c-extraction-layers-extraction-subpackage` | The `extraction` subpackage (LangExtract orchestration) may import `parsing`, `intelligence`, `skills`, `schemas`, but never `coordinates` or `annotation`. | `forbidden` |
-| **C2d** `c2d-extraction-layers-coordinates-subpackage` | The `coordinates` subpackage (span resolver) may import `parsing`, `extraction`, `schemas`, but never `annotation`, `intelligence`, or `skills`. | `forbidden` |
-| **C2e** `c2e-extraction-layers-schemas-base` | `schemas` is the base layer — it may not import from any sibling subpackage. | `forbidden` |
-| **C3** `c3-docling-containment` | `docling` may only be imported in `parsing/docling_document_parser.py`. Today the parser uses lazy `importlib.import_module`, so no static carve-out is needed; the contract becomes load-bearing the moment a contributor adds `import docling` anywhere. | `forbidden` |
-| **C4** `c4-pymupdf-containment` | `pymupdf` and its legacy alias `fitz` may only be imported in `annotation/pdf_annotator.py`. | `forbidden` |
-| **C5** `c5-langextract-containment` | `langextract` may only be imported in `extraction/extraction_engine.py` and `intelligence/ollama_gemma_provider.py` (the LangExtract community provider plugin registration site). | `forbidden` |
-| **C6** `c6-httpx-containment` | `httpx` may only be imported in the `intelligence` subpackage (today: `ollama_gemma_provider.py`; future: `ollama_health_probe.py` will join naturally because the whole subpackage is the allowed site). | `forbidden` |
+Two enforcement layers work together:
 
-The DAG is decomposed into multiple narrow `forbidden` and `independence`
-contracts (C2a–C2e) instead of a single `layers` contract because the
-mid-tier subpackages have asymmetric cross-edges — `coordinates → extraction`
-is allowed but `extraction → coordinates` is not, which a single layers
-contract can't express cleanly. The Open Questions section of PDFX-E007-F004
-defaults this decomposition explicitly: "use the right type per rule."
+1. **import-linter** (static graph) -- the INI contracts (C1-C6) catch static
+   `import X` / `from X import Y` violations at build time via `lint-imports`.
+2. **AST-scan tests** (`test_dynamic_import_containment.py`) -- catch
+   `importlib.import_module("X")` dynamic imports and cross-feature imports
+   that import-linter's static analysis cannot see.
 
-The contracts are scoped exclusively to `app.features.extraction.*`, so a
-hypothetical future `PDFX-E008` feature that adds `app.features.<other>` can
-land without editing this file. C1 catches accidental cross-feature imports
-mechanically.
+The C3-C6 third-party containment contracts use `source_modules = app` (the
+entire app, not just the extraction feature) so that `app.api`, `app.core`,
+and every other module are also forbidden from importing Docling, PyMuPDF,
+LangExtract, or httpx outside the designated files.
+
+C1 (feature independence) is an `independence` contract with a single module,
+which is vacuously true in import-linter. The real enforcement is the AST
+scan in `test_dynamic_import_containment.py::test_extraction_does_not_import_from_sibling_features`.
+When a second feature package is introduced, the C1 contract must be amended
+to include the new module so import-linter also becomes load-bearing.
+
+The C2 DAG contracts (C2a-C2e) are decomposed into multiple narrow `forbidden`
+and `independence` contracts instead of a single `layers` contract because the
+mid-tier subpackages have asymmetric cross-edges that a single layers contract
+cannot express cleanly.
 
 ### Error Flow
 

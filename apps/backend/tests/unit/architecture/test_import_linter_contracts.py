@@ -184,26 +184,21 @@ def test_no_contract_references_a_non_extraction_feature_package(
     )
 
 
-def test_taskfile_wires_check_arch_into_top_level_check() -> None:
-    """U6: AC3 - `task check:arch` runs lint-imports and `task check` calls it.
+def test_taskfile_wires_lint_imports_into_task_lint_and_check() -> None:
+    """U6: AC2/AC3 - `task lint` runs import-linter and `task check` reaches it.
 
     Pure YAML-parse + key-lookup assertion. Does not invoke the task runner.
-    Catches a regression where a future edit strips `check:arch` out of
-    `task check`'s command list, or strips lint-imports out of `check:arch`.
+    Verifies:
+    - `check:arch` exists and invokes lint-imports.
+    - `lint` invokes `check:arch` (so `task lint` = ruff + import-linter).
+    - `check` -> `check:lint` -> `lint` -> `check:arch` path is intact.
     """
     taskfile = yaml.safe_load(_TASKFILE_PATH.read_text())
 
     tasks = taskfile["tasks"]
-    assert "check" in tasks, "Taskfile.yml must declare a top-level `check` task"
     assert "check:arch" in tasks, (
         "Taskfile.yml must declare a `check:arch` task that runs import-linter"
     )
-
-    check_cmds = tasks["check"]["cmds"]
-    has_check_arch = any(
-        isinstance(cmd, dict) and cmd.get("task") == "check:arch" for cmd in check_cmds
-    )
-    assert has_check_arch, "Top-level `check` task must include `check:arch` in its cmds list"
 
     arch_cmds = tasks["check:arch"]["cmds"]
     lint_imports_cmd = " ".join(str(cmd) for cmd in arch_cmds)
@@ -212,4 +207,20 @@ def test_taskfile_wires_check_arch_into_top_level_check() -> None:
     )
     assert "architecture/import-linter-contracts.ini" in lint_imports_cmd, (
         "`check:arch` must point `lint-imports` at the contracts file"
+    )
+
+    lint_cmds = tasks["lint"]["cmds"]
+    lint_calls_arch = any(
+        isinstance(cmd, dict) and cmd.get("task") == "check:arch" for cmd in lint_cmds
+    )
+    assert lint_calls_arch, (
+        "`lint` must include `check:arch` so that `task lint` runs import-linter"
+    )
+
+    check_cmds = tasks["check"]["cmds"]
+    check_calls_lint = any(
+        isinstance(cmd, dict) and cmd.get("task") == "check:lint" for cmd in check_cmds
+    )
+    assert check_calls_lint, (
+        "`check` must include `check:lint` (which calls `lint` -> `check:arch`)"
     )

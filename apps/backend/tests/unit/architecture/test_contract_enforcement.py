@@ -129,10 +129,16 @@ def _assert_violation_caught(
         f"got exit {result.returncode}\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     )
     combined = (result.stdout + result.stderr).lower()
-    assert case.expected_contract_keyword.lower() in combined, (
+    normalized_output = combined.replace("\\", "/")
+    assert case.expected_contract_keyword.lower() in normalized_output, (
         f"{case.label}: expected the broken contract for "
         f"'{case.expected_contract_keyword}' to be reported\n"
         f"OUTPUT:\n{result.stdout}\n{result.stderr}"
+    )
+    module_path = case.target_rel_path.replace("/", ".").removesuffix(".py").lower()
+    assert module_path in normalized_output, (
+        f"{case.label}: expected lint-imports to name the injected violator "
+        f"'{module_path}'\nOUTPUT:\n{result.stdout}\n{result.stderr}"
     )
 
 

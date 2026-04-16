@@ -19,11 +19,10 @@ tasks:
 
   # ── Check (Claude runs this before declaring done) ───────────
   check:
-    desc: Run ALL checks — lint, types, arch, skills, tests, error contracts
+    desc: Run ALL checks — lint, types, skills, tests, error contracts
     cmds:
       - task: check:lint
       - task: check:types
-      - task: check:arch
       - task: skills:validate
       - task: check:test
       - task: check:errors
@@ -91,10 +90,11 @@ tasks:
 
   # ── Linting & Formatting ─────────────────────────────────────
   lint:
-    desc: Run the linter (format checking lives in the separate `format:check` target)
+    desc: Run ruff + import-linter (format checking lives in `format:check`)
     dir: "{{.BACKEND_DIR}}"
     cmds:
       - uv run ruff check .
+      - task: check:arch
 
   format:
     desc: Run the formatter
