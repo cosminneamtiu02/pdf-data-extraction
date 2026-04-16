@@ -37,7 +37,7 @@ Three levels, all mandatory for every feature. E2E is optional-slow.
 - **What:** End-to-end smoke test with a real Ollama + real Gemma 4 model
   against a fixture PDF.
 - **Tooling:** Pytest with `@pytest.mark.slow`, excluded from default
-  `task check`. Runnable via `task test:e2e` after the marker is added in
+  `task check`. Runnable via `task test:slow` after the marker is added in
   feature-dev.
 - **Scope:** One test only. Determinism is not required — the test catches
   catastrophic regressions in the Ollama integration.
