@@ -2,7 +2,8 @@
 
 Sends sequential HTTP requests to a running instance of the extraction service
 using a small fixture PDF corpus and prints p50 / p95 latency plus RSS
-measurements for spot-checking against NFR-004 / NFR-005 / NFR-008 targets.
+measurements for spot-checking against NFR-004 / NFR-005 / NFR-006 / NFR-008
+targets.
 
 This script is a pure HTTP client — it does NOT import ``app.main``,
 FastAPI, Docling, LangExtract, PyMuPDF, or the Ollama HTTP client.  The
@@ -103,7 +104,8 @@ class MemorySnapshot:
 
     ``service_rss_before_mb`` / ``service_rss_after_mb`` are the
     *service* process's current RSS, measured via ``ps`` when
-    ``--service-pid`` is provided.  ``None`` when the PID is not given.
+    ``--service-pid`` is provided.  ``None`` when the PID is not given
+    or ``ps`` fails.
     """
 
     rss_before_mb: float
@@ -180,7 +182,7 @@ def discover_fixtures(fixtures_dir: Path) -> list[FixtureInfo]:
 
 
 def _get_rss_mb() -> float:
-    """Return peak (high-water-mark) RSS in MB.
+    """Return peak (high-water-mark) RSS of this process in MB.
 
     Uses ``resource.getrusage`` on Unix.  Returns 0.0 on Windows where
     the ``resource`` module is unavailable.
@@ -199,7 +201,7 @@ def _get_pid_rss_mb(pid: int) -> float | None:
     """Return current RSS of process *pid* in MB via ``ps``.
 
     Works on macOS and Linux without ``psutil``.  Returns ``None`` if the
-    process does not exist or ``ps`` fails.
+    process does not exist, ``ps`` is not available, or parsing fails.
     """
     try:
         argv = ["ps", "-o", "rss=", "-p", str(pid)]
@@ -211,7 +213,7 @@ def _get_pid_rss_mb(pid: int) -> float | None:
         )
         # ps reports RSS in kilobytes on both macOS and Linux
         return int(result.stdout.strip()) / 1024
-    except (subprocess.CalledProcessError, ValueError):
+    except (subprocess.CalledProcessError, ValueError, FileNotFoundError, OSError):
         return None
 
 
@@ -277,12 +279,13 @@ def _format_nfr_comparison(lines: list[str], results: BenchResults) -> None:
     for fixture in results.fixtures:
         _format_fixture_nfr(lines, fixture)
 
-    if mem.service_rss_after_mb is not None:
+    # NFR-008: use pre-run (idle) service RSS when --service-pid was provided
+    if mem.service_rss_before_mb is not None:
         lines.append(
             f"  {'Service Idle RSS (NFR-008)':<35} "
-            f"{mem.service_rss_after_mb:>7.1f} MB "
+            f"{mem.service_rss_before_mb:>7.1f} MB "
             f"{NFR_RSS_TARGET_MB:>7.1f} MB  "
-            f"{_pass_fail(mem.service_rss_after_mb, NFR_RSS_TARGET_MB)}"
+            f"{_pass_fail(mem.service_rss_before_mb, NFR_RSS_TARGET_MB)}"
         )
     else:
         lines.append("  Service Idle RSS (NFR-008)         --service-pid not provided, skipped")
@@ -383,8 +386,10 @@ def run_benchmark(config: BenchConfig) -> BenchResults:
     """Run the full benchmark and return results.
 
     Raises ``FileNotFoundError`` if fixture PDFs are missing.
-    Raises ``RuntimeError`` on HTTP errors from the service.
-    Raises ``httpx.ConnectError`` if the service is unreachable.
+    Raises ``RuntimeError`` on non-200 HTTP responses from the service.
+    Raises ``ConnectionError`` if the service is unreachable at the
+    health-check step.  Raw ``httpx`` exceptions (``TimeoutException``,
+    ``RequestError``) may propagate from individual extraction requests.
     """
     fixtures = discover_fixtures(config.fixtures_dir)
     rss_before = _get_rss_mb()
@@ -407,7 +412,7 @@ def run_benchmark(config: BenchConfig) -> BenchResults:
         try:
             health = client.get(f"{config.url}/health")
             health.raise_for_status()
-        except httpx.ConnectError as exc:
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
             msg = f"Cannot reach service at {config.url}: {exc}"
             raise ConnectionError(msg) from exc
         except httpx.HTTPStatusError as exc:
@@ -464,6 +469,16 @@ def run_benchmark(config: BenchConfig) -> BenchResults:
 # ---------------------------------------------------------------------------
 
 
+def _safe_int_env(key: str, default: str) -> int:
+    """Read *key* from env and convert to int, falling back to *default*."""
+    raw = os.environ.get(key, default)
+    try:
+        return int(raw)
+    except ValueError:
+        sys.stderr.write(f"Error: {key}={raw!r} is not a valid integer\n")
+        raise SystemExit(2) from None  # operator-facing message, not a domain error
+
+
 def parse_args(argv: list[str]) -> BenchConfig:
     """Parse CLI arguments and return a ``BenchConfig``."""
     parser = argparse.ArgumentParser(
@@ -476,11 +491,12 @@ def parse_args(argv: list[str]) -> BenchConfig:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Environment variables:\n"
-            "  BENCH_URL           Override --url (default: http://localhost:8000)\n"
-            "  BENCH_ITERATIONS    Override --iterations (default: 10)\n"
-            "  BENCH_FIXTURES_DIR  Override --fixtures-dir (default: fixtures/bench)\n"
-            "  BENCH_SKILL_NAME    Override --skill-name (default: invoice)\n"
-            "  BENCH_SKILL_VERSION Override --skill-version (default: 1)\n"
+            "  BENCH_URL            Override --url (default: http://localhost:8000)\n"
+            "  BENCH_ITERATIONS     Override --iterations (default: 10)\n"
+            "  BENCH_FIXTURES_DIR   Override --fixtures-dir (default: fixtures/bench)\n"
+            "  BENCH_SKILL_NAME     Override --skill-name (default: invoice)\n"
+            "  BENCH_SKILL_VERSION  Override --skill-version (default: 1)\n"
+            "  BENCH_SERVICE_PID    Override --service-pid (default: none)\n"
         ),
     )
     parser.add_argument(
@@ -491,7 +507,7 @@ def parse_args(argv: list[str]) -> BenchConfig:
     parser.add_argument(
         "--iterations",
         type=int,
-        default=int(_env_or("BENCH_ITERATIONS", "10")),
+        default=_safe_int_env("BENCH_ITERATIONS", "10"),
         help="Number of timed iterations per fixture per mode (default: 10)",
     )
     parser.add_argument(
@@ -525,7 +541,7 @@ def parse_args(argv: list[str]) -> BenchConfig:
     parser.add_argument(
         "--service-pid",
         type=int,
-        default=None,
+        default=_safe_int_env("BENCH_SERVICE_PID", "0") or None,
         help="PID of the running service process for RSS measurement (NFR-008)",
     )
 
@@ -536,6 +552,9 @@ def parse_args(argv: list[str]) -> BenchConfig:
 
     if args.warmup < 0:
         parser.error("--warmup must be a non-negative integer")
+
+    if args.timeout <= 0:
+        parser.error("--timeout must be a positive number")
 
     return BenchConfig(
         url=args.url.rstrip("/"),
@@ -571,7 +590,7 @@ def main(argv: list[str] | None = None) -> int:
     except FileNotFoundError as exc:
         sys.stderr.write(f"Error: {exc}\n")
         return 1
-    except (ConnectionError, httpx.ConnectError) as exc:
+    except (ConnectionError, httpx.ConnectError, httpx.TimeoutException) as exc:
         sys.stderr.write(f"Error: {exc}\n")
         return 1
     except RuntimeError as exc:

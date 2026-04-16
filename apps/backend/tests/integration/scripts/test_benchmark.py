@@ -118,53 +118,64 @@ def _stub_service(
     return svc
 
 
-def _find_free_port() -> int:
-    """Bind to port 0, read the assigned port, close the socket."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
 def _write_fixture_pdfs(fixtures_dir: Path) -> None:
     """Write minimal valid PDF stubs for benchmark discovery."""
     for name in FIXTURE_NAMES:
         (fixtures_dir / name).write_bytes(b"%PDF-1.4 fixture stub content")
 
 
+def _wait_for_server(server: uvicorn.Server, timeout_s: float = 10.0) -> None:
+    """Block until *server.started* is True, or raise after *timeout_s*."""
+    import time
+
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if server.started:
+            return
+        time.sleep(0.05)
+    msg = f"Test server did not start within {timeout_s} seconds"
+    raise TimeoutError(msg)
+
+
 def _start_test_server(
     skills_dir: Path,
     stub: ExtractionService,
-    port: int,
-) -> tuple[threading.Thread, uvicorn.Server]:
-    """Boot a real uvicorn server on *port* with the stubbed service."""
+) -> tuple[threading.Thread, uvicorn.Server, int]:
+    """Boot a real uvicorn server with the stubbed service.
+
+    Reserves a port via SO_REUSEADDR to avoid TOCTOU races, then hands
+    the socket to uvicorn.  Returns ``(thread, server, port)``.
+    """
     settings = Settings(skills_dir=skills_dir, app_env="development")  # type: ignore[reportCallIssue]  # pydantic-settings loads fields from env
     app = create_app(settings)
     app.dependency_overrides[get_extraction_service] = lambda: stub
+
+    # Reserve a port and let uvicorn inherit the socket
+    reserved_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    reserved_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    reserved_socket.bind(("127.0.0.1", 0))
+    port = reserved_socket.getsockname()[1]
 
     config = uvicorn.Config(
         app=app,
         host="127.0.0.1",
         port=port,
         log_level="warning",
+        fd=reserved_socket.fileno(),
     )
     server = uvicorn.Server(config)
 
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
 
-    # Wait for the server to become ready
-    import time
+    try:
+        _wait_for_server(server)
+    except Exception:
+        if reserved_socket is not None:
+            reserved_socket.close()
+        raise
 
-    deadline = time.monotonic() + 10.0
-    while time.monotonic() < deadline:
-        if server.started:
-            break
-        time.sleep(0.05)
-    else:
-        msg = "Test server did not start within 10 seconds"
-        raise TimeoutError(msg)
-
-    return thread, server
+    return thread, server, port
 
 
 # ---------------------------------------------------------------------------
@@ -182,8 +193,7 @@ def test_benchmark_completes_against_stubbed_service(tmp_path: Path) -> None:
     _write_fixture_pdfs(fixtures_dir)
 
     stub = _stub_service()
-    port = _find_free_port()
-    thread, server = _start_test_server(skills_dir, stub, port)
+    thread, server, port = _start_test_server(skills_dir, stub)
 
     try:
         import io
@@ -312,8 +322,7 @@ def test_benchmark_extraction_errors_exit_nonzero(tmp_path: Path) -> None:
     _write_fixture_pdfs(fixtures_dir)
 
     stub = _stub_service(side_effect=IntelligenceUnavailableError())
-    port = _find_free_port()
-    thread, server = _start_test_server(skills_dir, stub, port)
+    thread, server, port = _start_test_server(skills_dir, stub)
 
     try:
         import io

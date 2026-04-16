@@ -136,12 +136,14 @@ tasks:
       BENCH_FIXTURES_DIR: '{{.BENCH_FIXTURES_DIR | default "fixtures/bench"}}'
       BENCH_SKILL_NAME: '{{.BENCH_SKILL_NAME | default "invoice"}}'
       BENCH_SKILL_VERSION: '{{.BENCH_SKILL_VERSION | default "1"}}'
+      BENCH_SERVICE_PID: '{{.BENCH_SERVICE_PID | default ""}}'
     env:
       BENCH_URL: "{{.BENCH_URL}}"
       BENCH_ITERATIONS: "{{.BENCH_ITERATIONS}}"
       BENCH_FIXTURES_DIR: "{{.BENCH_FIXTURES_DIR}}"
       BENCH_SKILL_NAME: "{{.BENCH_SKILL_NAME}}"
       BENCH_SKILL_VERSION: "{{.BENCH_SKILL_VERSION}}"
+      BENCH_SERVICE_PID: "{{.BENCH_SERVICE_PID}}"
     cmds:
       - uv run python -m scripts.benchmark
 

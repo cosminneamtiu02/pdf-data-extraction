@@ -149,7 +149,7 @@ def test_format_report_service_rss_with_pid() -> None:
     assert "800.00" in report
     assert "850.00" in report
     assert "NFR-008" in report
-    assert "PASS" in report  # 850 MB < 1500 MB target
+    assert "PASS" in report  # 800 MB (idle/pre-run) < 1500 MB target
 
 
 def test_format_report_service_rss_without_pid() -> None:
