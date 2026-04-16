@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import pymupdf
+import pytest
 
 from app.features.extraction.annotation.pdf_annotator import PdfAnnotator
 from app.features.extraction.schemas.bounding_box_ref import BoundingBoxRef
@@ -38,8 +39,6 @@ from app.features.extraction.schemas.field_status import FieldStatus
 
 if TYPE_CHECKING:
     from types import TracebackType
-
-    import pytest
 
 _PAGE_HEIGHT = 792.0
 _PAGE_WIDTH = 612.0
@@ -366,6 +365,68 @@ def test_multiple_fields_on_distinct_pages_in_3_page_doc() -> None:
 
 def test_annotate_is_async_coroutine_function() -> None:
     assert inspect.iscoroutinefunction(PdfAnnotator.annotate)
+
+
+@pytest.mark.asyncio
+async def test_annotate_does_not_block_event_loop_during_pymupdf_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If blocking PyMuPDF work is offloaded via asyncio.to_thread, a parallel
+    coroutine must make progress while annotate runs.
+
+    A 1-page blank PDF annotates in microseconds, too fast for the ticker to
+    advance even with correct offloading. We wrap ``pymupdf.open`` with a
+    synthetic 200ms ``time.sleep`` so the worker thread holds the GIL long
+    enough for the event loop to schedule the ticker. If ``annotate`` were
+    still running on the event loop thread, the sleep would block the ticker
+    completely and ``ticks`` would stay at 0.
+    """
+    import time
+
+    pdf_bytes = _make_blank_pdf(page_count=1)
+    real_open = cast("Any", pymupdf.open)
+
+    def _slow_open(*args: Any, **kwargs: Any) -> Any:
+        time.sleep(0.2)
+        return real_open(*args, **kwargs)
+
+    monkeypatch.setattr(pymupdf, "open", _slow_open)
+
+    annotator = PdfAnnotator()
+    fields = [
+        _field(
+            "x",
+            [BoundingBoxRef(page=1, x0=10, y0=10, x1=50, y1=20)],
+        ),
+    ]
+
+    ticks = 0
+
+    async def _ticker() -> None:
+        nonlocal ticks
+        while ticks < 500:
+            await asyncio.sleep(0.01)
+            ticks += 1
+
+    ticker_task = asyncio.create_task(_ticker())
+    await annotator.annotate(pdf_bytes, fields)
+    ticker_task.cancel()
+    with _suppress_cancelled():
+        await ticker_task
+
+    # 200ms of blocking work offloaded to a thread should leave room for the
+    # ticker to fire at least ~10 times. We assert 5 as a generous floor to
+    # avoid flakes on slow CI while still catching a regression that would put
+    # the sleep on the event loop (which would leave ticks == 0).
+    assert ticks >= 5, (
+        f"ticker did not advance enough (ticks={ticks}); annotate appears to block the event loop"
+    )
+
+
+def _suppress_cancelled() -> Any:
+    import contextlib
+
+    return contextlib.suppress(asyncio.CancelledError)
 
 
 _ALLOWED_FITZ_IMPORTERS: frozenset[str] = frozenset(
