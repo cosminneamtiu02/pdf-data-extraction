@@ -11,10 +11,16 @@ from app.features.extraction.schemas.field_status import FieldStatus
 class ExtractedField(BaseModel):
     """One field of a skill's declared output as produced by the pipeline.
 
-    ``value`` is typed as ``Any | None`` because each field's concrete type is
-    determined by the skill's ``output_schema`` (string, number, date, list,
-    object, etc.); the schema layer deliberately does not constrain it. The
-    per-field response invariant — every declared field is always present —
+    ``value`` is always ``str | None`` at runtime — the raw string returned
+    by LangExtract (``Extraction.extraction_text``), which may be grounded
+    to document text when offsets are present, otherwise inferred. The
+    ``Any`` annotation is kept for forward compatibility (a future version
+    may coerce values to their declared schema type), but callers should
+    treat ``value`` as a plain string today.
+    ``None`` indicates a declared field that the pipeline could not extract
+    (status will be ``failed``).
+
+    The per-field response invariant — every declared field is always present —
     is enforced upstream in the service, not here.
     """
 
