@@ -27,6 +27,7 @@ from functools import lru_cache
 
 from fastapi import Request
 
+from app.api.probe_cache import ProbeCache
 from app.core.config import Settings
 
 # Pipeline component imports — these are lightweight classes (no heavy
@@ -42,6 +43,10 @@ from app.features.extraction.intelligence.correction_prompt_builder import (
 )
 from app.features.extraction.intelligence.ollama_gemma_provider import (
     OllamaGemmaProvider,
+    build_tags_url,
+)
+from app.features.extraction.intelligence.ollama_health_probe import (
+    OllamaHealthProbe,
 )
 from app.features.extraction.intelligence.structured_output_validator import (
     StructuredOutputValidator,
@@ -147,3 +152,41 @@ def get_extraction_service(request: Request) -> ExtractionService:
                 )
                 state.extraction_service = service
     return service
+
+
+def get_ollama_health_probe(request: Request) -> OllamaHealthProbe:
+    """Return (and lazily cache) the health probe bound to this app instance.
+
+    The tags URL is built here (reusing ``build_tags_url`` from the
+    provider module) so the probe class does not duplicate the URL
+    construction logic.
+    """
+    state = request.app.state
+    probe: OllamaHealthProbe | None = getattr(state, "ollama_health_probe", None)
+    if probe is None:
+        with _dep_init_lock:
+            probe = getattr(state, "ollama_health_probe", None)
+            if probe is None:
+                settings = get_settings(request)
+                probe = OllamaHealthProbe(
+                    tags_url=build_tags_url(settings.ollama_base_url),
+                    timeout_seconds=settings.ollama_probe_timeout_seconds,
+                )
+                state.ollama_health_probe = probe
+    return probe
+
+
+def get_probe_cache(request: Request) -> ProbeCache:
+    """Return (and lazily cache) the readiness probe cache."""
+    state = request.app.state
+    cache: ProbeCache | None = getattr(state, "probe_cache", None)
+    if cache is None:
+        with _dep_init_lock:
+            cache = getattr(state, "probe_cache", None)
+            if cache is None:
+                cache = ProbeCache(
+                    probe=get_ollama_health_probe(request),
+                    ttl_seconds=get_settings(request).ollama_probe_ttl_seconds,
+                )
+                state.probe_cache = cache
+    return cache

@@ -27,15 +27,24 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None]:
     try:
         yield
     finally:
-        # Only close the provider if something actually constructed one during
-        # the app's lifetime. The `get_intelligence_provider` dep lazily
-        # builds and caches it on `app.state`, so presence of the attribute
-        # is the signal — no need to instantiate an `httpx.AsyncClient` just
-        # to close it immediately.
-        provider = getattr(app.state, "intelligence_provider", None)
-        if provider is not None:
-            await provider.aclose()
-            del app.state.intelligence_provider
+        # Close each lazily-constructed resource independently. Each cleanup
+        # is wrapped in its own try/except so a failure in one does not
+        # prevent the others from running (e.g. probe.aclose() raising must
+        # not skip provider.aclose()).
+        #
+        # The probe_cache is also cleared because it holds a reference to the
+        # probe's (now-closed) httpx client. Without clearing it, a reused
+        # app instance would serve a stale cache backed by a closed client.
+        for attr in ("ollama_health_probe", "probe_cache", "intelligence_provider"):
+            obj = getattr(app.state, attr, None)
+            if obj is not None:
+                try:
+                    if hasattr(obj, "aclose"):
+                        await obj.aclose()
+                except Exception:  # noqa: BLE001 - cleanup must not prevent sibling resources from closing
+                    _logger.warning("lifespan_cleanup_failed", attr=attr, exc_info=True)
+                finally:
+                    delattr(app.state, attr)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -91,10 +100,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.skill_manifest = SkillManifest(loaded)
 
     application.include_router(health_router)
-    # ExtractionService is a stub until PDFX-E006-F002 merges.  Requests
-    # that reach the stub hit the catch-all handler and return 500
-    # INTERNAL_ERROR, which is correct "not implemented yet" behaviour.
-    # F002 MUST merge before (or together with) this branch.
     application.include_router(extraction_router, prefix="/api/v1")
 
     return application

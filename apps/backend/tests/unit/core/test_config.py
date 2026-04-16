@@ -41,3 +41,15 @@ def test_settings_redaction_overrides() -> None:
     s = Settings(log_max_value_length=42, log_redacted_keys=["secret", "token"])
     assert s.log_max_value_length == 42
     assert s.log_redacted_keys == ["secret", "token"]
+
+
+def test_settings_ollama_probe_ttl_default() -> None:
+    """ollama_probe_ttl_seconds defaults to 10.0."""
+    s = Settings()
+    assert s.ollama_probe_ttl_seconds == 10.0
+
+
+def test_settings_ollama_probe_timeout_default() -> None:
+    """ollama_probe_timeout_seconds defaults to 5.0."""
+    s = Settings()
+    assert s.ollama_probe_timeout_seconds == 5.0

@@ -1,10 +1,11 @@
-"""Static AST scan: httpx imports must be contained to ollama_gemma_provider.py.
+"""Static AST scan: httpx imports must be contained to allowed files.
 
-The dual-interface provider is the ONE file in the extraction feature allowed
-to know about HTTP clients. PDFX-E007-F004 will later add an import-linter
-contract that enforces this mechanically; until then, this AST scan is the
-enforcement mechanism. Any new file under `app/features/extraction/` that
-imports `httpx` fails this test.
+Two files in the extraction feature are authorized to import httpx:
+  1. ``ollama_gemma_provider.py`` — the dual-interface Ollama provider.
+  2. ``ollama_health_probe.py`` — the readiness probe (PDFX-E007-F001).
+
+PDFX-E007-F004 adds an import-linter contract (C6) that enforces this
+mechanically; this AST scan is the complementary enforcement mechanism.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ _EXTRACTION_ROOT = Path(__file__).resolve().parents[5] / "app" / "features" / "e
 _ALLOWED_FILES = frozenset(
     {
         "ollama_gemma_provider.py",
+        "ollama_health_probe.py",
     },
 )
 

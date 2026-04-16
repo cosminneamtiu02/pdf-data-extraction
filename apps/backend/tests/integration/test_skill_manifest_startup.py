@@ -7,10 +7,13 @@ import pytest
 import yaml
 from httpx import ASGITransport, AsyncClient
 
+from app.api.deps import get_probe_cache
+from app.api.probe_cache import ProbeCache
 from app.core.config import Settings
 from app.exceptions import SkillValidationFailedError
 from app.features.extraction.skills import SkillManifest
 from app.main import create_app
+from tests.conftest import FakeProbe
 
 
 def _write_skill(base: Path, *, dir_name: str, **overrides: Any) -> Path:
@@ -58,10 +61,16 @@ async def test_ready_still_returns_200_after_manifest_wiring(tmp_path: Path) -> 
     _write_skill(tmp_path, dir_name="invoice", file_name="1.yaml", version=1)
     app = create_app(_settings_with_skills(tmp_path))
 
+    # /ready is now gated on an Ollama probe (PDFX-E007-F001).  Override the
+    # probe-cache dependency so this test stays isolated from real Ollama.
+    cache = ProbeCache(probe=FakeProbe(results=[True]), ttl_seconds=60.0)  # type: ignore[arg-type]  # test seam
+    app.dependency_overrides[get_probe_cache] = lambda: cache
+
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/ready")
 
+    app.dependency_overrides.clear()
     assert response.status_code == 200
 
 

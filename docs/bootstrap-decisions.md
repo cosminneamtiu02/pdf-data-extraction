@@ -63,7 +63,7 @@ Extraction Microservice (`PDFX`). The strip was driven by the graph tree at
 | All pre-commit / pre-push Python hooks | CLAUDE.md sacred |
 | Error contracts package (`errors.yaml`, codegen, tests) | Required for extraction features' error codes |
 | `import-linter` + `architecture/` directory | Required by PDFX-E007-F004 |
-| Health router (`/health` + `/ready`) | Required, rewritten stub until PDFX-E007-F001 |
+| Health router (`/health` + `/ready`) | Required; `/ready` now Ollama-probe-gated (PDFX-E007-F001) |
 | Exception handlers (`app/api/errors.py`) | Unchanged — feature-agnostic |
 | Error body schemas (`app/schemas/error_*.py`) | Unchanged — feature-agnostic |
 | Three generic error codes (`NOT_FOUND`, `VALIDATION_FAILED`, `INTERNAL_ERROR`) | Generic and needed by future features — `CONFLICT` pruned in PDFX-E001-F004 as a CRUD-era orphan |
@@ -77,7 +77,7 @@ Extraction Microservice (`PDFX`). The strip was driven by the graph tree at
 | 28 | `apps/backend/app/main.py` | Removed database lifespan, removed widget router mount. Simplified app factory. |
 | 29 | `apps/backend/app/core/config.py` | Removed `database_url` and the postgres validator. Kept `app_env`, `log_level`, `cors_origins`. |
 | 30 | `apps/backend/app/api/middleware.py` | Removed `SecurityHeadersMiddleware`. Kept request-id, access log, CORS. |
-| 31 | `apps/backend/app/api/health_router.py` | Removed DB probe from `/ready`; now a minimal stub to be replaced by PDFX-E007-F001. |
+| 31 | `apps/backend/app/api/health_router.py` | Removed DB probe from `/ready`; now Ollama-probe-gated readiness (PDFX-E007-F001). |
 | 32 | `apps/backend/app/exceptions/__init__.py` | Removed widget + rate-limited re-exports. |
 | 33 | `apps/backend/app/exceptions/_generated/` | Removed widget_* + rate_limited_* files; regenerated cleanly via `task errors:generate`. |
 | 34 | `apps/backend/architecture/import-linter-contracts.ini` | Removed 4 widget-specific contracts; kept the `shared-no-features` contract. Full extraction-feature contracts land in PDFX-E007-F004. |

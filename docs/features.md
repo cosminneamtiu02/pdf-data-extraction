@@ -36,8 +36,9 @@ allowed — adjust for stricter production needs.
 
 ### Health & Readiness Endpoints ([app/api/health_router.py](../apps/backend/app/api/health_router.py))
 `GET /health` is a pure liveness probe returning `{"status":"ok"}`. `GET /ready`
-is a minimal stub returning `{"status":"ready"}` for the post-bootstrap shell;
-PDFX-E007-F001 replaces it with an Ollama-probe-gated version during feature-dev.
+is gated on a TTL-cached Ollama probe (PDFX-E007-F001): returns
+`{"status":"ready"}` (200) when Ollama is reachable within the TTL window,
+or `{"status":"not_ready","reason":"ollama_unreachable"}` (503) otherwise.
 
 ## Backend — Error System
 
