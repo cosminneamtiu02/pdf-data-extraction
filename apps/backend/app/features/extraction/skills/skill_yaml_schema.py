@@ -12,8 +12,9 @@ When multiple problems are present, they are aggregated into one
 `SkillValidationFailedError` so the skill author sees them all in one pass.
 """
 
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, Self, cast
 
 import yaml
 from jsonschema import Draft7Validator
@@ -67,7 +68,11 @@ class SkillYamlSchema(BaseModel):
             # binding the method locally lets us silence exactly that call
             # without hiding any behavior.
             iter_errors = validator.iter_errors  # type: ignore[reportUnknownMemberType]
-            errors = sorted(iter_errors(example.output), key=str)
+            # SkillExample deep-freezes `output` (MappingProxyType + tuples)
+            # at construction time.  jsonschema does not recognise
+            # MappingProxyType as an ``"object"`` type, so we thaw the
+            # frozen value back to plain dicts/lists for validation.
+            errors = sorted(iter_errors(_thaw(example.output)), key=str)
             for error in errors:
                 path_parts: list[str] = [str(p) for p in error.absolute_path]
                 path = "/" + "/".join(path_parts)
@@ -125,3 +130,19 @@ class SkillYamlSchema(BaseModel):
             raise SkillValidationFailedError(file=file_str, reason=msg)
 
         return instance
+
+
+def _thaw(value: Any) -> dict[str, Any] | list[Any] | Any:
+    """Recursively convert frozen structures back to plain dicts/lists.
+
+    ``SkillExample`` deep-freezes its ``output`` into ``MappingProxyType`` +
+    tuples. jsonschema's Draft7Validator does not accept ``MappingProxyType``
+    as ``"object"`` type, so we thaw just for validation.
+    """
+    if isinstance(value, Mapping):
+        mapping = cast("Mapping[str, Any]", value)
+        return {str(k): _thaw(v) for k, v in mapping.items()}
+    if isinstance(value, (list, tuple)):
+        seq = cast("list[Any] | tuple[Any, ...]", value)
+        return [_thaw(item) for item in seq]
+    return value
