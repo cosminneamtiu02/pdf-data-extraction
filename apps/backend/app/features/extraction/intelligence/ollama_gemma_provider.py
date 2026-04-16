@@ -23,6 +23,15 @@ async HTTP path via `asyncio.run` inside `infer`. This is safe because
 If `infer` is ever called directly from an async context, `asyncio.run` raises
 `RuntimeError("This event loop is already running")` — the right outcome,
 because it surfaces the incorrect call site instead of deadlocking.
+
+Each ``infer()`` call creates a fresh ``httpx.AsyncClient`` inside the
+``asyncio.run`` scope rather than reusing the instance-level client (issue #47).
+``asyncio.run`` closes the event loop on return, and httpx binds its connection
+pool to the loop on first use; reusing the instance client across two
+``asyncio.run`` calls would raise ``RuntimeError: Event loop is closed`` on the
+second invocation. The instance-level ``http_client`` is still used by the
+``generate()`` and ``health_check()`` async paths, which run inside an
+already-running loop and do not have the loop-per-call problem.
 """
 
 from __future__ import annotations
@@ -118,10 +127,9 @@ class OllamaGemmaProvider(BaseLanguageModel):
         self._model = model_id or effective_settings.ollama_model
         self._generate_url = _build_generate_url(effective_settings.ollama_base_url)
         self._tags_url = build_tags_url(effective_settings.ollama_base_url)
+        self._timeout = httpx.Timeout(effective_settings.ollama_timeout_seconds)
         self._validator = effective_validator
-        self.http_client = http_client or httpx.AsyncClient(
-            timeout=httpx.Timeout(effective_settings.ollama_timeout_seconds),
-        )
+        self.http_client = http_client or httpx.AsyncClient(timeout=self._timeout)
 
     async def generate(
         self,
@@ -140,10 +148,16 @@ class OllamaGemmaProvider(BaseLanguageModel):
             original_prompt=prompt,
         )
 
-    async def _raw_generate(self, prompt: str) -> str:
+    async def _raw_generate(
+        self,
+        prompt: str,
+        *,
+        client: httpx.AsyncClient | None = None,
+    ) -> str:
+        http = client or self.http_client
         payload = _build_payload(self._model, prompt)
         try:
-            response = await self.http_client.post(self._generate_url, json=payload)
+            response = await http.post(self._generate_url, json=payload)
             response.raise_for_status()
         except httpx.ConnectError as exc:
             _logger.warning("intelligence_unavailable", cause="connect_error", error=str(exc))
@@ -196,20 +210,37 @@ class OllamaGemmaProvider(BaseLanguageModel):
         return response_text
 
     async def _validated_generate_batch(self, batch_prompts: Sequence[str]) -> list[str]:
-        # Every prompt runs inside the SAME event loop so the shared
-        # `httpx.AsyncClient` binds its connection pool to one loop only. If
-        # `infer` called `asyncio.run` per prompt, the second prompt would hit
-        # a client whose pool is bound to a closed loop. Each prompt routes
-        # through `self.generate`, which runs the `StructuredOutputValidator`
-        # fence-strip + JSON-parse + retry loop against the LangExtract
-        # wrapper schema — so the plugin entry path enforces the same
-        # CLAUDE.md-mandated "no bypass" invariant as the `generate()` path
-        # the `_ValidatingLangExtractAdapter` in `extraction_engine.py` uses.
-        outputs: list[str] = []
-        for prompt in batch_prompts:
-            result = await self.generate(prompt, LANGEXTRACT_WRAPPER_SCHEMA)
-            outputs.append(json.dumps(result.data))
-        return outputs
+        # A fresh ``AsyncClient`` is created per ``infer()`` call so that each
+        # ``asyncio.run`` scope gets its own loop+client pair. Reusing the
+        # instance-level ``self.http_client`` across separate ``asyncio.run``
+        # invocations causes ``RuntimeError: Event loop is closed`` on the
+        # second call because httpx binds its connection pool to the first
+        # loop, which ``asyncio.run`` closes on return (issue #47).
+        #
+        # Every prompt in the batch shares the same fresh client — and therefore
+        # the same event loop — so connection pooling still works within a
+        # single batch. Each prompt routes through ``self.generate``, which
+        # runs the ``StructuredOutputValidator`` fence-strip + JSON-parse +
+        # retry loop against the LangExtract wrapper schema, so the plugin
+        # entry path enforces the same CLAUDE.md-mandated "no bypass" invariant
+        # as the ``generate()`` path the ``_ValidatingLangExtractAdapter`` in
+        # ``extraction_engine.py`` uses.
+        async with httpx.AsyncClient(timeout=self._timeout) as batch_client:
+            outputs: list[str] = []
+            for prompt in batch_prompts:
+                raw_text = await self._raw_generate(prompt, client=batch_client)
+
+                async def _regenerate(correction_prompt: str) -> str:
+                    return await self._raw_generate(correction_prompt, client=batch_client)
+
+                result = await self._validator.validate_and_retry(
+                    raw_text,
+                    LANGEXTRACT_WRAPPER_SCHEMA,
+                    _regenerate,
+                    original_prompt=prompt,
+                )
+                outputs.append(json.dumps(result.data))
+            return outputs
 
     def infer(
         self,
