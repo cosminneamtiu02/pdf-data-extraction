@@ -183,14 +183,13 @@ async def test_both_returns_200_multipart_mixed(tmp_path: Path) -> None:
 
 
 async def test_oversized_pdf_returns_413(tmp_path: Path) -> None:
-    """60 MB PDF against 50 MB limit returns 413 PDF_TOO_LARGE."""
+    """Upload exceeding max_pdf_bytes returns 413 PDF_TOO_LARGE."""
     stub = _stub_service()
-    max_bytes = 50 * 1024 * 1024
+    max_bytes = 1024
     app = _build_app(tmp_path, stub, max_pdf_bytes=max_bytes)
     transport = ASGITransport(app=app)
 
-    # 60 MB of data — smaller chunk to avoid memory pressure in test
-    oversized_data = b"x" * (60 * 1024 * 1024)
+    oversized_data = b"x" * (max_bytes + 512)
 
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
@@ -273,13 +272,13 @@ async def test_intelligence_timeout_returns_504(tmp_path: Path) -> None:
 
 
 async def test_oversized_stream_aborts_before_service(tmp_path: Path) -> None:
-    """51 MB streamed upload returns 413 and service is never called."""
+    """Upload over the limit returns 413 and service is never called."""
     stub = _stub_service()
-    max_bytes = 50 * 1024 * 1024
+    max_bytes = 2048
     app = _build_app(tmp_path, stub, max_pdf_bytes=max_bytes)
     transport = ASGITransport(app=app)
 
-    oversized_data = b"x" * (max_bytes + 1024 * 1024)  # 51 MB
+    oversized_data = b"x" * (max_bytes + 1024)
 
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(

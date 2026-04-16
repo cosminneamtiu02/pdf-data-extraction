@@ -59,22 +59,22 @@ def _make_extraction_result(
 
 
 async def test_read_with_byte_limit_under_limit_returns_full_bytes() -> None:
-    """10 KB upload under a 50 MB limit returns complete bytes."""
+    """Upload under the limit returns complete bytes."""
     from app.features.extraction.router import read_with_byte_limit
 
-    data = b"x" * 10_000
+    data = b"x" * 512
     upload = _make_upload_file(data)
-    result = await read_with_byte_limit(upload, max_bytes=50 * 1024 * 1024)
+    result = await read_with_byte_limit(upload, max_bytes=4096)
     assert result == data
 
 
 async def test_read_with_byte_limit_over_limit_raises_pdf_too_large() -> None:
-    """51 MB upload against 50 MB limit raises PdfTooLargeError with correct params."""
+    """Upload just over the limit raises PdfTooLargeError with correct params."""
     from app.exceptions import PdfTooLargeError
     from app.features.extraction.router import read_with_byte_limit
 
-    max_bytes = 50 * 1024 * 1024
-    data = b"x" * (max_bytes + 1024 * 1024)  # 51 MB
+    max_bytes = 1024
+    data = b"x" * (max_bytes + 512)
     upload = _make_upload_file(data)
 
     with pytest.raises(PdfTooLargeError) as exc_info:
@@ -139,13 +139,13 @@ def test_multipart_builder_boundary_appears_exactly_three_times() -> None:
     json_body = b'{"key":"value"}'
     pdf_body = b"%PDF-1.4 content"
     body, boundary = build_multipart_mixed(json_body, pdf_body)
+    body_str = body.decode("utf-8", errors="replace")
 
-    # The boundary string appears prefixed with -- in the body
-    boundary_marker = f"--{boundary}"
-    count = body.decode("utf-8", errors="replace").count(boundary_marker)
-    # opener (--boundary), separator (--boundary), closer (--boundary--)
-    # The closer is --boundary-- which also contains --boundary, so count >= 3
-    assert count >= 3
+    # Count the opener and separator (--boundary\r\n) and the closer (--boundary--)
+    opener_sep_count = body_str.count(f"--{boundary}\r\n")
+    closer_count = body_str.count(f"--{boundary}--")
+    assert opener_sep_count == 2, f"expected 2 opener/separator, got {opener_sep_count}"
+    assert closer_count == 1, f"expected 1 closer, got {closer_count}"
 
 
 # ---------------------------------------------------------------------------

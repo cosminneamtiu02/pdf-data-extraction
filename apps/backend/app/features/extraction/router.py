@@ -58,19 +58,17 @@ async def read_with_byte_limit(upload: UploadFile, max_bytes: int) -> bytes:
     past *max_bytes*.  This is a strict greater-than check: an upload of
     exactly *max_bytes* is accepted.
     """
-    chunks: list[bytes] = []
-    total = 0
+    buf = bytearray()
 
     while True:
         chunk = await upload.read(_CHUNK_SIZE)
         if not chunk:
             break
-        total += len(chunk)
-        if total > max_bytes:
-            raise PdfTooLargeError(max_bytes=max_bytes, actual_bytes=total)
-        chunks.append(chunk)
+        buf.extend(chunk)
+        if len(buf) > max_bytes:
+            raise PdfTooLargeError(max_bytes=max_bytes, actual_bytes=len(buf))
 
-    return b"".join(chunks)
+    return bytes(buf)
 
 
 def build_multipart_mixed(json_body: bytes, pdf_body: bytes) -> tuple[bytes, str]:
