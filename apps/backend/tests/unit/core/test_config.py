@@ -152,3 +152,24 @@ def test_settings_cors_origins_native_list_passthrough() -> None:
     """A native Python list for cors_origins must pass through unchanged."""
     s = Settings(cors_origins=["https://example.com"])
     assert s.cors_origins == ["https://example.com"]
+
+
+def test_settings_cors_origins_malformed_json_raises_clear_error() -> None:
+    """A string starting with '[' but not valid JSON must produce a clear error."""
+    with pytest.raises(ValidationError, match="cors_origins must be a JSON array"):
+        Settings(cors_origins="[not valid json")  # type: ignore[arg-type]
+
+
+def test_settings_cors_origins_empty_array_via_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Production path: compose defaults CORS_ORIGINS to '[]' when unset.
+
+    pydantic-settings JSON-parses env vars for complex types *before*
+    field validators run, so an empty string cannot be intercepted by
+    a @field_validator.  The compose default ``${CORS_ORIGINS:-[]}``
+    ensures the env var is always a valid JSON array.
+    """
+    monkeypatch.setenv("CORS_ORIGINS", "[]")
+    s = Settings(_env_file=None)  # type: ignore[call-arg]
+    assert s.cors_origins == []

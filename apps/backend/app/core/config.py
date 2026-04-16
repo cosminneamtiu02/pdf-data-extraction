@@ -63,7 +63,11 @@ class Settings(BaseSettings):
             if stripped == "":
                 return []
             if stripped.startswith("["):
-                return json.loads(stripped)
+                try:
+                    return json.loads(stripped)
+                except json.JSONDecodeError as exc:
+                    msg = 'cors_origins must be a JSON array string (e.g. ["https://example.com"])'
+                    raise ValueError(msg) from exc
         return v
 
     @field_validator("ollama_base_url")
