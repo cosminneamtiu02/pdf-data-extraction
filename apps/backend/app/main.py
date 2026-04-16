@@ -32,6 +32,11 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None]:
         # builds and caches it on `app.state`, so presence of the attribute
         # is the signal — no need to instantiate an `httpx.AsyncClient` just
         # to close it immediately.
+        probe = getattr(app.state, "ollama_health_probe", None)
+        if probe is not None:
+            await probe.aclose()
+            del app.state.ollama_health_probe
+
         provider = getattr(app.state, "intelligence_provider", None)
         if provider is not None:
             await provider.aclose()

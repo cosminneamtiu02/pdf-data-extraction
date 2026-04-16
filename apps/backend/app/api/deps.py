@@ -27,6 +27,9 @@ from functools import lru_cache
 
 from fastapi import Request
 
+from app.api.probe_cache import (
+    ProbeCache,  # placed after feature imports for visual grouping
+)
 from app.core.config import Settings
 
 # Pipeline component imports — these are lightweight classes (no heavy
@@ -42,6 +45,9 @@ from app.features.extraction.intelligence.correction_prompt_builder import (
 )
 from app.features.extraction.intelligence.ollama_gemma_provider import (
     OllamaGemmaProvider,
+)
+from app.features.extraction.intelligence.ollama_health_probe import (
+    OllamaHealthProbe,
 )
 from app.features.extraction.intelligence.structured_output_validator import (
     StructuredOutputValidator,
@@ -147,3 +153,34 @@ def get_extraction_service(request: Request) -> ExtractionService:
                 )
                 state.extraction_service = service
     return service
+
+
+def get_ollama_health_probe(request: Request) -> OllamaHealthProbe:
+    """Return (and lazily cache) the health probe bound to this app instance."""
+    state = request.app.state
+    probe: OllamaHealthProbe | None = getattr(state, "ollama_health_probe", None)
+    if probe is None:
+        with _dep_init_lock:
+            probe = getattr(state, "ollama_health_probe", None)
+            if probe is None:
+                probe = OllamaHealthProbe(
+                    base_url=get_settings(request).ollama_base_url,
+                )
+                state.ollama_health_probe = probe
+    return probe
+
+
+def get_probe_cache(request: Request) -> ProbeCache:
+    """Return (and lazily cache) the readiness probe cache."""
+    state = request.app.state
+    cache: ProbeCache | None = getattr(state, "probe_cache", None)
+    if cache is None:
+        with _dep_init_lock:
+            cache = getattr(state, "probe_cache", None)
+            if cache is None:
+                cache = ProbeCache(
+                    probe=get_ollama_health_probe(request),
+                    ttl_seconds=get_settings(request).ollama_probe_ttl_seconds,
+                )
+                state.probe_cache = cache
+    return cache

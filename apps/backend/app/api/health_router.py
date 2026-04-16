@@ -1,6 +1,14 @@
 """Health and readiness endpoints — mounted at root, outside /api/v1/."""
 
-from fastapi import APIRouter
+from typing import Annotated
+
+from fastapi import APIRouter, Depends
+from fastapi.responses import JSONResponse
+
+from app.api.deps import get_probe_cache
+from app.api.probe_cache import (
+    ProbeCache,  # runtime: FastAPI resolves Annotated[..., Depends()]
+)
 
 router = APIRouter(tags=["health"])
 
@@ -12,12 +20,17 @@ async def health() -> dict[str, str]:
 
 
 @router.get("/ready")
-async def ready() -> dict[str, str]:
-    """Readiness probe.
+async def ready(
+    probe_cache: Annotated[ProbeCache, Depends(get_probe_cache)],
+) -> JSONResponse:
+    """Readiness probe gated on Ollama reachability.
 
-    v1 minimal stub: returns 200 unconditionally. The feature-dev for
-    PDFX-E007-F001 replaces this with an Ollama-probe-gated readiness
-    check that returns 503 when the configured Ollama base URL is
-    unreachable within a short TTL.
+    Returns 200 if the last Ollama probe succeeded within the TTL window,
+    otherwise 503 with a structured JSON body.
     """
-    return {"status": "ready"}
+    if await probe_cache.is_ready():
+        return JSONResponse(status_code=200, content={"status": "ready"})
+    return JSONResponse(
+        status_code=503,
+        content={"status": "not_ready", "reason": "ollama_unreachable"},
+    )
