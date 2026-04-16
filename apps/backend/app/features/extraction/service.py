@@ -12,10 +12,9 @@ is what makes them a pipeline.
 but cannot stop CPU work already running in background threads (e.g.
 ``DoclingDocumentParser.parse`` and ``ExtractionEngine.extract`` both
 use ``asyncio.to_thread``). A timed-out request returns 504 while
-the thread may still be finishing. This is acceptable for v1 because
-the service runs ``workers=1`` and consecutive requests queue behind
-the current one anyway; the orphaned thread completes and its result
-is discarded.
+the thread may still be finishing. The unfinished background work may
+overlap with later requests unless concurrency is explicitly limited
+elsewhere; once that work completes, its result is discarded.
 """
 
 from __future__ import annotations

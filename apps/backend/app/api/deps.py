@@ -28,6 +28,11 @@ from functools import lru_cache
 from fastapi import Request
 
 from app.core.config import Settings
+
+# Pipeline component imports — these are lightweight classes (no heavy
+# transitive deps).  PdfAnnotator pulls in pymupdf at import time, which
+# is acceptable: pymupdf is a direct dependency and is needed at first
+# extraction request anyway.
 from app.features.extraction.annotation.pdf_annotator import PdfAnnotator
 from app.features.extraction.coordinates.span_resolver import SpanResolver
 from app.features.extraction.coordinates.text_concatenator import TextConcatenator
@@ -122,13 +127,7 @@ def get_document_parser(request: Request) -> DoclingDocumentParser:
 
 
 def get_extraction_service(request: Request) -> ExtractionService:
-    """Return (and lazily cache) the extraction service bound to this app.
-
-    Each pipeline component is constructed inline and cached as part of
-    the service singleton.  For finer-grained test overrides, the
-    per-component factories in ``app.features.extraction.deps`` can be
-    imported individually.
-    """
+    """Return (and lazily cache) the extraction service bound to this app."""
     state = request.app.state
     service: ExtractionService | None = getattr(state, "extraction_service", None)
     if service is None:

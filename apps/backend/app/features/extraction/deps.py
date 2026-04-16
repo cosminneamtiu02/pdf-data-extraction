@@ -1,24 +1,22 @@
-"""Extraction-feature dependency factories (PDFX-E006-F002).
+"""Extraction-feature per-component dependency factories (PDFX-E006-F002).
 
-Each pipeline component is produced by its own ``Depends`` factory so
-integration tests and downstream routers can override individual pieces
-via ``app.dependency_overrides``.
+These factories exist so integration tests can override individual pipeline
+components via ``app.dependency_overrides[get_span_resolver] = ...`` without
+replacing the entire ``ExtractionService``.
 
-The service and its components are lazily constructed and cached on
-``app.state``. The module-level ``_dep_init_lock`` serializes first-
-access construction only; subsequent calls are a fast ``getattr`` check.
+The canonical ``get_extraction_service`` factory lives in ``app.api.deps``
+(where the router imports it).  This module provides the finer-grained
+component factories only.
 """
 
 import threading
 
 from fastapi import Request
 
-from app.api.deps import get_document_parser, get_intelligence_provider, get_settings
 from app.features.extraction.annotation.pdf_annotator import PdfAnnotator
 from app.features.extraction.coordinates.span_resolver import SpanResolver
 from app.features.extraction.coordinates.text_concatenator import TextConcatenator
 from app.features.extraction.extraction.extraction_engine import ExtractionEngine
-from app.features.extraction.service import ExtractionService
 from app.features.extraction.skills.skill_manifest import SkillManifest
 
 _dep_init_lock = threading.RLock()
@@ -79,26 +77,3 @@ def get_pdf_annotator(request: Request) -> PdfAnnotator:
                 annotator = PdfAnnotator()
                 state.pdf_annotator = annotator
     return annotator
-
-
-def get_extraction_service(request: Request) -> ExtractionService:
-    """Return (and lazily cache) the extraction service for this app."""
-    state = request.app.state
-    service: ExtractionService | None = getattr(state, "extraction_service", None)
-    if service is None:
-        with _dep_init_lock:
-            service = getattr(state, "extraction_service", None)
-            if service is None:
-                settings = get_settings(request)
-                service = ExtractionService(
-                    skill_manifest=get_skill_manifest(request),
-                    document_parser=get_document_parser(request),
-                    text_concatenator=get_text_concatenator(request),
-                    extraction_engine=get_extraction_engine(request),
-                    span_resolver=get_span_resolver(request),
-                    pdf_annotator=get_pdf_annotator(request),
-                    intelligence_provider=get_intelligence_provider(request),
-                    settings=settings,
-                )
-                state.extraction_service = service
-    return service

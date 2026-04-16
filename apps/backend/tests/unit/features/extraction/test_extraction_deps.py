@@ -8,8 +8,8 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+from app.api.deps import get_extraction_service
 from app.core.config import Settings
-from app.features.extraction.deps import get_extraction_service
 from app.features.extraction.service import ExtractionService
 from app.features.extraction.skills.skill_manifest import SkillManifest
 
