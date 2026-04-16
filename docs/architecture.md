@@ -81,6 +81,38 @@ No layer skipping. Router never touches Docling, LangExtract, Ollama, or PyMuPDF
 directly — those imports are contained to specific implementation files via
 `import-linter` contracts.
 
+### Architectural Contracts (PDFX-E007-F004)
+
+The full contract set lives in
+[`apps/backend/architecture/import-linter-contracts.ini`](../apps/backend/architecture/import-linter-contracts.ini)
+and is enforced by `task lint` (which includes `task check:arch`, and `task check`
+runs as part of every PR's gate). Every contract carries a `#` comment block
+explaining the rule it encodes and why.
+
+Two enforcement layers work together:
+
+1. **import-linter** (static graph) -- the INI contracts (C1-C6) catch static
+   `import X` / `from X import Y` violations at build time via `lint-imports`.
+2. **AST-scan tests** (`test_dynamic_import_containment.py`) -- catch
+   `importlib.import_module("X")` dynamic imports and cross-feature imports
+   that import-linter's static analysis cannot see.
+
+The C3-C6 third-party containment contracts use `source_modules = app` (the
+entire app, not just the extraction feature) so that `app.api`, `app.core`,
+and every other module are also forbidden from importing Docling, PyMuPDF,
+LangExtract, or httpx outside the designated files.
+
+C1 (feature independence) is an `independence` contract with a single module,
+which is vacuously true in import-linter. The real enforcement is the AST
+scan in `test_dynamic_import_containment.py::test_extraction_does_not_import_from_sibling_features`.
+When a second feature package is introduced, the C1 contract must be amended
+to include the new module so import-linter also becomes load-bearing.
+
+The C2 DAG contracts (C2a-C2e) are decomposed into multiple narrow `forbidden`
+and `independence` contracts instead of a single `layers` contract because the
+mid-tier subpackages have asymmetric cross-edges that a single layers contract
+cannot express cleanly.
+
 ### Error Flow
 
 ```
