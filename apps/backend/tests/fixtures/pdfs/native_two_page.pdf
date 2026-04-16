@@ -1,0 +1,102 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [5 0 R 7 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Length 562 >>
+stream
+BT
+/F1 12 Tf
+50 750 Td
+(Invoice #12345) Tj
+0 -18 Td
+(Date: 2025-01-15) Tj
+0 -18 Td
+(Bill To: Acme Corp) Tj
+0 -18 Td
+(123 Main Street) Tj
+0 -18 Td
+(Anytown, ST 12345) Tj
+0 -18 Td
+() Tj
+0 -18 Td
+(Item          Qty   Price) Tj
+0 -18 Td
+(Widget A        2   $50.00) Tj
+0 -18 Td
+(Widget B        5  $120.00) Tj
+0 -18 Td
+(Service Fee     1   $75.00) Tj
+0 -18 Td
+() Tj
+0 -18 Td
+(Subtotal: $1,045.00) Tj
+0 -18 Td
+(Tax \(8%\):    $83.60) Tj
+0 -18 Td
+(Total:    $1,128.60) Tj
+0 -18 Td
+() Tj
+0 -18 Td
+(Payment Terms: Net 30) Tj
+0 -18 Td
+(Thank you for your business!) Tj
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 3 0 R >> >> >>
+endobj
+6 0 obj
+<< /Length 424 >>
+stream
+BT
+/F1 12 Tf
+50 750 Td
+(Page 2 - Terms and Conditions) Tj
+0 -18 Td
+() Tj
+0 -18 Td
+(1. Payment is due within 30 days.) Tj
+0 -18 Td
+(2. Late payments incur 1.5% monthly interest.) Tj
+0 -18 Td
+(3. All sales are final.) Tj
+0 -18 Td
+(4. Warranty: 12 months from delivery.) Tj
+0 -18 Td
+(5. Jurisdiction: State of California.) Tj
+0 -18 Td
+() Tj
+0 -18 Td
+(Authorized Signature: ________________) Tj
+0 -18 Td
+(Date: 2025-01-15) Tj
+ET
+endstream
+endobj
+7 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 6 0 R /Resources << /Font << /F1 3 0 R >> >> >>
+endobj
+xref
+0 8
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000127 00000 n 
+0000000197 00000 n 
+0000000810 00000 n 
+0000000936 00000 n 
+0000001411 00000 n 
+trailer
+<< /Size 8 /Root 1 0 R >>
+startxref
+1537
+%%EOF
