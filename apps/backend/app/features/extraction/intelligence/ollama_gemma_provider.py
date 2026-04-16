@@ -165,7 +165,7 @@ class OllamaGemmaProvider(BaseLanguageModel):
             # above do not cover: ReadError, RemoteProtocolError, WriteError,
             # etc. Without this, those RequestError subclasses escape as raw
             # exceptions and surface as HTTP 500 instead of 503.
-            # See: https://github.com/<owner>/<repo>/issues/49
+            # See issue #49.
             _logger.warning("intelligence_unavailable", cause="request_error", error=str(exc))
             raise IntelligenceUnavailableError from exc
 
