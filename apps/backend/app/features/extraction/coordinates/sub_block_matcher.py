@@ -119,13 +119,28 @@ def _nfkc_with_map(text: str) -> tuple[str, list[int]]:
     character whose normalization contributed it. When one source character
     expands into multiple normalized characters, all of those normalized
     characters map back to that same source index (leading edge).
+
+    Characters are grouped into "normalization segments": each segment is a base
+    character followed by zero or more combining marks (Unicode category "M").
+    Each segment is NFKC-normalized as a unit so that combining sequences like
+    ``e`` + U+0301 (combining acute) correctly compose into ``é``. All
+    normalized characters produced by a segment map back to the segment's
+    leading (first) original index.
     """
     out_parts: list[str] = []
     mapping: list[int] = []
-    for i, ch in enumerate(text):
-        normalized_ch = unicodedata.normalize("NFKC", ch)
-        out_parts.append(normalized_ch)
-        mapping.extend([i] * len(normalized_ch))
+    n = len(text)
+    i = 0
+    while i < n:
+        seg_start = i
+        i += 1
+        # Extend the segment to include all following combining marks.
+        while i < n and unicodedata.category(text[i]).startswith("M"):
+            i += 1
+        segment = text[seg_start:i]
+        normalized_seg = unicodedata.normalize("NFKC", segment)
+        out_parts.append(normalized_seg)
+        mapping.extend([seg_start] * len(normalized_seg))
     return "".join(out_parts), mapping
 
 
