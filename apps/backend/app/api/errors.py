@@ -26,6 +26,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         request_id = _get_request_id(request)
         return JSONResponse(
             status_code=exc.http_status,
+            headers={"X-Request-Id": request_id},
             content={
                 "error": {
                     "code": exc.code,
@@ -53,6 +54,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         first = details[0] if details else {"field": "unknown", "reason": "unknown"}
         return JSONResponse(
             status_code=422,
+            headers={"X-Request-Id": request_id},
             content={
                 "error": {
                     "code": "VALIDATION_FAILED",
@@ -76,6 +78,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         )
         return JSONResponse(
             status_code=500,
+            headers={"X-Request-Id": request_id},
             content={
                 "error": {
                     "code": "INTERNAL_ERROR",
