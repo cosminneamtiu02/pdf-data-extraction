@@ -115,10 +115,49 @@ def test_format_report_contains_nfr_comparison() -> None:
 
     # NFR targets section header
     assert "NFR" in report or "Target" in report
-    # Native invoice P50 target (20.0s) should appear since our fixture values are 5-7s
+    # Latency pass/fail rows for native and scanned
     assert "PASS" in report or "FAIL" in report
-    # With fixture latencies of 5-7s, native P50 (~6.0) is well under 20.0s target
     assert "Native Invoice 10P" in report.title() or "native_invoice_10p" in report.lower()
+
+
+def test_format_report_contains_annotation_overhead() -> None:
+    """Report includes annotation overhead (PDF_ONLY p50 - JSON_ONLY p50) per fixture."""
+    results = _make_results()
+    report = format_report(results)
+
+    # Annotation overhead row should exist
+    assert "Annot. Overhead" in report or "annotation" in report.lower()
+    # With JSON_ONLY=[5,6,7] (p50=6) and PDF_ONLY=[8,9,10] (p50=9), overhead=3.0
+    # NFR-006 target is 2.0s, so this should FAIL
+    assert "FAIL" in report
+
+
+def test_format_report_service_rss_with_pid() -> None:
+    """Report includes service RSS pass/fail when service_pid was provided."""
+    results = BenchResults(
+        fixtures=[_make_fixture_result("native_invoice_10p")],
+        memory=MemorySnapshot(
+            rss_before_mb=50.0,
+            rss_after_mb=55.0,
+            service_rss_before_mb=800.0,
+            service_rss_after_mb=850.0,
+        ),
+    )
+    report = format_report(results)
+
+    assert "Service Memory" in report
+    assert "800.00" in report
+    assert "850.00" in report
+    assert "NFR-008" in report
+    assert "PASS" in report  # 850 MB < 1500 MB target
+
+
+def test_format_report_service_rss_without_pid() -> None:
+    """Report shows skip message when --service-pid was not provided."""
+    results = _make_results()
+    report = format_report(results)
+
+    assert "service-pid not provided" in report.lower() or "skipped" in report.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +222,7 @@ def test_parse_args_help_exits_zero(capsys: pytest.CaptureFixture[str]) -> None:
     assert "--url" in captured.out
     assert "--iterations" in captured.out
     assert "--fixtures-dir" in captured.out
+    assert "--service-pid" in captured.out
 
 
 def test_parse_args_defaults() -> None:

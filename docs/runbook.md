@@ -112,6 +112,43 @@ flips to 200 and extraction requests succeed.  The log emits
 Ollama troubleshooting steps below.  The service does not need a restart
 to recover — it self-heals automatically.
 
+## Benchmarking
+
+`task bench` runs a local latency benchmark against the extraction service.
+It sends sequential HTTP requests using a 3-PDF fixture corpus (native
+digital, scanned, table-heavy) and prints p50 / p95 latency, annotation
+overhead, and service RSS for spot-checking against NFR targets.
+
+**Prerequisites:** Ollama must be running with the configured model pulled.
+
+```bash
+# 1. Start the service with the bench skill loaded
+task bench:serve
+# (in a second terminal)
+
+# 2. Find the service PID (for RSS measurement)
+SERVICE_PID=$(pgrep -f "uvicorn app.main:app")
+
+# 3. Run the benchmark
+task bench BENCH_SERVICE_PID=$SERVICE_PID
+# or without service RSS:
+task bench
+```
+
+The report compares measured values against these NFR targets:
+
+| NFR | Metric | Target |
+|-----|--------|--------|
+| NFR-004 | Native digital P50 / P95 | <= 20 s / <= 45 s |
+| NFR-005 | Scanned P50 / P95 | <= 60 s / <= 120 s |
+| NFR-006 | Annotation overhead (PDF_ONLY P50 - JSON_ONLY P50) | <= 2 s |
+| NFR-008 | Service idle RSS (requires `--service-pid`) | <= 1.5 GB |
+
+If numbers drift from these targets, investigate as a potential regression.
+The benchmark is NOT wired into `task check` — it requires real Ollama and
+measures machine-dependent latency. It is part of the developer dev-loop
+and the maintainer's release sanity check.
+
 ## Troubleshooting
 
 ### Backend won't start

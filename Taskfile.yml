@@ -119,8 +119,16 @@ tasks:
       - uv run python -m scripts.validate_skills{{if .SKILLS_DIR}} "{{.SKILLS_DIR}}"{{end}}
 
   # ── Benchmarking ─────────────────────────────────────────────
+  bench:serve:
+    desc: Start the backend with bench fixtures as the skill directory (for task bench)
+    dir: "{{.BACKEND_DIR}}"
+    env:
+      SKILLS_DIR: fixtures/bench/skills
+    cmds:
+      - uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
+
   bench:
-    desc: Run local latency benchmark against a running service (NOT wired into check)
+    desc: Run local latency benchmark (start service first with task bench:serve)
     dir: "{{.BACKEND_DIR}}"
     vars:
       BENCH_URL: '{{.BENCH_URL | default "http://localhost:8000"}}'

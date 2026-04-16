@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import os
 import platform
+import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
@@ -52,6 +53,7 @@ NFR_TARGETS: dict[str, dict[str, float]] = {
     "native_invoice_10p": {"p50": 20.0, "p95": 45.0},  # NFR-004
     "scanned_invoice_10p": {"p50": 60.0, "p95": 120.0},  # NFR-005
 }
+NFR_ANNOTATION_OVERHEAD_S = 2.0  # NFR-006: annotation overhead <= 2 s
 NFR_RSS_TARGET_MB = 1500.0  # NFR-008: idle RSS <= 1.5 GB
 
 
@@ -66,6 +68,7 @@ class BenchConfig:
     skill_version: str = "1"
     warmup: int = 1
     timeout: float = 300.0
+    service_pid: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,15 +96,20 @@ class FixtureBenchResult:
 
 @dataclass(frozen=True, slots=True)
 class MemorySnapshot:
-    """Peak (high-water-mark) RSS before and after the benchmark.
+    """RSS measurements taken before and after the benchmark run.
 
-    These are the benchmark *client* process's peak RSS, not the service
-    process's.  Operators should check the service process directly for
-    NFR-008 (idle RSS <= 1.5 GB).
+    ``rss_before_mb`` / ``rss_after_mb`` are the benchmark *client*
+    process's peak RSS (via ``resource.getrusage``).
+
+    ``service_rss_before_mb`` / ``service_rss_after_mb`` are the
+    *service* process's current RSS, measured via ``ps`` when
+    ``--service-pid`` is provided.  ``None`` when the PID is not given.
     """
 
     rss_before_mb: float
     rss_after_mb: float
+    service_rss_before_mb: float | None = None
+    service_rss_after_mb: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,21 +195,33 @@ def _get_rss_mb() -> float:
     return usage.ru_maxrss / 1024
 
 
+def _get_pid_rss_mb(pid: int) -> float | None:
+    """Return current RSS of process *pid* in MB via ``ps``.
+
+    Works on macOS and Linux without ``psutil``.  Returns ``None`` if the
+    process does not exist or ``ps`` fails.
+    """
+    try:
+        argv = ["ps", "-o", "rss=", "-p", str(pid)]
+        result = subprocess.run(  # noqa: S603  # controlled argv, no shell injection
+            argv,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        # ps reports RSS in kilobytes on both macOS and Linux
+        return int(result.stdout.strip()) / 1024
+    except (subprocess.CalledProcessError, ValueError):
+        return None
+
+
 def _pass_fail(value: float, target: float) -> str:
     """Return a pass/fail indicator."""
     return "\u2713 PASS" if value <= target else "\u2717 FAIL"
 
 
-def format_report(results: BenchResults) -> str:
-    """Format benchmark results as a plain-text report."""
-    lines: list[str] = []
-    lines.append("")
-    lines.append("=" * 78)
-    lines.append("  PDF Extraction Benchmark Report")
-    lines.append("=" * 78)
-    lines.append("")
-
-    # Per-fixture latency table
+def _format_latency_table(lines: list[str], results: BenchResults) -> None:
+    """Append the per-fixture latency table to *lines*."""
     lines.append("Latency Results")
     lines.append("-" * 78)
     lines.append(f"{'Fixture':<25} {'Mode':<12} {'Mean (s)':>10} {'P50 (s)':>10} {'P95 (s)':>10}")
@@ -224,17 +244,30 @@ def format_report(results: BenchResults) -> str:
                     f"{'N/A':>10} {'N/A':>10} {'N/A':>10}"
                 )
 
-    # Memory section
+
+def _format_memory_section(lines: list[str], mem: MemorySnapshot) -> None:
+    """Append the memory section(s) to *lines*."""
     lines.append("")
     lines.append("Memory (Peak RSS of benchmark client process)")
     lines.append("-" * 78)
-    mem = results.memory
     delta = mem.rss_after_mb - mem.rss_before_mb
     lines.append(f"  RSS before: {mem.rss_before_mb:>10.2f} MB")
     lines.append(f"  RSS after:  {mem.rss_after_mb:>10.2f} MB")
     lines.append(f"  RSS delta:  {delta:>10.2f} MB")
 
-    # NFR comparison
+    if mem.service_rss_before_mb is not None and mem.service_rss_after_mb is not None:
+        svc_delta = mem.service_rss_after_mb - mem.service_rss_before_mb
+        lines.append("")
+        lines.append("Service Memory (RSS via --service-pid)")
+        lines.append("-" * 78)
+        lines.append(f"  RSS before: {mem.service_rss_before_mb:>10.2f} MB")
+        lines.append(f"  RSS after:  {mem.service_rss_after_mb:>10.2f} MB")
+        lines.append(f"  RSS delta:  {svc_delta:>10.2f} MB")
+
+
+def _format_nfr_comparison(lines: list[str], results: BenchResults) -> None:
+    """Append the NFR target comparison to *lines*."""
+    mem = results.memory
     lines.append("")
     lines.append("NFR Target Comparison")
     lines.append("-" * 78)
@@ -242,26 +275,64 @@ def format_report(results: BenchResults) -> str:
     lines.append("-" * 78)
 
     for fixture in results.fixtures:
-        targets = NFR_TARGETS.get(fixture.fixture_name)
-        if targets:
-            json_mode = fixture.modes.get("JSON_ONLY")
-            if json_mode and json_mode.latencies:
-                p50 = compute_percentile(json_mode.latencies, 50)
-                p95 = compute_percentile(json_mode.latencies, 95)
-                t_p50 = targets["p50"]
-                t_p95 = targets["p95"]
-                label = fixture.fixture_name.replace("_", " ").title()
-                p50_label = f"{label} P50"
-                p95_label = f"{label} P95"
-                lines.append(
-                    f"  {p50_label:<35} {p50:>10.2f} {t_p50:>7.1f}s  {_pass_fail(p50, t_p50)}"
-                )
-                lines.append(
-                    f"  {p95_label:<35} {p95:>10.2f} {t_p95:>7.1f}s  {_pass_fail(p95, t_p95)}"
-                )
+        _format_fixture_nfr(lines, fixture)
 
-    lines.append(f"  {'Note: RSS above is the benchmark client process.':<78}")
-    lines.append(f"  {'Check the service process directly for NFR-008 (idle RSS <= 1.5 GB).':<78}")
+    if mem.service_rss_after_mb is not None:
+        lines.append(
+            f"  {'Service Idle RSS (NFR-008)':<35} "
+            f"{mem.service_rss_after_mb:>7.1f} MB "
+            f"{NFR_RSS_TARGET_MB:>7.1f} MB  "
+            f"{_pass_fail(mem.service_rss_after_mb, NFR_RSS_TARGET_MB)}"
+        )
+    else:
+        lines.append("  Service Idle RSS (NFR-008)         --service-pid not provided, skipped")
+
+
+def _format_fixture_nfr(lines: list[str], fixture: FixtureBenchResult) -> None:
+    """Append NFR rows for one fixture (latency targets + annotation overhead)."""
+    targets = NFR_TARGETS.get(fixture.fixture_name)
+    if targets:
+        json_mode = fixture.modes.get("JSON_ONLY")
+        if json_mode and json_mode.latencies:
+            p50 = compute_percentile(json_mode.latencies, 50)
+            p95 = compute_percentile(json_mode.latencies, 95)
+            t_p50, t_p95 = targets["p50"], targets["p95"]
+            label = fixture.fixture_name.replace("_", " ").title()
+            lines.append(
+                f"  {label + ' P50':<35} {p50:>10.2f} {t_p50:>7.1f}s  {_pass_fail(p50, t_p50)}"
+            )
+            lines.append(
+                f"  {label + ' P95':<35} {p95:>10.2f} {t_p95:>7.1f}s  {_pass_fail(p95, t_p95)}"
+            )
+
+    # NFR-006: annotation overhead = PDF_ONLY_p50 - JSON_ONLY_p50
+    json_mode = fixture.modes.get("JSON_ONLY")
+    pdf_mode = fixture.modes.get("PDF_ONLY")
+    if json_mode and json_mode.latencies and pdf_mode and pdf_mode.latencies:
+        json_p50 = compute_percentile(json_mode.latencies, 50)
+        pdf_p50 = compute_percentile(pdf_mode.latencies, 50)
+        overhead = pdf_p50 - json_p50
+        label = fixture.fixture_name.replace("_", " ").title()
+        oh_label = f"{label} Annot. Overhead"
+        oh_target = NFR_ANNOTATION_OVERHEAD_S
+        lines.append(
+            f"  {oh_label:<35} {overhead:>10.2f} "
+            f"{oh_target:>7.1f}s  {_pass_fail(overhead, oh_target)}"
+        )
+
+
+def format_report(results: BenchResults) -> str:
+    """Format benchmark results as a plain-text report."""
+    lines: list[str] = []
+    lines.append("")
+    lines.append("=" * 78)
+    lines.append("  PDF Extraction Benchmark Report")
+    lines.append("=" * 78)
+    lines.append("")
+
+    _format_latency_table(lines, results)
+    _format_memory_section(lines, results.memory)
+    _format_nfr_comparison(lines, results)
 
     lines.append("")
     lines.append("=" * 78)
@@ -317,6 +388,7 @@ def run_benchmark(config: BenchConfig) -> BenchResults:
     """
     fixtures = discover_fixtures(config.fixtures_dir)
     rss_before = _get_rss_mb()
+    svc_rss_before = _get_pid_rss_mb(config.service_pid) if config.service_pid else None
 
     fixture_results: list[FixtureBenchResult] = []
 
@@ -375,9 +447,15 @@ def run_benchmark(config: BenchConfig) -> BenchResults:
             )
 
     rss_after = _get_rss_mb()
+    svc_rss_after = _get_pid_rss_mb(config.service_pid) if config.service_pid else None
     return BenchResults(
         fixtures=fixture_results,
-        memory=MemorySnapshot(rss_before_mb=rss_before, rss_after_mb=rss_after),
+        memory=MemorySnapshot(
+            rss_before_mb=rss_before,
+            rss_after_mb=rss_after,
+            service_rss_before_mb=svc_rss_before,
+            service_rss_after_mb=svc_rss_after,
+        ),
     )
 
 
@@ -444,6 +522,12 @@ def parse_args(argv: list[str]) -> BenchConfig:
         default=300.0,
         help="HTTP request timeout in seconds (default: 300)",
     )
+    parser.add_argument(
+        "--service-pid",
+        type=int,
+        default=None,
+        help="PID of the running service process for RSS measurement (NFR-008)",
+    )
 
     args = parser.parse_args(argv)
 
@@ -461,6 +545,7 @@ def parse_args(argv: list[str]) -> BenchConfig:
         skill_version=args.skill_version,
         warmup=args.warmup,
         timeout=args.timeout,
+        service_pid=args.service_pid,
     )
 
 
