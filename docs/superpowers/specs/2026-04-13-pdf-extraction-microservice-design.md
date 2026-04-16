@@ -390,7 +390,7 @@ Schemathesis against the OpenAPI spec for `POST /api/v1/extract`.
 
 ### 9.4 E2E (optional, slow)
 
-- One golden-path test against a running Ollama + real Gemma 4 model with a single invoice PDF, asserting extraction produces the expected fields. Marked `slow`, excluded from the default `task check` run, runnable via `task test:e2e`.
+- One golden-path test against a running Ollama + real Gemma 4 model with a single invoice PDF, asserting extraction produces the expected fields. Marked `slow`, excluded from the default `task check` run, runnable via `task test:slow`.
 
 The rest of the test suite never touches a real LLM — determinism is required for CI.
 
