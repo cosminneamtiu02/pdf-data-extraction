@@ -1,11 +1,15 @@
 """Generated error classes. Do not edit."""
 
+from app.exceptions._generated.intelligence_timeout_error import IntelligenceTimeoutError
+from app.exceptions._generated.intelligence_timeout_params import IntelligenceTimeoutParams
 from app.exceptions._generated.intelligence_unavailable_error import IntelligenceUnavailableError
 from app.exceptions._generated.internal_error import InternalError
 from app.exceptions._generated.not_found_error import NotFoundError
 from app.exceptions._generated.pdf_invalid_error import PdfInvalidError
 from app.exceptions._generated.pdf_no_text_extractable_error import PdfNoTextExtractableError
 from app.exceptions._generated.pdf_password_protected_error import PdfPasswordProtectedError
+from app.exceptions._generated.pdf_too_large_error import PdfTooLargeError
+from app.exceptions._generated.pdf_too_large_params import PdfTooLargeParams
 from app.exceptions._generated.pdf_too_many_pages_error import PdfTooManyPagesError
 from app.exceptions._generated.pdf_too_many_pages_params import PdfTooManyPagesParams
 from app.exceptions._generated.skill_not_found_error import SkillNotFoundError
@@ -17,12 +21,16 @@ from app.exceptions._generated.validation_failed_error import ValidationFailedEr
 from app.exceptions._generated.validation_failed_params import ValidationFailedParams
 
 __all__ = [
+    "IntelligenceTimeoutError",
+    "IntelligenceTimeoutParams",
     "IntelligenceUnavailableError",
     "InternalError",
     "NotFoundError",
     "PdfInvalidError",
     "PdfNoTextExtractableError",
     "PdfPasswordProtectedError",
+    "PdfTooLargeError",
+    "PdfTooLargeParams",
     "PdfTooManyPagesError",
     "PdfTooManyPagesParams",
     "SkillNotFoundError",

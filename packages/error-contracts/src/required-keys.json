@@ -12,7 +12,9 @@
     "PDF_TOO_MANY_PAGES",
     "PDF_NO_TEXT_EXTRACTABLE",
     "INTELLIGENCE_UNAVAILABLE",
-    "STRUCTURED_OUTPUT_FAILED"
+    "STRUCTURED_OUTPUT_FAILED",
+    "PDF_TOO_LARGE",
+    "INTELLIGENCE_TIMEOUT"
   ],
   "params_by_key": {
     "NOT_FOUND": [],
@@ -37,6 +39,13 @@
     ],
     "PDF_NO_TEXT_EXTRACTABLE": [],
     "INTELLIGENCE_UNAVAILABLE": [],
-    "STRUCTURED_OUTPUT_FAILED": []
+    "STRUCTURED_OUTPUT_FAILED": [],
+    "PDF_TOO_LARGE": [
+      "max_bytes",
+      "actual_bytes"
+    ],
+    "INTELLIGENCE_TIMEOUT": [
+      "budget_seconds"
+    ]
   }
 }

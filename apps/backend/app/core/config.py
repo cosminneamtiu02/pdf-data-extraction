@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     docling_ocr_default: OcrMode = "auto"
     docling_table_mode_default: TableMode = "fast"
     max_pdf_pages: Annotated[int, Field(gt=0)] = 200
+    max_pdf_bytes: Annotated[int, Field(gt=0)] = 50 * 1024 * 1024  # 50 MB
 
     ollama_base_url: str = "http://host.docker.internal:11434"
     ollama_model: str = "gemma4:e2b"
