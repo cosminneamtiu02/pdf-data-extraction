@@ -11,7 +11,9 @@ at TTL expiry coalesce into a single probe instead of a thundering herd.
 The cache supports *priming* (``prime()``) so the startup sequence can seed
 it with the initial probe result. When a probe refresh flips the cached
 state from ``False`` to ``True``, an ``ollama_reachable_recovered`` event
-is logged at INFO level (PDFX-E007-F002 self-healing).
+is logged at INFO level (PDFX-E007-F002 self-healing).  The reverse
+transition (``True`` → ``False``) logs ``ollama_became_unreachable`` at
+WARNING so operators see the degradation at normal log levels.
 """
 
 from __future__ import annotations
@@ -81,4 +83,6 @@ class ProbeCache:
             self._has_previous_result = True
             if had_previous and not previous and self._last_result:
                 _logger.info("ollama_reachable_recovered")
+            elif had_previous and previous and not self._last_result:
+                _logger.warning("ollama_became_unreachable")
             return self._last_result

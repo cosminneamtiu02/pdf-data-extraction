@@ -80,8 +80,8 @@ async def test_no_recovery_logged_when_prime_true_then_probe_true() -> None:
     assert len(recovery_events) == 0
 
 
-async def test_no_recovery_logged_when_prime_true_then_probe_false() -> None:
-    """Primed True → TTL expires → probe False → no recovery event (degradation)."""
+async def test_degradation_logged_when_prime_true_then_probe_false() -> None:
+    """Primed True → TTL expires → probe False → logs ollama_became_unreachable."""
     probe = FakeProbe(results=[False])
     cache = ProbeCache(
         probe=probe,  # type: ignore[arg-type]  # test seam
@@ -97,10 +97,13 @@ async def test_no_recovery_logged_when_prime_true_then_probe_false() -> None:
     assert result is False
     recovery_events = [e for e in cap_logs if e["event"] == "ollama_reachable_recovered"]
     assert len(recovery_events) == 0
+    degradation_events = [e for e in cap_logs if e["event"] == "ollama_became_unreachable"]
+    assert len(degradation_events) == 1
+    assert degradation_events[0]["log_level"] == "warning"
 
 
 async def test_no_recovery_logged_on_first_call_without_prime() -> None:
-    """Never primed, probe returns False → no recovery event (initial failure)."""
+    """Never primed, probe returns False → no recovery or degradation event."""
     probe = FakeProbe(results=[False])
     cache = ProbeCache(
         probe=probe,  # type: ignore[arg-type]  # test seam
@@ -113,3 +116,5 @@ async def test_no_recovery_logged_on_first_call_without_prime() -> None:
     assert result is False
     recovery_events = [e for e in cap_logs if e["event"] == "ollama_reachable_recovered"]
     assert len(recovery_events) == 0
+    degradation_events = [e for e in cap_logs if e["event"] == "ollama_became_unreachable"]
+    assert len(degradation_events) == 0
