@@ -43,6 +43,9 @@ class ProbeCache:
         self._ttl = ttl_seconds
         self._last_check_time: float = 0.0
         self._last_result: bool = False
+        # Distinguishes "never checked" from "checked and got False".
+        # Guards the recovery-logging condition and the TTL fast-path:
+        # the cache is only considered populated when this is True.
         self._has_previous_result: bool = False
         # asyncio.Lock() is loop-free at construction since Python 3.10;
         # it binds to the running loop on first ``await``. Safe to create
@@ -63,13 +66,13 @@ class ProbeCache:
     async def is_ready(self) -> bool:
         """Return cached probe result, refreshing if the TTL has expired."""
         now = time.monotonic()
-        if self._last_check_time > 0 and (now - self._last_check_time) < self._ttl:
+        if self._has_previous_result and (now - self._last_check_time) < self._ttl:
             return self._last_result
         async with self._lock:
             # Re-check inside the lock: another coroutine may have refreshed
             # the cache while we were waiting for the lock.
             now = time.monotonic()
-            if self._last_check_time > 0 and (now - self._last_check_time) < self._ttl:
+            if self._has_previous_result and (now - self._last_check_time) < self._ttl:
                 return self._last_result
             previous = self._last_result
             had_previous = self._has_previous_result

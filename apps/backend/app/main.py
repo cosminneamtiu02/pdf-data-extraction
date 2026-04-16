@@ -32,15 +32,22 @@ _logger = structlog.get_logger(__name__)
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncGenerator[None]:
     # --- Startup: build probe + cache eagerly, prime with initial result ---
+    # Respect a pre-existing probe on app.state (test seam: integration tests
+    # pre-populate it with a FakeProbe for deterministic probe behaviour
+    # without relying on host network state).  In production app.state has no
+    # probe at this point, so the real one is always constructed here.
     settings: Settings = app.state.settings
 
-    probe = OllamaHealthProbe(
+    probe: OllamaHealthProbe = getattr(app.state, "ollama_health_probe", None) or OllamaHealthProbe(  # type: ignore[assignment]  # test seam allows FakeProbe
         tags_url=build_tags_url(settings.ollama_base_url),
         timeout_seconds=settings.ollama_probe_timeout_seconds,
     )
     app.state.ollama_health_probe = probe
 
-    cache = ProbeCache(probe=probe, ttl_seconds=settings.ollama_probe_ttl_seconds)
+    cache: ProbeCache = getattr(app.state, "probe_cache", None) or ProbeCache(
+        probe=probe,
+        ttl_seconds=settings.ollama_probe_ttl_seconds,
+    )
     app.state.probe_cache = cache
 
     reachable = await probe.check()

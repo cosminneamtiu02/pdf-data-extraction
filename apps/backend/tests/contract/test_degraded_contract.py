@@ -2,8 +2,11 @@
 
 Verify that /health and /ready responses conform to their OpenAPI schemas
 when the app boots in degraded mode (Ollama unreachable at startup).
-TestClient invokes the lifespan, which fires the startup probe — with no
-real Ollama, the probe fails and the app enters degraded mode naturally.
+
+Probe determinism: tests pre-populate ``app.state.ollama_health_probe``
+with a ``FakeProbe`` so the startup probe fails deterministically without
+depending on host network state.  ``TestClient`` invokes the lifespan,
+which respects the pre-existing probe.
 """
 
 from __future__ import annotations
@@ -16,6 +19,7 @@ from starlette.testclient import TestClient
 
 from app.core.config import Settings
 from app.main import create_app
+from tests.conftest import FakeProbe
 
 
 def _write_valid_skill(base: Path) -> None:
@@ -42,10 +46,9 @@ def test_degraded_ready_503_conforms_to_openapi_schema(tmp_path: Path) -> None:
         Settings(  # type: ignore[reportCallIssue]
             skills_dir=tmp_path,
             app_env="development",
-            ollama_base_url="http://127.0.0.1:1",
-            ollama_probe_timeout_seconds=0.5,
         ),
     )
+    app.state.ollama_health_probe = FakeProbe(results=[False])
 
     with TestClient(app, raise_server_exceptions=False) as client:
         # Fetch the OpenAPI spec to extract the 503 schema
@@ -88,10 +91,9 @@ def test_degraded_health_200_conforms_to_openapi_schema(tmp_path: Path) -> None:
         Settings(  # type: ignore[reportCallIssue]
             skills_dir=tmp_path,
             app_env="development",
-            ollama_base_url="http://127.0.0.1:1",
-            ollama_probe_timeout_seconds=0.5,
         ),
     )
+    app.state.ollama_health_probe = FakeProbe(results=[False])
 
     with TestClient(app, raise_server_exceptions=False) as client:
         response = client.get("/health")
