@@ -14,7 +14,18 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         start = time.perf_counter()
-        response = await call_next(request)
+        try:
+            response = await call_next(request)
+        except Exception:
+            duration_ms = (time.perf_counter() - start) * 1000
+            _logger.info(
+                "http_request",
+                method=request.method,
+                path=request.url.path,
+                status_code=500,
+                duration_ms=round(duration_ms, 2),
+            )
+            raise
         duration_ms = (time.perf_counter() - start) * 1000
 
         _logger.info(
