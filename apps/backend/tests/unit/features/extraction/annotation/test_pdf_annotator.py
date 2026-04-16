@@ -376,9 +376,9 @@ async def test_annotate_does_not_block_event_loop_during_pymupdf_work(
 
     A 1-page blank PDF annotates in microseconds, too fast for the ticker to
     advance even with correct offloading. We wrap ``pymupdf.open`` with a
-    synthetic 200ms ``time.sleep`` so the worker thread holds the GIL long
-    enough for the event loop to schedule the ticker. If ``annotate`` were
-    still running on the event loop thread, the sleep would block the ticker
+    synthetic 200ms ``time.sleep`` so ``annotate`` takes long enough that the
+    ticker should advance if the work is offloaded. If ``annotate`` were
+    still running on the event loop thread, that sleep would block the ticker
     completely and ``ticks`` would stay at 0.
     """
     import time
@@ -409,10 +409,12 @@ async def test_annotate_does_not_block_event_loop_during_pymupdf_work(
             ticks += 1
 
     ticker_task = asyncio.create_task(_ticker())
-    await annotator.annotate(pdf_bytes, fields)
-    ticker_task.cancel()
-    with _suppress_cancelled():
-        await ticker_task
+    try:
+        await annotator.annotate(pdf_bytes, fields)
+    finally:
+        ticker_task.cancel()
+        with _suppress_cancelled():
+            await ticker_task
 
     # 200ms of blocking work offloaded to a thread should leave room for the
     # ticker to fire at least ~10 times. We assert 5 as a generous floor to
