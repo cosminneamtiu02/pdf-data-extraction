@@ -110,6 +110,11 @@ def test_openapi_contains_extract_endpoint(tmp_path: Path) -> None:
     if "enum" in output_mode_schema:
         assert set(output_mode_schema["enum"]) == {"JSON_ONLY", "PDF_ONLY", "BOTH"}
 
+    # Verify error responses are declared in the OpenAPI spec
+    responses = post_op.get("responses", {})
+    assert "413" in responses, "PDF_TOO_LARGE (413) missing from OpenAPI responses"
+    assert "504" in responses, "INTELLIGENCE_TIMEOUT (504) missing from OpenAPI responses"
+
 
 async def test_pdf_too_large_envelope_matches_contract(tmp_path: Path) -> None:
     """413 response for PDF_TOO_LARGE matches ErrorResponse schema shape."""

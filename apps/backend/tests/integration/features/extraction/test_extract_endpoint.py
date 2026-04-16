@@ -320,14 +320,7 @@ async def test_skill_version_latest_passes_through(tmp_path: Path) -> None:
 
 
 async def test_skill_version_zero_returns_422(tmp_path: Path) -> None:
-    """skill_version=0 is invalid per the regex and returns 422.
-
-    NOTE: This validation happens if ExtractRequest validation is applied.
-    The router uses raw Form() fields without ExtractRequest validation,
-    so skill_version=0 will pass through to the service.  The service
-    (SkillManifest.lookup) will reject it with SkillNotFoundError (404).
-    We test the router passes it through.
-    """
+    """skill_version=0 is rejected at the form-field boundary with 422."""
     stub = _stub_service()
     app = _build_app(tmp_path, stub)
     transport = ASGITransport(app=app)
@@ -342,6 +335,4 @@ async def test_skill_version_zero_returns_422(tmp_path: Path) -> None:
             files={"pdf": ("test.pdf", b"%PDF-1.4", "application/pdf")},
         )
 
-    # The router doesn't validate skill_version format — it passes through
-    # to the service. The stub service returns 200.
-    assert response.status_code == 200
+    assert response.status_code == 422

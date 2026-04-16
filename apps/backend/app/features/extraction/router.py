@@ -2,9 +2,15 @@
 
 This module is the thin HTTP shell at the top of the extraction feature's
 vertical slice.  It parses the multipart form, enforces the byte-size guard
-before any work is allocated, delegates to ``ExtractionService.extract``,
-and serializes the result into the right HTTP response shape per
-``output_mode``.  There is no business logic here.
+before the expensive PDF-parsing pipeline (Docling, LLM, annotation) is
+allocated, delegates to ``ExtractionService.extract``, and serializes the
+result into the right HTTP response shape per ``output_mode``.  There is no
+business logic here.
+
+Note: the byte-size guard runs *after* Starlette has parsed the multipart
+form and spooled the upload to a temp file.  It does not reject at the
+HTTP framing level.  What it prevents is the downstream Docling +
+extraction pipeline from being invoked on an oversized document.
 
 The multipart/mixed builder (~15 lines) is inlined because it has exactly
 one consumer.  ``read_with_byte_limit`` is a public async helper (tested
@@ -26,8 +32,10 @@ from app.core.config import (
     Settings,  # noqa: TC001  # runtime: FastAPI resolves Annotated[..., Depends()]
 )
 from app.exceptions import InternalError, PdfTooLargeError
+from app.features.extraction.schemas.extract_request import SKILL_VERSION_PATTERN
 from app.features.extraction.schemas.output_mode import OutputMode
 from app.features.extraction.service import ExtractionService  # noqa: TC001  # runtime: FastAPI DI
+from app.schemas.error_response import ErrorResponse
 
 if TYPE_CHECKING:
     from app.features.extraction.extraction_result import ExtractionResult
@@ -120,11 +128,24 @@ def _serialize_result(result: ExtractionResult, output_mode: OutputMode) -> Resp
 # ---------------------------------------------------------------------------
 
 
-@router.post("/extract")
+@router.post(
+    "/extract",
+    responses={
+        200: {
+            "description": (
+                "Extraction succeeded. Content-Type depends on output_mode: "
+                "application/json (JSON_ONLY), application/pdf (PDF_ONLY), "
+                "or multipart/mixed (BOTH)."
+            ),
+        },
+        413: {"description": "PDF exceeds max_pdf_bytes", "model": ErrorResponse},
+        504: {"description": "Extraction pipeline timed out", "model": ErrorResponse},
+    },
+)
 async def extract(  # noqa: PLR0913  # FastAPI DI handler — each param is an injected dependency
     pdf: Annotated[UploadFile, File()],
     skill_name: Annotated[str, Form()],
-    skill_version: Annotated[str, Form()],
+    skill_version: Annotated[str, Form(pattern=SKILL_VERSION_PATTERN)],
     output_mode: Annotated[OutputMode, Form()],
     settings: Annotated[Settings, Depends(get_settings)],
     service: Annotated[ExtractionService, Depends(get_extraction_service)],
