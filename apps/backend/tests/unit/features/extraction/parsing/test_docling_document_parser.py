@@ -346,6 +346,55 @@ async def test_parse_does_not_block_event_loop_during_synchronous_convert() -> N
     assert ticks >= 5
 
 
+@pytest.mark.asyncio
+async def test_parse_does_not_block_event_loop_during_converter_factory() -> None:
+    """The converter factory (lazy Docling import + pipeline construction) is
+    CPU-bound on cold start. It must be offloaded to a worker thread alongside
+    the convert call so the event loop stays responsive.
+
+    This test isolates the factory path: the factory sleeps for 200ms (simulating
+    a heavy cold-start import), while convert() itself is instant. If the factory
+    runs on the event loop thread, the ticker cannot advance.
+    """
+
+    class _InstantConverter:
+        def __init__(self, document: _FakeDoclingDocument, *, config: DoclingConfig) -> None:
+            self.document = document
+            self.config = config
+
+        def convert(self, _pdf_bytes: bytes) -> _FakeDoclingDocument:
+            return self.document
+
+    def slow_factory(config: DoclingConfig) -> _InstantConverter:
+        time.sleep(0.2)  # simulates heavy lazy-import + pipeline construction
+        return _InstantConverter(_two_page_document(), config=config)
+
+    parser = DoclingDocumentParser(converter_factory=slow_factory, pdf_preflight=_noop_preflight)
+
+    ticks = 0
+
+    async def _ticker() -> None:
+        nonlocal ticks
+        while ticks < 500:  # upper guard so the test can never run forever
+            await asyncio.sleep(0.01)
+            ticks += 1
+
+    ticker_task = asyncio.create_task(_ticker())
+    await parser.parse(b"%PDF-fake", DoclingConfig(ocr="auto", table_mode="fast"))
+    ticker_task.cancel()
+    with contextlib_suppress_cancelled():
+        await ticker_task
+
+    # 200ms of blocking factory offloaded to a thread should leave room for
+    # the ticker to fire at least ~10 times. We assert 5 as a generous floor
+    # to avoid flakes on slow CI while still catching a regression that
+    # would run the factory on the event loop (which would leave ticks == 0).
+    assert ticks >= 5, (
+        f"ticker did not advance enough (ticks={ticks}); "
+        "converter factory appears to block the event loop"
+    )
+
+
 def contextlib_suppress_cancelled() -> Any:
     import contextlib
 
