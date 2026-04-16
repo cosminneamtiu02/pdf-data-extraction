@@ -153,7 +153,7 @@ def test_multipart_builder_boundary_appears_exactly_three_times() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_handler_json_only_returns_json_response() -> None:
+def test_handler_json_only_returns_json_response() -> None:
     """JSON_ONLY mode: returns JSONResponse with model_dump content."""
     from fastapi.responses import JSONResponse
 
@@ -167,7 +167,7 @@ async def test_handler_json_only_returns_json_response() -> None:
     assert response.media_type == "application/json"
 
 
-async def test_handler_pdf_only_returns_pdf_response() -> None:
+def test_handler_pdf_only_returns_pdf_response() -> None:
     """PDF_ONLY mode: returns Response with application/pdf media type."""
     from fastapi import Response
 
@@ -183,7 +183,19 @@ async def test_handler_pdf_only_returns_pdf_response() -> None:
     assert response.body == pdf_bytes
 
 
-async def test_handler_both_returns_multipart_mixed_response() -> None:
+def test_handler_pdf_only_raises_internal_error_when_bytes_none() -> None:
+    """PDF_ONLY mode raises InternalError when annotated_pdf_bytes is None."""
+    from app.exceptions import InternalError
+    from app.features.extraction.router import _serialize_result
+    from app.features.extraction.schemas.output_mode import OutputMode
+
+    result = _make_extraction_result(annotated_pdf_bytes=None)
+
+    with pytest.raises(InternalError):
+        _serialize_result(result, OutputMode.PDF_ONLY)
+
+
+def test_handler_both_returns_multipart_mixed_response() -> None:
     """BOTH mode: returns Response with multipart/mixed media type."""
     from fastapi import Response
 
@@ -197,3 +209,15 @@ async def test_handler_both_returns_multipart_mixed_response() -> None:
     assert isinstance(response, Response)
     assert response.media_type is not None
     assert response.media_type.startswith('multipart/mixed; boundary="')
+
+
+def test_handler_both_raises_internal_error_when_bytes_none() -> None:
+    """BOTH mode raises InternalError when annotated_pdf_bytes is None."""
+    from app.exceptions import InternalError
+    from app.features.extraction.router import _serialize_result
+    from app.features.extraction.schemas.output_mode import OutputMode
+
+    result = _make_extraction_result(annotated_pdf_bytes=None)
+
+    with pytest.raises(InternalError):
+        _serialize_result(result, OutputMode.BOTH)

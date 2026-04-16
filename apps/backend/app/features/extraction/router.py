@@ -7,9 +7,10 @@ and serializes the result into the right HTTP response shape per
 ``output_mode``.  There is no business logic here.
 
 The multipart/mixed builder (~15 lines) is inlined because it has exactly
-one consumer.  ``read_with_byte_limit`` is a private async helper that reads
-the upload in 1 MB chunks and aborts early on the first chunk that pushes
-the total over ``Settings.max_pdf_bytes``.
+one consumer.  ``read_with_byte_limit`` is a public async helper (tested
+directly by unit tests) that reads the upload in 1 MB chunks and aborts
+early on the first chunk that pushes the total over
+``Settings.max_pdf_bytes``.
 """
 
 from __future__ import annotations
@@ -101,13 +102,14 @@ def _serialize_result(result: ExtractionResult, output_mode: OutputMode) -> Resp
 
     if output_mode == OutputMode.PDF_ONLY:
         if result.annotated_pdf_bytes is None:
-            raise InternalError
+            raise InternalError()  # noqa: RSE102  # explicit instantiation for consistency
         return Response(content=result.annotated_pdf_bytes, media_type="application/pdf")
 
     if output_mode == OutputMode.BOTH:
+        if result.annotated_pdf_bytes is None:
+            raise InternalError()  # noqa: RSE102
         json_bytes = result.response.model_dump_json().encode()
-        pdf_bytes = result.annotated_pdf_bytes or b""
-        body, boundary = build_multipart_mixed(json_bytes, pdf_bytes)
+        body, boundary = build_multipart_mixed(json_bytes, result.annotated_pdf_bytes)
         return Response(content=body, media_type=f'multipart/mixed; boundary="{boundary}"')
 
     assert_never(output_mode)

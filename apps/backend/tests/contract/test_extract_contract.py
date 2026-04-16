@@ -171,12 +171,8 @@ async def test_intelligence_timeout_envelope_matches_contract(tmp_path: Path) ->
     assert "request_id" in error
 
 
-async def test_schemathesis_extract_endpoint_conformance(tmp_path: Path) -> None:
-    """Schemathesis validates that stubbed responses conform to the OpenAPI spec.
-
-    This is a lightweight conformance check: we verify the 200 response
-    from a valid request against the declared schema.
-    """
+async def test_extract_response_shape_conforms_to_schema(tmp_path: Path) -> None:
+    """Verify the 200 response from a valid request matches ExtractResponse shape."""
     stub = AsyncMock(spec=ExtractionService)
     stub.extract.return_value = _make_canned_result()
 
