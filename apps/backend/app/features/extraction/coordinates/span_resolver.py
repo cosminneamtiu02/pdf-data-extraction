@@ -27,7 +27,7 @@ class SpanResolver:
     here: extractions that the LLM never produced are synthesized as failed
     placeholders so the response shape is deterministic.
 
-    Five cases are handled uniformly:
+    Six cases are handled uniformly:
 
     1. `value is None`                 → status=failed, grounded=False.
     2. `grounded is False`              → status=extracted, source=inferred,
@@ -124,11 +124,16 @@ class SpanResolver:
                 bbox_refs=[],
             )
 
-        start_block_id, _ = start_lookup
-        end_block_id, _ = end_lookup
+        start_block_id, local_start = start_lookup
+        end_block_id, local_end_inclusive = end_lookup
 
         if start_block_id == end_block_id:
-            bbox_refs = [self._resolve_single_block(raw, blocks_by_id[start_block_id])]
+            local_end = local_end_inclusive + 1
+            bbox_refs = [
+                self._resolve_single_block(
+                    raw, blocks_by_id[start_block_id], local_start, local_end
+                )
+            ]
         else:
             bbox_refs = _collect_multi_block_bboxes(
                 start_block_id=start_block_id,
@@ -150,18 +155,30 @@ class SpanResolver:
         self,
         raw: RawExtraction,
         block: TextBlock,
+        local_start: int,
+        local_end: int,
     ) -> BoundingBoxRef:
-        # `raw.value is None` was filtered in `_resolve_one`; the matcher
-        # contract requires a str, so coerce whatever scalar the LLM produced.
-        match = self._matcher.locate(block.text, str(raw.value))
-        if match is None:
-            _logger.info(
-                "span_resolver_matcher_failed",
-                field_name=raw.field_name,
-                reason="matcher_failed",
-            )
-            return _whole_block_bbox(block)
-        return _tight_sub_block_bbox(block, match)
+        value_str = str(raw.value)
+
+        # Prefer the offset-reported range when it directly matches the
+        # value in the block text. This handles repeated values correctly
+        # (e.g. "A=42 B=42" where the offsets point to the second "42").
+        if block.text[local_start:local_end] == value_str:
+            return _tight_sub_block_bbox(block, CharRange(start=local_start, end=local_end))
+
+        # Offset drift (whitespace/Unicode normalization differences between
+        # the concatenated text and the block's own text): fall back to the
+        # three-step SubBlockMatcher which tolerates these.
+        match = self._matcher.locate(block.text, value_str)
+        if match is not None:
+            return _tight_sub_block_bbox(block, match)
+
+        _logger.info(
+            "span_resolver_matcher_failed",
+            field_name=raw.field_name,
+            reason="matcher_failed",
+        )
+        return _whole_block_bbox(block)
 
 
 def _synthesize_missing(name: str) -> ExtractedField:
@@ -188,9 +205,6 @@ def _whole_block_bbox(block: TextBlock) -> BoundingBoxRef:
 def _tight_sub_block_bbox(block: TextBlock, match: CharRange) -> BoundingBoxRef:
     text_length = len(block.text)
     if text_length == 0:
-        # Empty block text would produce a division by zero; degenerate but
-        # legal at the type level, so fall back to the whole block to keep
-        # the caller's invariants satisfied without raising.
         return _whole_block_bbox(block)
     width = block.bbox.x1 - block.bbox.x0
     ratio_start = match.start / text_length
@@ -216,7 +230,7 @@ def _collect_multi_block_bboxes(
     for entry in offset_index.entries:
         if entry.block_id == start_block_id:
             in_span = True
-        if in_span:
+        if in_span and entry.start < entry.end:
             refs.append(_whole_block_bbox(blocks_by_id[entry.block_id]))
         if entry.block_id == end_block_id:
             break

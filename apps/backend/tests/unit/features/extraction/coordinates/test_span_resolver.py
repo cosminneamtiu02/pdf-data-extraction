@@ -589,6 +589,84 @@ def test_sub_block_bbox_preserves_full_block_vertical_extent() -> None:
     assert ref.y1 == 70.0
 
 
+def test_repeated_value_in_block_uses_offset_reported_occurrence() -> None:
+    # "A=42 B=42" — LangExtract reports offsets for the second "42" (positions
+    # 7..9 in the block). SubBlockMatcher.locate would return the FIRST "42"
+    # at positions 2..4. The resolver must use the offset-based range to
+    # highlight the correct (second) occurrence.
+    resolver = SpanResolver()
+    block = _block(block_id="b0", text="A=42 B=42", bbox=(0, 0, 100, 20))
+    doc = _doc(block)
+    index = _index((0, 9, "b0"))
+    raw = RawExtraction(
+        field_name="amount",
+        value="42",
+        char_offset_start=7,
+        char_offset_end=9,
+        grounded=True,
+        attempts=1,
+    )
+
+    result = resolver.resolve([raw], index, doc, ["amount"])
+
+    ref = result[0].bbox_refs[0]
+    # The second "42" occupies chars 7..9 out of 9 chars total, so the
+    # horizontal bbox should span ratio 7/9..9/9 of the block width 100.
+    assert math.isclose(ref.x0, 7 / 9 * 100.0)
+    assert math.isclose(ref.x1, 100.0)
+
+
+def test_repeated_value_first_occurrence_uses_offset_reported_range() -> None:
+    # Same block "A=42 B=42" but offsets point to the first "42" (2..4).
+    resolver = SpanResolver()
+    block = _block(block_id="b0", text="A=42 B=42", bbox=(0, 0, 90, 20))
+    doc = _doc(block)
+    index = _index((0, 9, "b0"))
+    raw = RawExtraction(
+        field_name="amount",
+        value="42",
+        char_offset_start=2,
+        char_offset_end=4,
+        grounded=True,
+        attempts=1,
+    )
+
+    result = resolver.resolve([raw], index, doc, ["amount"])
+
+    ref = result[0].bbox_refs[0]
+    # First "42": chars 2..4, ratio 2/9..4/9 of width 90.
+    assert math.isclose(ref.x0, 2 / 9 * 90.0)
+    assert math.isclose(ref.x1, 4 / 9 * 90.0)
+
+
+def test_multi_block_span_skips_zero_width_empty_blocks() -> None:
+    # If an empty block (zero-width index entry) sits between two real blocks,
+    # the resolver must not emit a bbox for it since no character belongs to
+    # that entry.
+    resolver = SpanResolver()
+    b0 = _block(block_id="b0", text="alpha", bbox=(0, 0, 50, 10))
+    b_empty = _block(block_id="b_empty", text="", bbox=(0, 15, 50, 15))
+    b1 = _block(block_id="b1", text="beta", bbox=(0, 20, 50, 30))
+    doc = _doc(b0, b_empty, b1)
+    # b_empty gets a zero-width entry at offset 7.
+    index = _index((0, 5, "b0"), (7, 7, "b_empty"), (9, 13, "b1"))
+    raw = RawExtraction(
+        field_name="x",
+        value="alpha\n\n\n\nbeta",
+        char_offset_start=2,
+        char_offset_end=11,
+        grounded=True,
+        attempts=1,
+    )
+
+    result = resolver.resolve([raw], index, doc, ["x"])
+
+    refs = result[0].bbox_refs
+    assert len(refs) == 2
+    assert refs[0].y0 == 0.0
+    assert refs[1].y0 == 20.0
+
+
 def test_happy_path_emits_no_span_resolver_logs() -> None:
     resolver = SpanResolver()
     block = _block(block_id="b0", text="Total: $1,847.50 due", bbox=(0, 0, 200, 20))
