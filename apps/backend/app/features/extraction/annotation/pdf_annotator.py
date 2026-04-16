@@ -15,6 +15,7 @@ render flipped vertically (e.g., a region 10 px from the bottom would appear
 `y_mupdf = page_height - y_pdf` before constructing the `pymupdf.Rect`.
 """
 
+import asyncio
 from typing import Any, cast
 
 import pymupdf
@@ -38,6 +39,21 @@ class PdfAnnotator:
         pdf_bytes: bytes,
         fields: list[ExtractedField],
     ) -> bytes:
+        """Annotate a PDF with highlights at each field's bounding boxes.
+
+        PyMuPDF operations are synchronous C calls that block the calling
+        thread. ``_annotate_sync`` is offloaded via ``asyncio.to_thread`` so
+        the FastAPI event loop stays responsive for concurrent requests,
+        mirroring the pattern used by ``DoclingDocumentParser.parse``.
+        """
+        return await asyncio.to_thread(self._annotate_sync, pdf_bytes, fields)
+
+    @staticmethod
+    def _annotate_sync(
+        pdf_bytes: bytes,
+        fields: list[ExtractedField],
+    ) -> bytes:
+        """Perform all blocking PyMuPDF work on a worker thread."""
         with pymupdf.open(stream=pdf_bytes, filetype="pdf") as doc:
             doc_any = cast("Any", doc)
             for field in fields:
