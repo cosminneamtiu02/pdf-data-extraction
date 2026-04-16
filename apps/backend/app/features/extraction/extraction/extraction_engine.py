@@ -130,7 +130,7 @@ class ExtractionEngine:
         "every declared field always present" invariant (CLAUDE.md:104)
         holds on the empty-text path too.
         """
-        declared_fields = _declared_field_names(skill)
+        declared_fields = declared_field_names(skill)
         if not declared_fields:
             # No declared fields means no API contract to honor — short-
             # circuit rather than inviting hallucinations through. A skill
@@ -302,7 +302,7 @@ def _sanitize_char_interval(
     return start, end
 
 
-def _declared_field_names(skill: Skill) -> tuple[str, ...]:
+def declared_field_names(skill: Skill) -> tuple[str, ...]:
     """Names of fields declared in the skill's JSONSchema `properties`.
 
     Returns an empty tuple if the skill schema has no `properties` block —

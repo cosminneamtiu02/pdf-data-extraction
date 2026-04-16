@@ -183,10 +183,10 @@ async def test_extraction_service_happy_path_through_fastapi_stack(
 
     async def _extract() -> dict[str, Any]:
         result = await service.extract(
-            pdf_bytes=b"%PDF-test",
-            skill_name="invoice",
-            skill_version="1",
-            output_mode=OutputMode.JSON_ONLY,
+            b"%PDF-test",
+            "invoice",
+            "1",
+            OutputMode.JSON_ONLY,
         )
         return result.response.model_dump()
 
@@ -215,10 +215,10 @@ async def test_extraction_service_timeout_serializes_as_504_envelope(
 
     async def _extract() -> None:
         await service.extract(
-            pdf_bytes=b"%PDF-test",
-            skill_name="invoice",
-            skill_version="1",
-            output_mode=OutputMode.JSON_ONLY,
+            b"%PDF-test",
+            "invoice",
+            "1",
+            OutputMode.JSON_ONLY,
         )
 
     app.add_api_route("/_test/extract-timeout", _extract, methods=["GET"])
@@ -248,10 +248,10 @@ async def test_extraction_service_all_failed_serializes_as_502_envelope(
 
     async def _extract() -> None:
         await service.extract(
-            pdf_bytes=b"%PDF-test",
-            skill_name="invoice",
-            skill_version="1",
-            output_mode=OutputMode.JSON_ONLY,
+            b"%PDF-test",
+            "invoice",
+            "1",
+            OutputMode.JSON_ONLY,
         )
 
     app.add_api_route("/_test/extract-all-failed", _extract, methods=["GET"])
@@ -276,10 +276,10 @@ async def test_extraction_service_skill_not_found_serializes_as_404_envelope(
 
     async def _extract() -> None:
         await service.extract(
-            pdf_bytes=b"%PDF-test",
-            skill_name="nonexistent",
-            skill_version="1",
-            output_mode=OutputMode.JSON_ONLY,
+            b"%PDF-test",
+            "nonexistent",
+            "1",
+            OutputMode.JSON_ONLY,
         )
 
     app.add_api_route("/_test/extract-not-found", _extract, methods=["GET"])

@@ -7,16 +7,25 @@ under a single ``asyncio.timeout`` budget.
 This is the only class that knows how the pipeline is composed.
 Every component below it is independently testable; the service
 is what makes them a pipeline.
+
+**Best-effort timeout.** ``asyncio.timeout`` cancels cooperative awaits
+but cannot stop CPU work already running in background threads (e.g.
+``DoclingDocumentParser.parse`` and ``ExtractionEngine.extract`` both
+use ``asyncio.to_thread``). A timed-out request returns 504 while
+the thread may still be finishing. This is acceptable for v1 because
+the service runs ``workers=1`` and consecutive requests queue behind
+the current one anyway; the orphaned thread completes and its result
+is discarded.
 """
 
 from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING
 
 from app.exceptions import IntelligenceTimeoutError, StructuredOutputFailedError
+from app.features.extraction.extraction.extraction_engine import declared_field_names
 from app.features.extraction.extraction_result import ExtractionResult
 from app.features.extraction.parsing.docling_config_merger import merge_docling_config
 from app.features.extraction.schemas.extract_response import ExtractResponse
@@ -64,7 +73,6 @@ class ExtractionService:
 
     async def extract(
         self,
-        *,
         pdf_bytes: bytes,
         skill_name: str,
         skill_version: str,
@@ -74,7 +82,8 @@ class ExtractionService:
 
         Raises:
             IntelligenceTimeoutError: pipeline exceeded the timeout budget.
-            StructuredOutputFailedError: every declared field failed extraction.
+            StructuredOutputFailedError: every declared field failed extraction,
+                or the skill declared zero fields.
             SkillNotFoundError: requested skill is not in the manifest.
             Other DomainError subclasses: propagated from downstream components.
         """
@@ -91,7 +100,9 @@ class ExtractionService:
                 parsed_doc = await self._document_parser.parse(pdf_bytes, merged_config)
 
                 # 4. Concatenate text
-                concatenated_text, offset_index = self._text_concatenator.concatenate(parsed_doc)
+                concatenated_text, offset_index = self._text_concatenator.concatenate(
+                    parsed_doc,
+                )
 
                 # 5. Extract via LLM
                 raw_extractions = await self._extraction_engine.extract(
@@ -101,23 +112,18 @@ class ExtractionService:
                 )
 
                 # 6. Resolve spans (unconditional for all output modes)
-                properties = skill.output_schema.get("properties")
-                declared_fields = (
-                    list(cast("Mapping[str, Any]", properties).keys())
-                    if isinstance(properties, Mapping)
-                    else []
-                )
+                fields = list(declared_field_names(skill))
                 extracted_fields = self._span_resolver.resolve(
                     raw_extractions,
                     offset_index,
                     parsed_doc,
-                    declared_fields,
+                    fields,
                 )
 
-                # 7. All-failed check (before annotation to avoid wasted I/O)
-                if extracted_fields and all(
-                    f.status == FieldStatus.failed for f in extracted_fields
-                ):
+                # 7. All-failed check (before annotation to avoid wasted I/O).
+                #    Empty extracted_fields (zero declared fields) is also total
+                #    failure — the spec says "zero extracted fields → 502".
+                if not any(f.status == FieldStatus.extracted for f in extracted_fields):
                     raise StructuredOutputFailedError
 
                 # 8. Annotate (conditional)
@@ -134,9 +140,7 @@ class ExtractionService:
                 metadata = ExtractionMetadata(
                     page_count=parsed_doc.page_count,
                     duration_ms=elapsed_ms,
-                    attempts_per_field={
-                        name: attempts_by_name.get(name, 1) for name in declared_fields
-                    },
+                    attempts_per_field={name: attempts_by_name.get(name, 1) for name in fields},
                 )
                 response = ExtractResponse(
                     skill_name=skill_name,
