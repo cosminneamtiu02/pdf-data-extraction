@@ -1,5 +1,7 @@
 """Unit tests for the structlog configuration in app.core.logging."""
 
+import logging
+
 import structlog
 
 from app.core.log_redaction_filter import LogRedactionFilter
@@ -31,3 +33,15 @@ def test_redaction_filter_runs_after_merge_contextvars() -> None:
     )
     redact_idx = next(i for i, p in enumerate(processors) if isinstance(p, LogRedactionFilter))
     assert merge_idx < redact_idx
+
+
+def test_configure_logging_suppresses_httpx_to_warning() -> None:
+    """httpx emits INFO-level request logs that add noise; must be suppressed."""
+    configure_logging(log_level="info", json_output=False)
+    assert logging.getLogger("httpx").level == logging.WARNING
+
+
+def test_configure_logging_suppresses_httpcore_to_warning() -> None:
+    """httpcore is the transport layer under httpx; same suppression needed."""
+    configure_logging(log_level="info", json_output=False)
+    assert logging.getLogger("httpcore").level == logging.WARNING
