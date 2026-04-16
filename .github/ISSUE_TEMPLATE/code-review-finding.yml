@@ -1,0 +1,99 @@
+name: Code review finding
+description: Report a bug, defect, or correctness gap discovered while reading the code, reviewing a PR, or running targeted manual tests. Not for end-user symptom reports.
+title: "[Finding] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for issues found by reading or reviewing the code, not for user-observed symptoms. Each finding should be a single, scoped bug — open a separate issue per finding even if you discovered them in the same review pass.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One sentence describing the finding.
+      placeholder: e.g. OllamaGemmaProvider.infer() creates a fresh event loop per call, breaking AsyncClient reuse on the second call.
+    validations:
+      required: true
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      description: Impact when the bug fires. Severity is about how bad it is, not how urgent — see Priority for urgency.
+      options:
+        - "Critical — broken feature, data loss, or security issue"
+        - "High — correctness gap that fires under realistic conditions"
+        - "Medium — degraded correctness, defensive gap, or partial guarantee"
+        - "Low — convention leak, robustness concern, minor polish"
+    validations:
+      required: true
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      description: Urgency. Distinct from severity — a low-severity bug blocking a release can still be high-priority. Leave blank if triage will set it later.
+      options:
+        - "P0 — drop everything"
+        - "P1 — current iteration"
+        - "P2 — next iteration"
+        - "P3 — backlog"
+    validations:
+      required: false
+  - type: textarea
+    id: location
+    attributes:
+      label: Location
+      description: File and line references. Use `path/to/file.py:LINE` format, one per line. Permalinks to the commit SHA are even better.
+      placeholder: |
+        apps/backend/app/features/extraction/intelligence/ollama_gemma_provider.py:219
+        apps/backend/app/features/extraction/intelligence/ollama_gemma_provider.py:122
+    validations:
+      required: true
+  - type: textarea
+    id: current-behavior
+    attributes:
+      label: Current behavior
+      description: What the code does today, anchored to the locations above.
+    validations:
+      required: true
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: Expected behavior
+      description: What the code should do, and why. If the right fix is a docs/contract change rather than a code change, say so here so triage can decide.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction or evidence
+      description: How you reproduced or verified the finding. Concrete steps, test output, or logs are far more useful than "I think this happens".
+      placeholder: |
+        1. Start a local keep-alive HTTP stub on :8080
+        2. provider = OllamaGemmaProvider(...)
+        3. provider.infer(["p1"]) — succeeds
+        4. provider.infer(["p2"]) — RuntimeError: Event loop is closed
+    validations:
+      required: true
+  - type: textarea
+    id: suggested-fix
+    attributes:
+      label: Suggested fix
+      description: Optional. Proposed approach. Keep it separate from the diagnosis so triage can accept the diagnosis without committing to your specific fix.
+    validations:
+      required: false
+  - type: textarea
+    id: scope-note
+    attributes:
+      label: Scope or ownership note
+      description: Optional. Anything reviewers should know about scope or ownership — e.g. "technically lives in feature X's adapter but affects this provider class because it is registered as the LangExtract provider".
+    validations:
+      required: false
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: Optional. Related issues, related PRs, links, or anything else that helps reviewers.
+    validations:
+      required: false
