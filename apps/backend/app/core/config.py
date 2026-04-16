@@ -44,3 +44,6 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://host.docker.internal:11434"
     ollama_model: str = "gemma4:e2b"
     ollama_timeout_seconds: Annotated[float, Field(gt=0)] = 30.0
+
+    # Extraction pipeline (PDFX-E006-F002)
+    extraction_timeout_seconds: Annotated[float, Field(gt=0)] = 180.0

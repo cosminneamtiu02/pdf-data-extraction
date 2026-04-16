@@ -33,6 +33,6 @@ ERROR_CLASSES: dict[str, type[DomainError]] = {
     "PDF_NO_TEXT_EXTRACTABLE": PdfNoTextExtractableError,
     "INTELLIGENCE_UNAVAILABLE": IntelligenceUnavailableError,
     "STRUCTURED_OUTPUT_FAILED": StructuredOutputFailedError,
-    "PDF_TOO_LARGE": PdfTooLargeError,
     "INTELLIGENCE_TIMEOUT": IntelligenceTimeoutError,
+    "PDF_TOO_LARGE": PdfTooLargeError,
 }
