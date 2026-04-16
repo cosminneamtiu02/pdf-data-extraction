@@ -11,13 +11,12 @@ from app.features.extraction.schemas.field_status import FieldStatus
 class ExtractedField(BaseModel):
     """One field of a skill's declared output as produced by the pipeline.
 
-    ``value`` is always ``str | None`` at runtime. LangExtract's
-    ``Extraction.extraction_text`` is the sole data source, so the value is
-    always the document text that the LLM identified for this field —
-    regardless of what the skill's ``output_schema`` declares as the field's
-    semantic type. The ``Any`` annotation is kept for forward compatibility
-    (a future version may coerce values to their declared schema type), but
-    callers should treat ``value`` as a plain string today.
+    ``value`` is always ``str | None`` at runtime — the raw string returned
+    by LangExtract (``Extraction.extraction_text``), which may be grounded
+    to document text when offsets are present, otherwise inferred. The
+    ``Any`` annotation is kept for forward compatibility (a future version
+    may coerce values to their declared schema type), but callers should
+    treat ``value`` as a plain string today.
     ``None`` indicates a declared field that the pipeline could not extract
     (status will be ``failed``).
 

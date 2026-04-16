@@ -15,10 +15,11 @@ class RawExtraction:
     """One field extracted by LangExtract, translated into feature-owned shape.
 
     `field_name` mirrors the key declared in the skill's `output_schema`.
-    `value` is always ``str | None`` at runtime — it comes from
-    LangExtract's ``Extraction.extraction_text``, which is document text.
-    The ``Any`` annotation is kept for forward compatibility, but callers
-    should treat non-``None`` values as strings.  ``None`` means either:
+    `value` is always ``str | None`` at runtime — the string LangExtract
+    produced (``Extraction.extraction_text``), which may or may not be a
+    verbatim document span. The ``Any`` annotation is kept for forward
+    compatibility, but callers should treat non-``None`` values as strings.
+    ``None`` means either:
       (a) the engine emitted a placeholder for a declared field that
           LangExtract did not return (the "every declared field always
           present" API-stability invariant), or
