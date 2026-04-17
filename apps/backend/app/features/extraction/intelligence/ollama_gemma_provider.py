@@ -136,14 +136,30 @@ class OllamaGemmaProvider(BaseLanguageModel):
         prompt: str,
         output_schema: dict[str, Any],
     ) -> GenerationResult:
-        raw_text = await self._raw_generate(prompt)
+        return await self._validated_generate(prompt, output_schema, client=self.http_client)
+
+    async def _validated_generate(
+        self,
+        prompt: str,
+        schema: dict[str, Any],
+        *,
+        client: httpx.AsyncClient,
+    ) -> GenerationResult:
+        """Shared validate-and-retry path for both ``generate()`` and ``infer()``.
+
+        Calls ``_raw_generate`` on the given *client*, then runs the
+        ``StructuredOutputValidator`` fence-strip + JSON-parse + retry loop
+        against *schema*. Retries also route through the same *client* so
+        connection-pool affinity is preserved within a single event loop.
+        """
+        raw_text = await self._raw_generate(prompt, client=client)
 
         async def _regenerate(correction_prompt: str) -> str:
-            return await self._raw_generate(correction_prompt)
+            return await self._raw_generate(correction_prompt, client=client)
 
         return await self._validator.validate_and_retry(
             raw_text,
-            output_schema,
+            schema,
             _regenerate,
             original_prompt=prompt,
         )
@@ -219,25 +235,20 @@ class OllamaGemmaProvider(BaseLanguageModel):
         #
         # Every prompt in the batch shares the same fresh client — and therefore
         # the same event loop — so connection pooling still works within a
-        # single batch. Each prompt routes through ``self.generate``, which
-        # runs the ``StructuredOutputValidator`` fence-strip + JSON-parse +
-        # retry loop against the LangExtract wrapper schema, so the plugin
-        # entry path enforces the same CLAUDE.md-mandated "no bypass" invariant
-        # as the ``generate()`` path the ``_ValidatingLangExtractAdapter`` in
-        # ``extraction_engine.py`` uses.
+        # single batch. Each prompt routes through ``_validated_generate``,
+        # the shared helper that both ``generate()`` and this batch path use,
+        # running the ``StructuredOutputValidator`` fence-strip + JSON-parse +
+        # retry loop against the LangExtract wrapper schema. This ensures the
+        # plugin entry path enforces the same CLAUDE.md-mandated "no bypass"
+        # invariant as the ``generate()`` path the
+        # ``_ValidatingLangExtractAdapter`` in ``extraction_engine.py`` uses.
         async with httpx.AsyncClient(timeout=self._timeout) as batch_client:
             outputs: list[str] = []
             for prompt in batch_prompts:
-                raw_text = await self._raw_generate(prompt, client=batch_client)
-
-                async def _regenerate(correction_prompt: str) -> str:
-                    return await self._raw_generate(correction_prompt, client=batch_client)
-
-                result = await self._validator.validate_and_retry(
-                    raw_text,
+                result = await self._validated_generate(
+                    prompt,
                     LANGEXTRACT_WRAPPER_SCHEMA,
-                    _regenerate,
-                    original_prompt=prompt,
+                    client=batch_client,
                 )
                 outputs.append(json.dumps(result.data))
             return outputs
