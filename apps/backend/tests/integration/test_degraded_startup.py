@@ -426,3 +426,59 @@ async def test_non_httpx_probe_exception_ready_returns_503_ollama_unreachable(
     body = response.json()
     assert body["status"] == "not_ready"
     assert body["reason"] == "ollama_unreachable"
+
+
+class _PersistentlyExplodingProbe:
+    """Probe stub whose ``check()`` always raises a non-httpx exception.
+
+    Simulates the persistent-failure scenario: the underlying fault (bad
+    config, wrapped-client attribute error, unexpected ``DomainError``)
+    doesn't clear between calls, so every TTL-triggered refresh from the
+    ``ProbeCache`` re-hits the exception path. The ``/ready`` contract
+    must still return 503 ``ollama_unreachable`` — not 500 — for the
+    full process lifetime.
+    """
+
+    def __init__(self, *, error: Exception) -> None:
+        self._error = error
+        self.call_count = 0
+
+    async def check(self) -> bool:
+        self.call_count += 1
+        raise self._error
+
+
+async def test_persistent_probe_exception_keeps_ready_on_503_after_ttl(
+    tmp_path: Path,
+) -> None:
+    """Persistent non-httpx probe failures keep /ready returning 503, not 500.
+
+    Defends the ``ollama_unreachable`` contract beyond the primed-TTL
+    window: once startup is over, the cache's own TTL refresh path must
+    also catch the exception and treat it as cached-``False``, otherwise
+    a persistent bad-config scenario would turn /ready from 503 into 500
+    the moment the TTL ticks over.
+    """
+    _write_valid_skill(tmp_path)
+    app = create_app(_degraded_settings(tmp_path))
+    app.state.ollama_health_probe = _PersistentlyExplodingProbe(
+        error=ValueError("simulated persistent fault"),
+    )
+
+    async with _lifespan(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            # Primed-TTL window: served from cache primed False by lifespan.
+            first = await client.get("/ready")
+            assert first.status_code == 503
+            assert first.json()["reason"] == "ollama_unreachable"
+
+            # TTL expires → ProbeCache refreshes → probe raises again.
+            # Without the mirror guard in is_ready(), this becomes a 500.
+            await asyncio.sleep(0.06)
+            second = await client.get("/ready")
+
+    assert second.status_code == 503
+    second_body = second.json()
+    assert second_body["status"] == "not_ready"
+    assert second_body["reason"] == "ollama_unreachable"

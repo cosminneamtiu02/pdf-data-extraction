@@ -62,11 +62,16 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None]:
     # the probe path, an ``AttributeError`` on a wrapped client) would
     # escape and crash the ASGI boot, causing the container to crash-loop
     # (issue #144). Degrading on startup is always preferable to dying on
-    # startup: ``/health`` stays green, ``/ready`` returns 503 with the
-    # existing ``ollama_unreachable`` contract, and the self-healing TTL
-    # refresh in ``ProbeCache`` recovers once Ollama behaves. ``except
-    # Exception`` is deliberate here — this is one of the rare places where
-    # "catch everything and degrade" is the correct failure mode.
+    # startup: ``/health`` stays green and the cache is primed ``False`` so
+    # the initial readiness state degrades cleanly instead of aborting app
+    # startup. Runtime TTL refreshes are guarded separately inside
+    # ``ProbeCache.is_ready()`` (same broad ``except Exception`` strategy),
+    # which keeps ``/ready`` on the documented 503 ``ollama_unreachable``
+    # contract across the full process lifetime even if the underlying
+    # fault is persistent, and the self-healing TTL refresh recovers once
+    # Ollama behaves. ``except Exception`` is deliberate here — this is
+    # one of the rare places where "catch everything and degrade" is the
+    # correct failure mode.
     try:
         ready = await probe.check()
     except Exception as exc:  # noqa: BLE001 - degrade-don't-crash is the contract
