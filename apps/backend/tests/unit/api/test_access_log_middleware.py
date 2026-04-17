@@ -47,6 +47,10 @@ async def test_access_log_middleware_emits_log_on_unhandled_exception() -> None:
     assert log["status_code"] == 500
     assert isinstance(log["duration_ms"], float)
     assert log["duration_ms"] >= 0
+    # Exception path must surface the exception type so operators can
+    # distinguish failure modes (CancelledError on client disconnect vs.
+    # real bugs) from the access log alone (issue #147).
+    assert log["error"] == "_SentinelError"
 
 
 async def test_access_log_middleware_reraises_original_exception() -> None:
@@ -97,3 +101,7 @@ async def test_access_log_middleware_emits_log_on_success() -> None:
     assert log["status_code"] == 200
     assert isinstance(log["duration_ms"], float)
     assert log["duration_ms"] >= 0
+    # Success path must NOT carry an `error` key — that field is reserved
+    # for the exception path so downstream log processors can filter on
+    # its presence (issue #147).
+    assert "error" not in log
