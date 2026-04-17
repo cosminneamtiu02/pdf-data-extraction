@@ -285,8 +285,11 @@ def test_description_and_docling_populate_when_provided(tmp_path: Path) -> None:
         "version": 1,
         "description": "Invoice header extractor.",
         "prompt": "p",
-        "examples": [{"input": "x", "output": {}}],
-        "output_schema": {"type": "object"},
+        "examples": [{"input": "x", "output": {"a": "1"}}],
+        "output_schema": {
+            "type": "object",
+            "properties": {"a": {"type": "string"}},
+        },
         "docling": {"ocr": "auto", "table_mode": "fast"},
     }
     path = tmp_path / "1.yaml"
@@ -324,8 +327,11 @@ def test_docling_rejects_invalid_values_at_load_time(
         "name": "invoice",
         "version": 1,
         "prompt": "p",
-        "examples": [{"input": "x", "output": {}}],
-        "output_schema": {"type": "object"},
+        "examples": [{"input": "x", "output": {"a": "1"}}],
+        "output_schema": {
+            "type": "object",
+            "properties": {"a": {"type": "string"}},
+        },
         "docling": {field: bad_value},
     }
     path = tmp_path / "1.yaml"
@@ -333,3 +339,106 @@ def test_docling_rejects_invalid_values_at_load_time(
 
     with pytest.raises(ValidationError):
         SkillYamlSchema.load_from_file(path)
+
+
+@pytest.mark.parametrize(
+    "empty_schema",
+    [
+        {},
+        {"type": "object"},
+        {"type": "object", "properties": {}},
+        # Draft 7 allows `type` to be a list of types; when that list contains
+        # "object", the schema still permits object-shaped output and so must
+        # be subject to the same "at least one property" invariant. Without
+        # the list-handling branch this case would silently slip through.
+        {"type": ["object", "null"]},
+        {"type": ["object", "null"], "properties": {}},
+    ],
+)
+def test_output_schema_with_zero_declared_properties_rejected_at_load_time(
+    write_skill_yaml: SkillYamlFactory, empty_schema: dict[str, object]
+) -> None:
+    """Object schemas must declare at least one property at load time.
+
+    A skill whose `output_schema` is a type-`object` schema with no `properties`
+    (or an empty `properties` mapping) is structurally unable to produce any
+    field — the extraction engine would later return `STRUCTURED_OUTPUT_FAILED`
+    at request time, turning an authoring mistake into a confusing deferred
+    runtime failure. GitHub issue #114 tracks this; fail fast at load time so
+    the author sees the problem in the same error-aggregation pass as other
+    skill-YAML mistakes.
+    """
+    path = write_skill_yaml(
+        output_schema=empty_schema,
+        examples=[{"input": "x", "output": {}}],
+    )
+
+    with pytest.raises(SkillValidationFailedError) as exc_info:
+        SkillYamlSchema.load_from_file(path)
+
+    reason = _reason(exc_info.value)
+    assert "output_schema" in reason
+    assert "properties" in reason
+
+
+@pytest.mark.parametrize(
+    ("schema", "expected"),
+    [
+        # Object-permitting — must be flagged when zero properties:
+        ({}, True),
+        ({"type": "object"}, True),
+        ({"type": "object", "properties": {}}, True),
+        ({"type": ["object", "null"]}, True),
+        ({"type": ("object", "null")}, True),  # tuple form, for Python callers
+        ({"type": ["null", "object"], "properties": {}}, True),
+        # Object-permitting but has at least one property — not empty:
+        ({"type": "object", "properties": {"a": {"type": "string"}}}, False),
+        (
+            {"type": ["object", "null"], "properties": {"a": {"type": "string"}}},
+            False,
+        ),
+        # Not object-permitting — outside scope:
+        ({"type": "string"}, False),
+        ({"type": ["string", "null"]}, False),
+        ({"type": ["integer", "number"]}, False),
+    ],
+)
+def test_is_empty_object_schema_classifies_draft7_type_variants(
+    schema: dict[str, object],
+    expected: bool,  # noqa: FBT001 -- parametrized expected return value, not a flag argument
+) -> None:
+    """`_is_empty_object_schema` must handle string- and list-form `type`.
+
+    Draft 7 allows `type` to be either a single string OR a list of strings
+    (see jsonschema 4.26.0 meta-schema). When the list contains `"object"`,
+    the schema still permits object-shaped extraction output and so falls
+    under the same "at least one declared property" invariant as the plain
+    `type: object` form. Before this case was handled, `{"type": ["object",
+    "null"]}` with zero properties silently slipped past the validator.
+    """
+    from app.features.extraction.skills.skill_yaml_schema import (
+        _is_empty_object_schema,
+    )
+
+    assert _is_empty_object_schema(schema) is expected
+
+
+def test_output_schema_with_one_property_still_loads_successfully(
+    write_skill_yaml: SkillYamlFactory,
+) -> None:
+    """Regression guard: a minimal non-empty object schema must still load.
+
+    The non-empty-properties rule MUST NOT regress the existing happy path
+    where a skill declares at least one output field.
+    """
+    path = write_skill_yaml(
+        output_schema={
+            "type": "object",
+            "properties": {"only_field": {"type": "string"}},
+        },
+        examples=[{"input": "x", "output": {"only_field": "v"}}],
+    )
+
+    schema = SkillYamlSchema.load_from_file(path)
+
+    assert schema.output_schema["properties"] == {"only_field": {"type": "string"}}
