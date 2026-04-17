@@ -22,5 +22,5 @@ jobs:
 
       - name: Push to registry
         run: |
-          echo "::error::deployment not yet configured — see issue #121"
+          echo "::error::Push to registry not yet implemented — see issue #121 for tracking."
           exit 1
