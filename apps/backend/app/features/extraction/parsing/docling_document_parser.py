@@ -295,10 +295,15 @@ class _RealDoclingDocumentAdapter:
 
     Implements `iter_text_items` by walking Docling's text-bearing node items
     and translating each provenance entry into a simple flat item that
-    exposes bottom-left-origin coordinates. Docling's native bbox convention
-    is bottom-left origin (verified via `BoundingBox.to_top_left_origin`
-    being the inverse transform in Docling's API), so no coordinate flip is
-    required here.
+    exposes bottom-left-origin coordinates. Docling's `BoundingBox` carries a
+    `coord_origin` field (`CoordOrigin.TOPLEFT` or `CoordOrigin.BOTTOMLEFT`) —
+    TOPLEFT is in fact Docling's *default* for most pipeline outputs — so the
+    adapter cannot assume one origin. Every prov bbox is normalized to
+    BOTTOMLEFT via `bbox.to_bottom_left_origin(page_height=...)` before
+    unpacking, using the owning page's height from `doc.pages[page_no].size`.
+    This matches our canonical `BoundingBox` convention (origin bottom-left,
+    `y0 <= y1`) and matches PyMuPDF, which the annotator uses downstream
+    without further transformation. (GH issue #133.)
     """
 
     def __init__(self, docling_document: Any) -> None:
@@ -311,6 +316,7 @@ class _RealDoclingDocumentAdapter:
 
     def iter_text_items(self) -> Iterable[_DoclingTextItemLike]:
         texts: Any = getattr(self._docling_document, "texts", None) or []
+        pages: Any = getattr(self._docling_document, "pages", None) or {}
         for text_item in texts:
             item: Any = text_item
             text_value: Any = getattr(item, "text", None)
@@ -319,7 +325,19 @@ class _RealDoclingDocumentAdapter:
                 continue
             prov: Any = provs[0]
             page_no: int = int(prov.page_no)
-            bbox: Any = prov.bbox
+            raw_bbox: Any = prov.bbox
+            # Docling's `CoordOrigin` is a `str, Enum` whose members stringify
+            # to "TOPLEFT" / "BOTTOMLEFT". Compare against the string form so
+            # the check is robust to test doubles that pass plain strings and
+            # to the real enum — both satisfy `str(origin) == "TOPLEFT"`.
+            origin: Any = getattr(raw_bbox, "coord_origin", None)
+            needs_flip: bool = origin is not None and str(origin).endswith("TOPLEFT")
+            if needs_flip:
+                page: Any = pages.get(page_no) if hasattr(pages, "get") else pages[page_no]
+                page_height: float = float(page.size.height)
+                bbox: Any = raw_bbox.to_bottom_left_origin(page_height=page_height)
+            else:
+                bbox = raw_bbox
             yield _FlatDoclingTextItem(
                 text=str(text_value),
                 page_number=page_no,
