@@ -29,9 +29,11 @@ Each ``infer()`` call creates a fresh ``httpx.AsyncClient`` inside the
 ``asyncio.run`` closes the event loop on return, and httpx binds its connection
 pool to the loop on first use; reusing the instance client across two
 ``asyncio.run`` calls would raise ``RuntimeError: Event loop is closed`` on the
-second invocation. The instance-level ``http_client`` is still used by the
-``generate()`` and ``health_check()`` async paths, which run inside an
-already-running loop and do not have the loop-per-call problem.
+second invocation. The ``generate()`` and ``health_check()`` async paths now
+also rebuild ``self.http_client`` when the running event loop changes — the
+provider is safe to reuse across ``asyncio.run`` scopes from sync callers
+(issue #132). Within one loop, the cached client is retained so connection
+pooling still works.
 """
 
 from __future__ import annotations
@@ -134,45 +136,39 @@ class OllamaGemmaProvider(BaseLanguageModel):
         self._timeout_seconds = effective_settings.ollama_timeout_seconds
         self._timeout = httpx.Timeout(self._timeout_seconds)
         self._validator = effective_validator
-        # `http_client` is resolved lazily per running event loop (see
-        # `_get_http_client`). When a caller injects a client we store it on
-        # `_injected_http_client` and return it unchanged — the caller owns
-        # its loop affinity. Otherwise we build a fresh `AsyncClient` on first
-        # use and rebind if the running loop changes (issue #132).
+        # `http_client` is eagerly created (matching the long-standing contract
+        # that `.http_client` is a plain attribute) OR taken from `http_client`
+        # if injected. `_get_http_client` rebuilds it when the running event
+        # loop changes, so reusing a single provider across `asyncio.run`
+        # scopes no longer trips `RuntimeError: Event loop is closed` (issue
+        # #132). The rebuild ONLY fires inside async methods where a real
+        # running loop exists — plain `.http_client` reads from sync code
+        # (e.g. lifespan post-shutdown test assertions) never rebuild.
         self._injected_http_client = http_client
-        self._http_client: httpx.AsyncClient | None = None
+        self.http_client = http_client or httpx.AsyncClient(timeout=self._timeout)
         self._http_client_loop: asyncio.AbstractEventLoop | None = None
 
     def _get_http_client(self) -> httpx.AsyncClient:
         """Return an `AsyncClient` bound to the currently-running event loop.
 
         If the caller injected a client via the constructor, return it
-        unchanged — they own its loop affinity. Otherwise materialize a
-        default client lazily and rebind if a different loop is running
-        than the one the cached client was first used on. This fixes the
-        cross-loop regression in issue #132 where a single provider
-        instance used across `asyncio.run` scopes would raise
-        `RuntimeError: Event loop is closed` on the second call.
+        unchanged — they own its loop affinity. Otherwise rebuild
+        `self.http_client` when the running loop differs from the one the
+        current client was first used on. This fixes the cross-loop
+        regression in issue #132 where a single provider instance used
+        across `asyncio.run` scopes would raise `RuntimeError: Event loop
+        is closed` on the second call.
         """
         if self._injected_http_client is not None:
             return self._injected_http_client
-        try:
-            current_loop = asyncio.get_running_loop()
-        except RuntimeError:
-            current_loop = None
-        if self._http_client is None or (
-            current_loop is not None and current_loop is not self._http_client_loop
-        ):
-            self._http_client = httpx.AsyncClient(timeout=self._timeout)
-            self._http_client_loop = current_loop
-        return self._http_client
-
-    @property
-    def http_client(self) -> httpx.AsyncClient:
-        """Public accessor preserved for test compatibility; delegates to
-        `_get_http_client` so reads always see the loop-appropriate client.
-        """
-        return self._get_http_client()
+        current_loop = asyncio.get_running_loop()
+        if self._http_client_loop is not None and current_loop is not self._http_client_loop:
+            # A previous call bound the client to a now-different loop.
+            # Build a fresh one for this loop; the old client's transport
+            # was already torn down when its loop closed.
+            self.http_client = httpx.AsyncClient(timeout=self._timeout)
+        self._http_client_loop = current_loop
+        return self.http_client
 
     async def generate(
         self,
@@ -331,11 +327,7 @@ class OllamaGemmaProvider(BaseLanguageModel):
         return True
 
     async def aclose(self) -> None:
-        # Close whichever client is currently active on this loop. Clients
-        # that were bound to earlier (now-closed) loops are already unusable
-        # and do not need an explicit `aclose` — their transports were torn
-        # down when the loop exited.
-        if self._injected_http_client is not None:
-            await self._injected_http_client.aclose()
-        elif self._http_client is not None:
-            await self._http_client.aclose()
+        # Close the current `http_client`. Any earlier client that was
+        # replaced by a cross-loop rebind is already unreachable and was
+        # torn down when its loop exited.
+        await self.http_client.aclose()
