@@ -40,11 +40,16 @@ services:
     # of burning reboot cycles forever. `on-failure:5` stops retrying
     # after five consecutive non-zero exits.
     restart: on-failure:5
-    # Bounds container memory. NFR-008 sets service idle RSS ≤ 1.5GB; 2g
-    # gives headroom for Docling parsing + LangExtract orchestration
-    # bursts. Hitting this ceiling OOM-kills the container, which
+    # Bounds container memory. NFR-008 targets idle RSS ≤ 1.5 GB and
+    # NFR-010 targets total peak RSS per single request ≤ 2.5 GB. Setting
+    # the ceiling at 3g sits comfortably above NFR-010 so a single
+    # heavier Docling parse + LangExtract orchestration burst that
+    # lands at spec cannot be OOM-killed, while still leaving a hard
+    # upper bound small enough that a true regression (memory leak,
+    # runaway parse) trips the cap instead of starving the host.
+    # Hitting this ceiling OOM-kills the container, which
     # `restart: on-failure:5` will retry up to five times.
-    mem_limit: 2g
+    mem_limit: 3g
     # `python:3.13-slim` ships no `curl` or `wget`, but Python is
     # guaranteed. `urllib.request.urlopen` raises on non-2xx, so a zero
     # exit code means `/ready` returned 200 (skills loaded, Ollama
