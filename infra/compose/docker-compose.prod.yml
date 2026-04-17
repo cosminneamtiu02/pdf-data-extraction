@@ -61,7 +61,13 @@ services:
         - -c
         - "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready')"
       interval: 30s
-      timeout: 5s
+      # `/ready` can block on the Ollama probe, which uses an httpx timeout
+      # of `Settings.ollama_probe_timeout_seconds` (default 5.0s). With any
+      # scheduling/serialization overhead inside the container, a 5s
+      # healthcheck timeout would kill the probe and falsely flap the
+      # container to `unhealthy`. Give it comfortable headroom above the
+      # inner probe budget.
+      timeout: 10s
       retries: 3
       start_period: 30s
     extra_hosts:
