@@ -329,13 +329,15 @@ class _ExplodingProbe:
     """Probe stub whose ``check()`` raises a non-httpx exception once, then
     returns ``False`` for any subsequent TTL-triggered refresh.
 
-    Simulates the class of failure described in issue #144 — anything that
-    is not an ``httpx.HTTPError`` (e.g. ``ValueError`` from a bad config,
-    ``JSONDecodeError`` from a malformed payload upstream of the real
-    probe's internal catch, an attribute error on a wrapped client, a
-    ``DomainError`` subclass from the probe path). The previous lifespan
-    had no guard, so any such exception propagated out of ``_lifespan``
-    and crash-looped the container.
+    Simulates unexpected exceptions *escaping* ``probe.check()`` — the
+    failure mode described in issue #144. This is explicitly distinct from
+    the ``httpx`` and JSON-decode paths the real ``OllamaHealthProbe``
+    already catches internally. Realistic examples include ``ValueError``
+    from a bad config, ``OSError`` from a lower-level transport path, an
+    ``AttributeError`` on a wrapped client, or a ``DomainError`` subclass
+    raised from the probe path. The previous lifespan had no guard, so any
+    such exception propagated out of ``_lifespan`` and crash-looped the
+    container.
     """
 
     def __init__(self, *, error: Exception) -> None:

@@ -16,13 +16,17 @@ transition (``True`` → ``False``) logs ``ollama_became_unreachable`` at
 WARNING so operators see the degradation at normal log levels.
 
 Exception handling during refresh: ``probe.check()`` is wrapped in a
-broad ``except Exception`` inside ``is_ready()`` so any non-httpx
-exception (bad config, wrapped-client attribute errors, unexpected
-``DomainError`` subclasses) is converted into cached-``False`` plus a
-``probe_check_failed_on_refresh`` WARNING. This mirrors the startup
-guard in ``app/main.py._lifespan`` (issue #144) and keeps ``/ready``
-on the documented 503 ``ollama_unreachable`` contract across the
-entire process lifetime rather than only within the primed TTL window.
+broad ``except Exception`` inside ``is_ready()`` so any unexpected
+``Exception`` subclass (bad config, wrapped-client attribute errors,
+unexpected ``DomainError`` subclasses) is converted into cached-``False``
+plus a ``probe_check_failed_on_refresh`` WARNING. ``BaseException``
+subclasses such as ``asyncio.CancelledError`` (a ``BaseException`` since
+Python 3.8), ``SystemExit``, and ``KeyboardInterrupt`` are intentionally
+not swallowed — request cancellations and shutdown signals still
+propagate. This mirrors the startup guard in ``app/main.py._lifespan``
+(issue #144) and keeps ``/ready`` on the documented 503
+``ollama_unreachable`` contract across the entire process lifetime
+rather than only within the primed TTL window.
 """
 
 from __future__ import annotations
@@ -89,16 +93,19 @@ class ProbeCache:
             had_previous = self._has_previous_result
             # ``probe.check()`` catches ``httpx.HTTPError`` and JSON decode
             # errors internally and returns ``False``, but any other
-            # exception (e.g. ``ValueError`` from a bad config, an
-            # ``AttributeError`` on a wrapped client, a ``DomainError``
-            # subclass raised deeper in the probe path) would escape and
-            # turn the ``/ready`` endpoint into a 500. The lifespan's
-            # startup guard (issue #144) only covers the startup probe;
-            # this mirror-guard on every TTL refresh keeps the ``/ready``
-            # contract stable (503 ``ollama_unreachable``) for the full
-            # lifetime of the process, not just the primed-TTL window.
-            # ``except Exception`` is deliberate here for the same reason
-            # as in ``app/main.py._lifespan``: degrade rather than crash.
+            # unexpected ``Exception`` subclass (e.g. ``ValueError`` from a
+            # bad config, an ``AttributeError`` on a wrapped client, a
+            # ``DomainError`` subclass raised deeper in the probe path)
+            # would escape and turn the ``/ready`` endpoint into a 500. The
+            # lifespan's startup guard (issue #144) only covers the startup
+            # probe; this mirror-guard on every TTL refresh keeps the
+            # ``/ready`` contract stable (503 ``ollama_unreachable``) for
+            # the full lifetime of the process, not just the primed-TTL
+            # window. ``except Exception`` is deliberate here for the same
+            # reason as in ``app/main.py._lifespan``: degrade rather than
+            # crash. Cancellations and shutdown signals propagate because
+            # ``asyncio.CancelledError`` inherits from ``BaseException`` on
+            # Python 3.8+, so ``except Exception`` does not match them.
             try:
                 refreshed = await self._probe.check()
             except Exception as exc:  # noqa: BLE001 - degrade-don't-crash is the contract

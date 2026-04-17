@@ -57,21 +57,25 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None]:
     # Ollama responded 200 but was missing the pinned model (issue #107).
     #
     # The probe's own ``check()`` catches ``httpx.HTTPError`` and JSON decode
-    # errors and returns ``False``, but any other exception (e.g.
-    # ``ValueError`` from a bad config, a ``DomainError`` raised deeper in
-    # the probe path, an ``AttributeError`` on a wrapped client) would
-    # escape and crash the ASGI boot, causing the container to crash-loop
-    # (issue #144). Degrading on startup is always preferable to dying on
-    # startup: ``/health`` stays green and the cache is primed ``False`` so
-    # the initial readiness state degrades cleanly instead of aborting app
-    # startup. Runtime TTL refreshes are guarded separately inside
-    # ``ProbeCache.is_ready()`` (same broad ``except Exception`` strategy),
-    # which keeps ``/ready`` on the documented 503 ``ollama_unreachable``
-    # contract across the full process lifetime even if the underlying
-    # fault is persistent, and the self-healing TTL refresh recovers once
-    # Ollama behaves. ``except Exception`` is deliberate here — this is
-    # one of the rare places where "catch everything and degrade" is the
-    # correct failure mode.
+    # errors and returns ``False``, but any other unexpected ``Exception``
+    # subclass (e.g. ``ValueError`` from a bad config, a ``DomainError``
+    # raised deeper in the probe path, an ``AttributeError`` on a wrapped
+    # client) would escape and crash the ASGI boot, causing the container
+    # to crash-loop (issue #144). Degrading on startup is always preferable
+    # to dying on startup: ``/health`` stays green and the cache is primed
+    # ``False`` so the initial readiness state degrades cleanly instead of
+    # aborting app startup. Runtime TTL refreshes are guarded separately
+    # inside ``ProbeCache.is_ready()`` with the same broad ``except
+    # Exception`` strategy, which keeps ``/ready`` on the documented 503
+    # ``ollama_unreachable`` contract across the full process lifetime even
+    # if the underlying fault is persistent, and the self-healing TTL
+    # refresh recovers once Ollama behaves. ``except Exception`` is
+    # deliberate here: it is one of the rare places where catching any
+    # unexpected non-``BaseException`` startup failure and degrading is the
+    # correct failure mode. ``BaseException`` subclasses such as
+    # ``asyncio.CancelledError`` (a ``BaseException`` since Python 3.8),
+    # ``SystemExit``, and ``KeyboardInterrupt`` are intentionally not
+    # swallowed so shutdown and termination signals still propagate.
     try:
         ready = await probe.check()
     except Exception as exc:  # noqa: BLE001 - degrade-don't-crash is the contract

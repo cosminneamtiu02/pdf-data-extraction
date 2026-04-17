@@ -13,12 +13,15 @@ from tests.conftest import FakeProbe
 class _ExplodingProbe:
     """Probe stub whose ``check()`` raises a configured exception every call.
 
-    Simulates the class of failure described in issue #144 — any exception
-    that is not an ``httpx.HTTPError`` the real probe already catches (e.g.
-    ``ValueError`` from a bad config, ``AttributeError`` on a wrapped
-    client, a ``DomainError`` subclass from the probe path). The cache
-    must convert this into cached-``False`` so ``/ready`` keeps returning
-    503 ``ollama_unreachable`` instead of 500.
+    Simulates unexpected exceptions *escaping* ``probe.check()`` — the
+    failure mode described in issue #144. This is explicitly distinct from
+    the ``httpx`` and JSON-decode paths the real ``OllamaHealthProbe``
+    already catches internally and converts to ``False``. Examples here
+    include ``ValueError`` from a bad config, ``AttributeError`` on a
+    wrapped client, ``OSError`` from a lower-level transport layer, or a
+    ``DomainError`` subclass from the probe path. The cache must convert
+    these escaped exceptions into cached-``False`` so ``/ready`` keeps
+    returning 503 ``ollama_unreachable`` instead of 500.
     """
 
     def __init__(self, *, error: Exception) -> None:
