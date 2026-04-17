@@ -14,7 +14,8 @@
     "INTELLIGENCE_UNAVAILABLE",
     "STRUCTURED_OUTPUT_FAILED",
     "INTELLIGENCE_TIMEOUT",
-    "PDF_TOO_LARGE"
+    "PDF_TOO_LARGE",
+    "PDF_PARSER_UNAVAILABLE"
   ],
   "params_by_key": {
     "NOT_FOUND": [],
@@ -46,6 +47,9 @@
     "PDF_TOO_LARGE": [
       "max_bytes",
       "actual_bytes"
+    ],
+    "PDF_PARSER_UNAVAILABLE": [
+      "dependency"
     ]
   }
 }
