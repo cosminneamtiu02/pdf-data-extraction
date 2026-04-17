@@ -24,8 +24,3 @@ jobs:
         run: |
           echo "::error::deployment not yet configured — see issue #121"
           exit 1
-
-      - name: Deploy
-        run: |
-          echo "::error::deployment not yet configured — see issue #121"
-          exit 1
