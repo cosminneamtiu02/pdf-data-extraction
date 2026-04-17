@@ -7,6 +7,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from app.exceptions import InternalError, ValidationFailedError
 from app.exceptions.base import DomainError
 
 logger = structlog.get_logger(__name__)
@@ -64,7 +65,7 @@ def register_exception_handlers(app: FastAPI) -> None:
             headers={"X-Request-Id": request_id},
             content={
                 "error": {
-                    "code": "VALIDATION_FAILED",
+                    "code": ValidationFailedError.code,
                     "params": first,
                     "details": details,
                     "request_id": request_id,
@@ -88,7 +89,7 @@ def register_exception_handlers(app: FastAPI) -> None:
             headers={"X-Request-Id": request_id},
             content={
                 "error": {
-                    "code": "INTERNAL_ERROR",
+                    "code": InternalError.code,
                     "params": {},
                     "details": None,
                     "request_id": request_id,

@@ -1,10 +1,12 @@
 """Tests for the exception handler."""
 
+from pathlib import Path
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.exceptions import NotFoundError, ValidationFailedError
+from app.exceptions import InternalError, NotFoundError, ValidationFailedError
 
 
 def _create_test_app_with_handler() -> FastAPI:
@@ -97,3 +99,50 @@ def test_error_handler_maps_unhandled_to_internal_error(test_client: TestClient)
     assert body["error"]["code"] == "INTERNAL_ERROR"
     assert body["error"]["params"] == {}
     assert "request_id" in body["error"]
+
+
+def test_error_handler_validation_code_sourced_from_generated_error(
+    test_client: TestClient,
+) -> None:
+    """The VALIDATION_FAILED body code must equal ``ValidationFailedError.code``.
+
+    This assertion protects against drift if ``errors.yaml`` ever renames the
+    code: the handler must source the code from the generated class, not from
+    a hardcoded string literal.
+    """
+    response = test_client.get("/trigger-validation?required_param=not_an_int")
+
+    body = response.json()
+    assert body["error"]["code"] == ValidationFailedError.code
+
+
+def test_error_handler_internal_code_sourced_from_generated_error(test_client: TestClient) -> None:
+    """The INTERNAL_ERROR body code must equal ``InternalError.code``.
+
+    Same drift protection as the VALIDATION_FAILED counterpart.
+    """
+    response = test_client.get("/trigger-unhandled")
+
+    body = response.json()
+    assert body["error"]["code"] == InternalError.code
+
+
+def test_error_handler_source_has_no_hardcoded_error_codes() -> None:
+    """The handler module must not contain the literal error-code strings.
+
+    ``errors.yaml`` is the source of truth; Python codes are generated from
+    it. If the handler hardcodes the string, renaming the code in the YAML
+    silently diverges the handler from the rest of the codebase. Source the
+    code from the generated class attribute instead (see issue #142).
+    """
+    handler_source = Path(__file__).resolve().parents[3] / "app" / "api" / "errors.py"
+    content = handler_source.read_text(encoding="utf-8")
+
+    assert '"VALIDATION_FAILED"' not in content, (
+        "app/api/errors.py must not hardcode the string 'VALIDATION_FAILED'; "
+        "use ValidationFailedError.code instead."
+    )
+    assert '"INTERNAL_ERROR"' not in content, (
+        "app/api/errors.py must not hardcode the string 'INTERNAL_ERROR'; "
+        "use InternalError.code instead."
+    )
