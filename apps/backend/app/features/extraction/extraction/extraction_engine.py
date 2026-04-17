@@ -123,6 +123,30 @@ class _ValidatingLangExtractAdapter(BaseLanguageModel):
         self._inner = inner
         self._main_loop = main_loop
         self._timeout_seconds = timeout_seconds
+        # Side-channel for propagating the validator's retry count out to
+        # `_to_raw_extractions` (issue #135). LangExtract's `ScoredOutput`
+        # is a frozen dataclass with only `score` and `output` fields, so
+        # `GenerationResult.attempts` cannot ride along in-band. We instead
+        # record the MAX attempts observed across every prompt this adapter
+        # drove. `ExtractionEngine.extract` invokes LangExtract with
+        # `batch_length=1, max_workers=1` and a single concatenated text,
+        # so in normal operation this is effectively "attempts for this
+        # extraction call". Max (rather than last or sum) is conservative:
+        # if any prompt in the batch retried N times, every field in the
+        # resulting `RawExtraction` list reflects N attempts. 0 means no
+        # prompt was driven (short-circuit paths), in which case the
+        # engine keeps the legacy 1 default.
+        self._max_observed_attempts: int = 0
+
+    @property
+    def max_observed_attempts(self) -> int:
+        """MAX `GenerationResult.attempts` seen across this adapter's prompts.
+
+        Zero until `infer` processes at least one prompt. After that, the
+        engine reads this attribute to stamp every declared field in the
+        resulting `RawExtraction` list with the validator's retry count.
+        """
+        return self._max_observed_attempts
 
     def infer(
         self,
@@ -162,6 +186,13 @@ class _ValidatingLangExtractAdapter(BaseLanguageModel):
                     raise IntelligenceTimeoutError(
                         budget_seconds=self._timeout_seconds,
                     ) from None
+            # Capture the validator retry count BEFORE yielding (issue #135).
+            # Max across the batch so a single retried prompt is visible
+            # even when other prompts succeeded on the first try.
+            self._max_observed_attempts = max(
+                self._max_observed_attempts,
+                result.attempts,
+            )
             yield [ScoredOutput(score=1.0, output=json.dumps(result.data))]
 
 
@@ -244,7 +275,12 @@ class ExtractionEngine:
             adapter,
         )
 
-        return self._to_raw_extractions(result, declared_fields)
+        # Read the validator's retry count out of the adapter side-channel
+        # (issue #135). If the adapter observed at least one GenerationResult,
+        # that count stamps every declared field; otherwise we fall back to
+        # the legacy default of 1.
+        attempts = max(adapter.max_observed_attempts, 1)
+        return self._to_raw_extractions(result, declared_fields, attempts=attempts)
 
     @staticmethod
     def _invoke_langextract(
@@ -292,6 +328,8 @@ class ExtractionEngine:
     def _to_raw_extractions(
         result: AnnotatedDocument,
         declared_fields: tuple[str, ...],
+        *,
+        attempts: int = 1,
     ) -> list[RawExtraction]:
         """Map LangExtract's native `Extraction` list to `RawExtraction`.
 
@@ -306,6 +344,11 @@ class ExtractionEngine:
           downstream assembly can always look them up by field name.
         - Duplicate field names within LangExtract's output are deduped
           first-wins.
+        - Every output row (real value or placeholder) carries the same
+          ``attempts`` value — the caller (``extract``) sources it from
+          the adapter's side-channel so ``ExtractionMetadata.attempts_per_field``
+          reflects the validator's retry count (issue #135). Short-circuit
+          paths (empty text, zero declared fields) default to 1.
         """
         extractions = result.extractions or []
         # Precompute a set for O(1) membership checks during the filter
@@ -334,7 +377,7 @@ class ExtractionEngine:
                         char_offset_start=None,
                         char_offset_end=None,
                         grounded=False,
-                        attempts=1,
+                        attempts=attempts,
                     ),
                 )
                 continue
@@ -349,7 +392,7 @@ class ExtractionEngine:
                     char_offset_start=start,
                     char_offset_end=end,
                     grounded=grounded,
-                    attempts=1,
+                    attempts=attempts,
                 ),
             )
         return output
