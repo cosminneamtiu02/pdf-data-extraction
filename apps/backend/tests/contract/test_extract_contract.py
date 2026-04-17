@@ -116,6 +116,49 @@ def test_openapi_contains_extract_endpoint(tmp_path: Path) -> None:
     assert "504" in responses, "INTELLIGENCE_TIMEOUT (504) missing from OpenAPI responses"
 
 
+def test_openapi_declares_all_reachable_status_codes_and_media_types(tmp_path: Path) -> None:
+    """OpenAPI /api/v1/extract operation declares every status code the route
+    can actually return, plus the ``application/pdf`` and ``multipart/mixed``
+    media types the 200 path emits when ``output_mode`` is ``PDF_ONLY`` or
+    ``BOTH``.  Assertions are loose (key presence) so the contract can evolve
+    without breaking the test on schema wording changes.
+    """
+    _write_valid_skill(tmp_path)
+    app = create_app(_settings(tmp_path))
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.get("/openapi.json")
+    assert response.status_code == 200
+
+    spec = response.json()
+    post_op = spec["paths"]["/api/v1/extract"]["post"]
+    responses = post_op.get("responses", {})
+
+    # Every status code the runtime can emit on this route.
+    #   400 — PdfInvalidError, PdfPasswordProtectedError
+    #   404 — SkillNotFoundError
+    #   413 — PdfTooLargeError, PdfTooManyPagesError
+    #   422 — PdfNoTextExtractableError + RequestValidationError (custom envelope)
+    #   502 — StructuredOutputFailedError
+    #   503 — IntelligenceUnavailableError
+    #   504 — IntelligenceTimeoutError
+    for code in ("400", "404", "413", "422", "502", "503", "504"):
+        assert code in responses, f"{code} missing from /api/v1/extract OpenAPI responses"
+
+    # All error envelopes advertise an application/json body.
+    for code in ("400", "404", "413", "422", "502", "503", "504"):
+        content = responses[code].get("content", {})
+        assert "application/json" in content, (
+            f"{code} response is missing application/json content-type declaration"
+        )
+
+    # 200 path is a multi-media response. All three output_modes must be
+    # advertised so codegen clients and schemathesis see the real contract.
+    ok_content = responses["200"].get("content", {})
+    assert "application/json" in ok_content, "200 missing application/json (JSON_ONLY mode)"
+    assert "application/pdf" in ok_content, "200 missing application/pdf (PDF_ONLY mode)"
+    assert "multipart/mixed" in ok_content, "200 missing multipart/mixed (BOTH mode)"
+
+
 async def test_pdf_too_large_envelope_matches_contract(tmp_path: Path) -> None:
     """413 response for PDF_TOO_LARGE matches ErrorResponse schema shape."""
     stub = AsyncMock(spec=ExtractionService)
