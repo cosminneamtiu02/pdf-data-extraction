@@ -8,12 +8,20 @@ on:
   push:
     branches: [main]
 
+# Serialize deploys on the same ref without cancelling an in-flight deploy.
+# cancel-in-progress is deliberately false: once a deploy is running, it
+# must finish (partial deploys are worse than slightly-delayed deploys).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
 
