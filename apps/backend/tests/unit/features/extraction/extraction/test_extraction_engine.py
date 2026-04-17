@@ -629,8 +629,66 @@ async def test_validating_adapter_infer_raises_intelligence_timeout_when_generat
         await _asyncio.wait_for(_asyncio.to_thread(_run_infer), timeout=5.0)
     assert exc_info.value.code == "INTELLIGENCE_TIMEOUT"
     # Sanity: the hanging coroutine actually started (so we really did hit
-    # the timeout path, not short-circuit somewhere earlier).
-    assert hang_started.is_set()
+    # the timeout path, not short-circuit somewhere earlier). Because
+    # `future.cancel()` on a coroutine that has already been scheduled on
+    # the main loop is best-effort, the coroutine continues running for
+    # its `sleep(3)` duration even after the adapter raises — so we wait
+    # with our own timeout to absorb event-loop scheduling jitter rather
+    # than flaking when the timeout budget (0.2s) elapses before the
+    # scheduled `generate` gets CPU time.
+    await _asyncio.wait_for(hang_started.wait(), timeout=1.0)
+
+
+async def test_validating_adapter_infer_propagates_inner_timeout_error_distinct_from_adapter_timeout() -> (
+    None
+):
+    """If `provider.generate` itself raises `TimeoutError` (e.g. an inner
+    `asyncio.wait_for` inside a provider implementation expires), the adapter
+    must propagate that exception — NOT remap it to `IntelligenceTimeoutError`.
+
+    Regression for Copilot review on PR #173: in CPython 3.11+,
+    `concurrent.futures.TimeoutError is TimeoutError is asyncio.TimeoutError`.
+    A bare `except concurrent.futures.TimeoutError` would also catch inner
+    `TimeoutError` raised by the underlying coroutine, incorrectly converting
+    inner failures into `IntelligenceTimeoutError` and discarding the original
+    cause. The adapter distinguishes the two cases by checking
+    `future.done()` — only a pending future means `future.result(timeout=...)`
+    itself timed out; a done future with a `TimeoutError` result came from
+    the coroutine body.
+    """
+    import asyncio as _asyncio
+
+    from app.exceptions import IntelligenceTimeoutError
+
+    class _InnerTimeoutProvider:
+        async def generate(
+            self,
+            prompt: str,
+            output_schema: dict[str, Any],
+        ) -> GenerationResult:
+            _ = prompt
+            _ = output_schema
+            msg = "provider's own timeout — NOT adapter's future.result timeout"
+            raise TimeoutError(msg)
+
+    main_loop = _asyncio.get_running_loop()
+    adapter = _ValidatingLangExtractAdapter(
+        _InnerTimeoutProvider(),
+        main_loop,
+        timeout_seconds=30.0,
+    )
+
+    def _run_infer() -> None:
+        list(adapter.infer(["prompt"]))
+
+    # The inner TimeoutError must propagate — it is NOT an adapter timeout.
+    # We assert `not isinstance(..., IntelligenceTimeoutError)` defensively
+    # so a regression that re-maps inner timeouts is caught even if a
+    # future refactor makes IntelligenceTimeoutError extend TimeoutError.
+    with pytest.raises(TimeoutError) as exc_info:
+        await _asyncio.to_thread(_run_infer)
+    assert not isinstance(exc_info.value, IntelligenceTimeoutError)
+    assert "provider's own timeout" in str(exc_info.value)
 
 
 async def test_validating_adapter_infer_returns_normally_when_generate_completes_in_time() -> None:

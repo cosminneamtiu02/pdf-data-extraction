@@ -104,7 +104,12 @@ class _ValidatingLangExtractAdapter(BaseLanguageModel):
     result is discarded when this adapter's caller returns) and raise
     `IntelligenceTimeoutError`, which the global exception handler maps to
     504. The adapter does NOT own the main loop's executor, so there is
-    nothing to shut down here.
+    nothing to shut down here. Note: `concurrent.futures.TimeoutError` is
+    aliased to the builtin `TimeoutError` in CPython 3.11+, so the `except`
+    clause must distinguish an adapter timeout (future still pending) from
+    an inner `TimeoutError` raised by the coroutine (future already done)
+    via `future.done()` — otherwise inner failures would be silently
+    remapped to `IntelligenceTimeoutError` and lose their cause.
     """
 
     def __init__(
@@ -132,6 +137,18 @@ class _ValidatingLangExtractAdapter(BaseLanguageModel):
             try:
                 result = future.result(timeout=self._timeout_seconds)
             except concurrent.futures.TimeoutError:
+                # In CPython 3.11+, `concurrent.futures.TimeoutError is
+                # TimeoutError is asyncio.TimeoutError`. A bare `except`
+                # on the class would also catch an inner `TimeoutError`
+                # raised by the coroutine body, conflating a hung Ollama
+                # (this adapter's concern) with an inner-provider timeout
+                # (not our concern). We distinguish by `future.done()`:
+                # only a *pending* future means `future.result(timeout=)`
+                # itself timed out; a *done* future with a `TimeoutError`
+                # means the coroutine finished by raising — so we re-raise
+                # the original exception unchanged, preserving the cause.
+                if future.done():
+                    raise
                 # Best-effort cancel — a coroutine already blocked in a
                 # syscall on the main loop may still complete, but we stop
                 # caring about its result. Without this bound, a hung
