@@ -8,12 +8,19 @@ from pydantic import BaseModel, Field, model_validator
 class BoundingBoxRef(BaseModel):
     """A single 1-indexed page coordinate rectangle anchoring an extracted value.
 
-    The rectangle is expressed in PDF page coordinates with origin at the
-    **bottom-left** of the page (PyMuPDF's default), matching the convention
-    locked by PDFX-E003-F001: ``(x0, y0)`` is the bottom-left corner and
-    ``(x1, y1)`` is the top-right, so ``x0 <= x1`` and ``y0 <= y1``. Zero-area
-    rectangles are legal (a degenerate span is still a grounding anchor);
-    inverted rectangles are rejected.
+    The rectangle is expressed in PDF page coordinates (PDF user-space
+    points) with origin at the **bottom-left** of the page, matching
+    Docling's ``CoordOrigin.BOTTOMLEFT`` and the convention locked by
+    PDFX-E003-F001: ``(x0, y0)`` is the bottom-left corner and ``(x1, y1)``
+    is the top-right, so ``x0 <= x1`` and ``y0 <= y1``. Zero-area rectangles
+    are legal (a degenerate span is still a grounding anchor); inverted
+    rectangles are rejected.
+
+    Note that PyMuPDF's native default is **top-left** origin; the
+    annotator converts from this bottom-left contract to PyMuPDF's
+    top-left space at draw time. For the conversion that upstream Docling
+    output (which is often ``CoordOrigin.TOPLEFT``) undergoes before
+    landing in this schema, see ``docling_document_parser.py``.
     """
 
     page: int = Field(ge=1)
