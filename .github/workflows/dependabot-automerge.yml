@@ -59,6 +59,7 @@ permissions:
 jobs:
   automerge:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     # Check the PR author, not github.actor. github.actor is whoever
     # triggered the current event -- if a human clicks "Update branch"
     # in the UI, github.actor becomes that human, and this job would

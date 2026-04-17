@@ -79,3 +79,9 @@ errors:
     params:
       max_bytes: integer
       actual_bytes: integer
+
+  PDF_PARSER_UNAVAILABLE:
+    http_status: 500
+    description: The PDF parser cannot run because a required runtime dependency (e.g. docling, pymupdf) is not installed in this deployment
+    params:
+      dependency: string

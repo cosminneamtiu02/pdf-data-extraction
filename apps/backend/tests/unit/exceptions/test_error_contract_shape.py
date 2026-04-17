@@ -27,6 +27,8 @@ EXPECTED_CODES = {
     # Extraction pipeline / router errors (PDFX-E006-F002, PDFX-E006-F003)
     "INTELLIGENCE_TIMEOUT",
     "PDF_TOO_LARGE",
+    # Parser runtime-dependency guard (issue #153)
+    "PDF_PARSER_UNAVAILABLE",
 }
 
 PRUNED_CODES = {
@@ -74,6 +76,7 @@ def test_no_stale_generated_error_files() -> None:
         "intelligence_timeout_error",
         "structured_output_failed_error",
         "pdf_too_large_error",
+        "pdf_parser_unavailable_error",
     }
     stale = {"conflict_error", "rate_limited_error", "widget_not_found_error"}
     present_stems = {p.stem for p in GENERATED_DIR.glob("*_error.py")}
