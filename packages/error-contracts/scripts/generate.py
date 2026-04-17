@@ -100,9 +100,20 @@ def load_and_validate(errors_path: Path) -> ErrorsYaml:
     errors = cast("dict[str, ErrorSpec]", errors_raw)
 
     for code, spec in errors.items():
-        # Validate code format
+        # Validate code shape: YAML keys can parse as non-strings (int, bool,
+        # null) if the author writes them bare. Enforce string-ness before
+        # the regex so `re.match(..., 42)` doesn't crash with TypeError.
+        if not isinstance(code, str):
+            msg = f"Error code must be a string, got {type(code).__name__}: {code!r}"
+            raise ValueError(msg)
         if not re.match(r"^[A-Z][A-Z0-9_]*$", code):
             msg = f"Error code must be SCREAMING_SNAKE_CASE: {code}"
+            raise ValueError(msg)
+
+        # Validate spec shape: YAML accepts scalars or lists as values too,
+        # so guard before `.get(...)` calls that assume a mapping.
+        if not isinstance(spec, dict):
+            msg = f"Error spec for {code} must be a mapping, got {type(spec).__name__}"
             raise ValueError(msg)
 
         # Validate http_status
@@ -111,8 +122,15 @@ def load_and_validate(errors_path: Path) -> ErrorsYaml:
             msg = f"Invalid HTTP status {status} for {code}. Must be 400-599."
             raise ValueError(msg)
 
-        # Validate param types
-        params = cast("dict[str, str]", spec.get("params", {}))
+        # Validate params shape + contents
+        params_raw = spec.get("params", {})
+        if not isinstance(params_raw, dict):
+            msg = (
+                f"'params' for {code} must be a mapping, got "
+                f"{type(params_raw).__name__}"
+            )
+            raise ValueError(msg)
+        params = cast("dict[str, str]", params_raw)
         for param_name, param_type in params.items():
             if param_type not in VALID_PARAM_TYPES:
                 msg = (

@@ -192,3 +192,61 @@ def test_codegen_rejects_non_mapping_yaml(tmp_path: Path, content: str, label: s
     with pytest.raises(ValueError, match="[Mm]apping"):
         load_and_validate(path)
     assert label  # keep parametrize label visible in test IDs
+
+
+def test_codegen_rejects_non_mapping_spec(tmp_path: Path):
+    """Each error's spec must be a mapping; a scalar or list value must
+    surface a clear ValueError instead of the `AttributeError` that bare
+    `spec.get(...)` would raise.
+    """
+    path = tmp_path / "errors.yaml"
+    path.write_text(
+        'version: 1\nerrors:\n  FOO: "just-a-string-spec"\n',
+    )
+
+    from scripts.generate import load_and_validate
+
+    with pytest.raises(ValueError, match="spec.*must be a mapping"):
+        load_and_validate(path)
+
+
+def test_codegen_rejects_non_mapping_params(tmp_path: Path):
+    """`params` must be a mapping; a scalar or list must surface a clear
+    ValueError instead of AttributeError from `.items()`.
+    """
+    path = tmp_path / "errors.yaml"
+    path.write_text(
+        "version: 1\n"
+        "errors:\n"
+        "  FOO:\n"
+        "    http_status: 400\n"
+        "    description: bad params shape\n"
+        '    params: "not-a-dict"\n',
+    )
+
+    from scripts.generate import load_and_validate
+
+    with pytest.raises(ValueError, match="params.*must be a mapping"):
+        load_and_validate(path)
+
+
+def test_codegen_rejects_non_string_error_code(tmp_path: Path):
+    """YAML keys that parse as non-strings (e.g. integers, bools) must
+    raise a clear ValueError before the regex match attempt.
+    """
+    path = tmp_path / "errors.yaml"
+    # `42:` parses as an integer key in YAML; the rejection must come from
+    # the type check, not a TypeError inside `re.match`.
+    path.write_text(
+        "version: 1\n"
+        "errors:\n"
+        "  42:\n"
+        "    http_status: 400\n"
+        "    description: integer key\n"
+        "    params: {}\n",
+    )
+
+    from scripts.generate import load_and_validate
+
+    with pytest.raises(ValueError, match="code.*must be a string"):
+        load_and_validate(path)
