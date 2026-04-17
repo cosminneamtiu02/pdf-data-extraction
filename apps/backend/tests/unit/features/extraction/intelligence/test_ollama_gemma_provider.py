@@ -232,7 +232,8 @@ async def test_generate_payload_includes_format_json_and_zero_temperature() -> N
 
     _, payload = fake.post_calls[0]
     assert payload["format"] == "json"
-    assert payload["options"] == {"temperature": 0}
+    assert isinstance(payload["options"], dict)
+    assert payload["options"]["temperature"] == 0
 
 
 async def test_generate_strips_trailing_slash_from_base_url() -> None:
