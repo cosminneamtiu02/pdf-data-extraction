@@ -50,14 +50,18 @@ The extraction feature is built out during feature-dev per the graph tree in
 [`docs/graphs/PDFX/`](graphs/PDFX/). Each Epic maps to one or more subpackages
 inside `features/extraction/`:
 
-| Epic | Subpackage | Responsibility |
+| Epic | Files / subpackages | Responsibility |
 |---|---|---|
-| PDFX-E002 | `skills/` | Skill YAML loader, manifest, validation |
-| PDFX-E003 | `parsing/` | Docling wrapper, `TextBlock` abstraction |
-| PDFX-E004 | `intelligence/` + `extraction/` | LangExtract + Ollama provider + structured output validator |
-| PDFX-E005 | `coordinates/` | Offset index, sub-block matcher, span resolver |
-| PDFX-E006 | `schemas/`, `service.py`, `router.py`, `annotation/` | API surface + annotation |
-| PDFX-E007 | `app/api/health_router.py` + `middleware.py` + `import-linter-contracts.ini` | Platform, observability, quality gates |
+| PDFX-E002 | `features/extraction/skills/` | Skill YAML loader, manifest, validation |
+| PDFX-E003 | `features/extraction/parsing/` | Docling wrapper, `TextBlock` abstraction |
+| PDFX-E004 | `features/extraction/intelligence/` + `features/extraction/extraction/` | LangExtract + Ollama provider + structured output validator |
+| PDFX-E005 | `features/extraction/coordinates/` | Offset index, sub-block matcher, span resolver |
+| PDFX-E006 | `features/extraction/schemas/`, `features/extraction/service.py`, `features/extraction/router.py`, `features/extraction/annotation/` | API surface + annotation |
+| PDFX-E007-F001 | `features/extraction/intelligence/ollama_health_probe.py` + `app/api/health_router.py` | Ollama readiness probe wired into `GET /ready` |
+| PDFX-E007-F002 | `app/api/middleware.py` | Request-ID + access-log + CORS middleware stack |
+| PDFX-E007-F003 | `app/core/logging.py` | Structlog pipeline (contextvars, ISO timestamps, JSON/console) |
+| PDFX-E007-F004 | `apps/backend/architecture/import-linter-contracts.ini` + AST-scan tests | Architectural quality gates (C1-C6 + dynamic-import scan) |
+| PDFX-E007-F005 | `apps/backend/scripts/benchmark.py` | Extraction pipeline benchmarking harness |
 
 ### Layer Flow
 
