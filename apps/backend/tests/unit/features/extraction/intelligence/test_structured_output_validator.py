@@ -24,6 +24,7 @@ from app.features.extraction.intelligence.correction_prompt_builder import (
 )
 from app.features.extraction.intelligence.structured_output_validator import (
     StructuredOutputValidator,
+    _clean,
 )
 
 _FOO_STRING_SCHEMA: dict[str, Any] = {
@@ -370,6 +371,50 @@ async def test_structured_output_failed_log_omits_raw_output_and_field_values() 
     # Schema-violation codes look like "schema_violation:<json_paths>" —
     # containing only the JSON paths, never user values.
     assert any("schema_violation" in c for c in failed["causes"])
+
+
+def test_clean_strips_trailing_fence_when_no_opening_fence_present() -> None:
+    """Regression: trailing ``` must be stripped even without an opening fence.
+
+    Before the fix, `_clean` only stripped a trailing fence inside the branch
+    that detected an opening fence, so output like `{...}\\n```` left the
+    closing backticks in the cleaned text. `raw_decode` happens to tolerate
+    the trailing noise today, but the contract of `_clean` is to hand JSON
+    parsing a fence-free string — relying on `raw_decode`'s leniency is
+    fragile and hides the intent.
+    """
+    raw = '{"foo": "bar"}\n```'
+
+    cleaned = _clean(raw)
+
+    assert cleaned == '{"foo": "bar"}'
+
+
+def test_clean_is_noop_when_no_fences_present() -> None:
+    """Regression guard: plain JSON must pass through `_clean` unchanged."""
+    raw = '{"foo": "bar"}'
+
+    cleaned = _clean(raw)
+
+    assert cleaned == '{"foo": "bar"}'
+
+
+def test_clean_strips_both_opening_and_trailing_fence() -> None:
+    """Regression guard: fully-fenced input keeps its previous behavior."""
+    raw = '```json\n{"foo": "bar"}\n```'
+
+    cleaned = _clean(raw)
+
+    assert cleaned == '{"foo": "bar"}'
+
+
+def test_clean_strips_trailing_fence_with_surrounding_whitespace() -> None:
+    """Trailing fence followed by whitespace must also be stripped."""
+    raw = '{"foo": "bar"}\n```\n   '
+
+    cleaned = _clean(raw)
+
+    assert cleaned == '{"foo": "bar"}'
 
 
 async def test_structured_output_retry_log_uses_sanitized_cause_field() -> None:
