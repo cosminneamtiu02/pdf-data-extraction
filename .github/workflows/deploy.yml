@@ -22,8 +22,10 @@ jobs:
 
       - name: Push to registry
         run: |
-          echo "TODO: Push image to container registry"
+          echo "ERROR: deployment not yet configured — see issue #121" >&2
+          exit 1
 
       - name: Deploy
         run: |
-          echo "TODO: Deploy to target environment"
+          echo "ERROR: deployment not yet configured — see issue #121" >&2
+          exit 1
