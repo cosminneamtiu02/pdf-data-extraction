@@ -21,6 +21,7 @@ from jsonschema.exceptions import SchemaError
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.exceptions import SkillValidationFailedError
+from app.features.extraction.skills.deep_freeze import thaw
 from app.features.extraction.skills.skill_docling_config import SkillDoclingConfig
 from app.features.extraction.skills.skill_example import SkillExample
 
@@ -67,7 +68,11 @@ class SkillYamlSchema(BaseModel):
             # binding the method locally lets us silence exactly that call
             # without hiding any behavior.
             iter_errors = validator.iter_errors  # type: ignore[reportUnknownMemberType]
-            errors = sorted(iter_errors(example.output), key=str)
+            # SkillExample deep-freezes `output` (MappingProxyType + tuples)
+            # at construction time.  jsonschema does not recognise
+            # MappingProxyType as an ``"object"`` type, so we thaw the
+            # frozen value back to plain dicts/lists for validation.
+            errors = sorted(iter_errors(thaw(example.output)), key=str)
             for error in errors:
                 path_parts: list[str] = [str(p) for p in error.absolute_path]
                 path = "/" + "/".join(path_parts)

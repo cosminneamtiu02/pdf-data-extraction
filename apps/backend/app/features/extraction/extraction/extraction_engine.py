@@ -54,6 +54,7 @@ from app.features.extraction.extraction.raw_extraction import RawExtraction
 from app.features.extraction.intelligence.langextract_wrapper_schema import (
     LANGEXTRACT_WRAPPER_SCHEMA,
 )
+from app.features.extraction.skills.deep_freeze import thaw
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
@@ -201,7 +202,10 @@ class ExtractionEngine:
             extractions = [
                 Extraction(
                     extraction_class=field_name,
-                    extraction_text=str(value),
+                    # Thaw frozen values (MappingProxyType -> dict, tuple ->
+                    # list) before str() so prompt serialization matches the
+                    # plain-dict/list representation skill authors expect.
+                    extraction_text=str(thaw(value)),
                 )
                 for field_name, value in example.output.items()
             ]
