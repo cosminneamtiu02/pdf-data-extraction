@@ -31,10 +31,9 @@ COPY apps/backend/pyproject.toml ./
 RUN uv sync --frozen --no-dev
 
 # ── Runtime stage ────────────────────────────────────────────
-# Same `ARG PYTHON_IMAGE` as the builder stage above (declared at the top of
-# the file). Re-declared here so the value is in-scope for this stage — the
-# default expression is unchanged, so the digests stay in lockstep.
-ARG PYTHON_IMAGE
+# Reuses the top-level `ARG PYTHON_IMAGE` (declared before any `FROM`), which
+# per the Dockerfile ARG scoping rules is available for substitution in every
+# stage's `FROM` line — keeping builder and runtime pinned to the same digest.
 FROM ${PYTHON_IMAGE}
 
 # Run as non-root user
