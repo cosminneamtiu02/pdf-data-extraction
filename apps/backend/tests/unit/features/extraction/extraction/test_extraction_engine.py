@@ -604,9 +604,11 @@ async def test_validating_adapter_infer_raises_intelligence_timeout_when_generat
             _ = prompt
             _ = output_schema
             hang_started.set()
-            # Simulate an unresponsive Ollama: hang effectively forever.
-            # The adapter's `future.result(timeout=...)` must wake us up.
-            await _asyncio.sleep(3600)
+            # Simulate an unresponsive Ollama with a delay that exceeds the
+            # adapter timeout (0.2s) without stranding a non-daemon worker
+            # thread for an hour if timeout handling ever regresses. A few
+            # seconds is ample headroom vs the 0.2s budget below.
+            await _asyncio.sleep(3)
             msg = "unreachable — adapter should have timed out"  # pragma: no cover
             raise AssertionError(msg)  # pragma: no cover
 

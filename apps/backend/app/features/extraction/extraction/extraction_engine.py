@@ -163,7 +163,7 @@ class ExtractionEngine:
         # env variables, matching the rest of the service.
         settings = self._settings
         if settings is None:
-            settings = Settings()  # type: ignore[call-arg]  # pydantic-settings fills from env
+            settings = Settings()  # type: ignore[reportCallIssue]  # pydantic-settings loads fields from env
             self._settings = settings
         return settings.ollama_timeout_seconds
 
