@@ -14,9 +14,10 @@ from app.core.docling_modes import OcrMode, TableMode
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent.parent
 _DEFAULT_SKILLS_DIR = _BACKEND_ROOT / "skills"
 
-# Canonical stdlib-logging level names. Mirrors ``logging._nameToLevel``
-# minus ``NOTSET`` and the ``WARN`` alias — operators should spell
-# ``WARNING`` in full so the error message is unambiguous.
+# Canonical stdlib-logging level names accepted by this validator.
+# Aliases such as ``WARN`` and ``FATAL`` are intentionally excluded —
+# operators should spell ``WARNING`` in full so the error message is
+# unambiguous.
 _VALID_LOG_LEVELS: frozenset[str] = frozenset(
     {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"},
 )
