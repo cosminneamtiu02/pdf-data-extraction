@@ -13,8 +13,13 @@ logger = structlog.get_logger(__name__)
 
 
 def _get_request_id(request: Request) -> str:
-    """Extract request ID from request state, set by RequestIdMiddleware."""
-    return getattr(request.state, "request_id", uuid4().hex)
+    """Extract request ID from request state, set by RequestIdMiddleware.
+
+    Falls back to a fresh ``uuid4().hex`` when the middleware is absent so the
+    ``X-Request-Id`` header always contains a valid 32-char hex string.
+    """
+    rid: str | None = getattr(request.state, "request_id", None)
+    return rid or uuid4().hex
 
 
 def register_exception_handlers(app: FastAPI) -> None:
