@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from typing import Self
 
 import httpx
 import pytest
@@ -106,6 +107,12 @@ class _FakeAsyncClient:
         self.aclose_calls += 1
         self.is_closed = True
 
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        await self.aclose()
+
 
 def _build_settings(
     *,
@@ -140,6 +147,22 @@ def _build_provider(
         validator=_build_validator(real_settings),
         http_client=fake_client,  # type: ignore[arg-type]  # test seam: FakeAsyncClient quacks like httpx.AsyncClient
     )
+
+
+def _patch_infer_client(
+    monkeypatch: pytest.MonkeyPatch,
+    post_outcomes: Sequence[_FakeResponse | BaseException],
+) -> _FakeAsyncClient:
+    """Patch ``httpx.AsyncClient`` in the provider module so ``infer()``'s
+    fresh-client construction returns a ``_FakeAsyncClient`` with the given
+    scripted responses. Returns the fake so callers can inspect ``post_calls``.
+    """
+    fake = _FakeAsyncClient(post_outcomes=post_outcomes)
+    monkeypatch.setattr(
+        "app.features.extraction.intelligence.ollama_gemma_provider.httpx.AsyncClient",
+        lambda **_kwargs: fake,
+    )
+    return fake
 
 
 def _http_status_error(status: int) -> httpx.HTTPStatusError:
@@ -514,14 +537,17 @@ def test_intelligence_unavailable_error_is_domain_error_subclass() -> None:
 # same failure mode documented in the provider's module docstring.
 
 
-def test_infer_yields_one_scored_output_per_prompt() -> None:
-    fake = _FakeAsyncClient(
+def test_infer_yields_one_scored_output_per_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _patch_infer_client(
+        monkeypatch,
         post_outcomes=[
             _FakeResponse(body={"response": '{"extractions":[{"a":1}]}'}),
             _FakeResponse(body={"response": '{"extractions":[{"b":2}]}'}),
         ],
     )
-    provider = _build_provider(fake_client=fake)
+    provider = _build_provider(fake_client=_FakeAsyncClient())
 
     results = list(provider.infer(["p1", "p2"]))
 
@@ -535,13 +561,18 @@ def test_infer_yields_one_scored_output_per_prompt() -> None:
     assert len(fake.post_calls) == 2
 
 
-def test_infer_routes_raw_text_through_structured_output_validator() -> None:
+def test_infer_routes_raw_text_through_structured_output_validator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # Fenced JSON must be cleaned by the validator's normalization step before
     # LangExtract's resolver sees it. If `infer` bypassed the validator, the
     # yielded output would still contain the ```json fence.
     fenced = '```json\n{"extractions":[]}\n```'
-    fake = _FakeAsyncClient(post_outcomes=[_FakeResponse(body={"response": fenced})])
-    provider = _build_provider(fake_client=fake)
+    _patch_infer_client(
+        monkeypatch,
+        post_outcomes=[_FakeResponse(body={"response": fenced})],
+    )
+    provider = _build_provider(fake_client=_FakeAsyncClient())
 
     results = list(provider.infer(["p1"]))
 
@@ -549,18 +580,21 @@ def test_infer_routes_raw_text_through_structured_output_validator() -> None:
     assert json.loads(results[0][0].output) == {"extractions": []}
 
 
-def test_infer_retries_on_wrapper_schema_violation_then_succeeds() -> None:
+def test_infer_retries_on_wrapper_schema_violation_then_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # First response is valid JSON but does NOT match the LangExtract wrapper
     # schema (`{"extractions": array}`). Validator retries; second response is
     # valid. Pins the contract that `infer` enforces the wrapper schema — not
     # just JSON parseability.
-    fake = _FakeAsyncClient(
+    fake = _patch_infer_client(
+        monkeypatch,
         post_outcomes=[
             _FakeResponse(body={"response": '{"wrong":"shape"}'}),
             _FakeResponse(body={"response": '{"extractions":[]}'}),
         ],
     )
-    provider = _build_provider(fake_client=fake)
+    provider = _build_provider(fake_client=_FakeAsyncClient())
 
     results = list(provider.infer(["p1"]))
 
@@ -568,11 +602,64 @@ def test_infer_retries_on_wrapper_schema_violation_then_succeeds() -> None:
     assert len(fake.post_calls) == 2
 
 
-def test_infer_propagates_intelligence_unavailable_error_on_connect_failure() -> None:
-    fake = _FakeAsyncClient(
+def test_infer_creates_fresh_http_client_per_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: issue #47 — ``infer()`` must create a fresh ``AsyncClient``
+    inside the ``asyncio.run`` scope, not reuse the instance-level one.
+
+    ``asyncio.run`` creates and then closes a fresh event loop each invocation.
+    If the ``httpx.AsyncClient`` stored on the instance is reused across two
+    ``asyncio.run`` calls, the second call finds the client's connection pool
+    bound to the now-closed first loop and raises ``RuntimeError: Event loop is
+    closed``. The fix is to create a fresh ``AsyncClient`` inside the
+    event-loop scope so each ``infer()`` gets its own matched loop+client pair.
+
+    This test pins the contract by intercepting ``httpx.AsyncClient``
+    construction during ``infer()`` and counting instantiations. Before the
+    fix, the count is zero (the instance-level client is reused). After the
+    fix, each ``infer()`` call creates exactly one fresh client.
+    """
+    wrapper_body = {"response": '{"extractions":[]}'}
+    construction_count = 0
+
+    def _fake_async_client_factory(**_kwargs: Any) -> _FakeAsyncClient:
+        nonlocal construction_count
+        construction_count += 1
+        return _FakeAsyncClient(  # type: ignore[return-value]  # test seam
+            post_outcomes=[_FakeResponse(body=wrapper_body)],
+        )
+
+    monkeypatch.setattr(
+        "app.features.extraction.intelligence.ollama_gemma_provider.httpx.AsyncClient",
+        _fake_async_client_factory,
+    )
+
+    # Provider's own http_client was built before the patch; it is used only
+    # by the `generate()`/`health_check()` async paths, not by `infer()`.
+    fake = _FakeAsyncClient(post_outcomes=[])
+    provider = _build_provider(fake_client=fake)
+
+    construction_count = 0
+    list(provider.infer(["p1"]))
+    first_call_count = construction_count
+
+    list(provider.infer(["p2"]))
+    second_call_count = construction_count - first_call_count
+
+    # Each infer() call must create exactly one fresh AsyncClient.
+    assert first_call_count == 1, f"first infer() should create 1 client, got {first_call_count}"
+    assert second_call_count == 1, f"second infer() should create 1 client, got {second_call_count}"
+
+
+def test_infer_propagates_intelligence_unavailable_error_on_connect_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_infer_client(
+        monkeypatch,
         post_outcomes=[httpx.ConnectError("refused")],
     )
-    provider = _build_provider(fake_client=fake)
+    provider = _build_provider(fake_client=_FakeAsyncClient())
 
     with pytest.raises(IntelligenceUnavailableError):
         list(provider.infer(["p1"]))
@@ -588,6 +675,15 @@ def test_infer_uses_a_single_asyncio_run_for_the_whole_batch(
     # — pinned here by counting invocations.
     import asyncio as _asyncio
 
+    _patch_infer_client(
+        monkeypatch,
+        post_outcomes=[
+            _FakeResponse(body={"response": '{"extractions":[]}'}),
+            _FakeResponse(body={"response": '{"extractions":[]}'}),
+            _FakeResponse(body={"response": '{"extractions":[]}'}),
+        ],
+    )
+
     call_count = 0
     real_run = _asyncio.run
 
@@ -601,14 +697,7 @@ def test_infer_uses_a_single_asyncio_run_for_the_whole_batch(
         counting_run,
     )
 
-    fake = _FakeAsyncClient(
-        post_outcomes=[
-            _FakeResponse(body={"response": '{"extractions":[]}'}),
-            _FakeResponse(body={"response": '{"extractions":[]}'}),
-            _FakeResponse(body={"response": '{"extractions":[]}'}),
-        ],
-    )
-    provider = _build_provider(fake_client=fake)
+    provider = _build_provider(fake_client=_FakeAsyncClient())
 
     results = list(provider.infer(["p1", "p2", "p3"]))
 
