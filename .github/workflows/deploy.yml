@@ -22,10 +22,10 @@ jobs:
 
       - name: Push to registry
         run: |
-          echo "ERROR: deployment not yet configured — see issue #121" >&2
+          echo "::error::deployment not yet configured — see issue #121"
           exit 1
 
       - name: Deploy
         run: |
-          echo "ERROR: deployment not yet configured — see issue #121" >&2
+          echo "::error::deployment not yet configured — see issue #121"
           exit 1
