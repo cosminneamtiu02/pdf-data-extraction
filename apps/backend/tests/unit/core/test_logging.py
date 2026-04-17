@@ -45,3 +45,19 @@ def test_configure_logging_suppresses_httpcore_to_warning() -> None:
     """httpcore is the transport layer under httpx; same suppression needed."""
     configure_logging(log_level="info", json_output=False)
     assert logging.getLogger("httpcore").level == logging.WARNING
+
+
+def test_format_exc_info_runs_before_redaction_filter() -> None:
+    """Issue #134: format_exc_info must render the traceback into the event dict
+    before the redaction filter runs, so the filter can scrub PII from it.
+    """
+    configure_logging(
+        log_level="info",
+        json_output=True,
+        redacted_keys=["pdf_bytes"],
+        max_value_length=500,
+    )
+    processors = structlog.get_config()["processors"]
+    fmt_idx = next(i for i, p in enumerate(processors) if p is structlog.processors.format_exc_info)
+    redact_idx = next(i for i, p in enumerate(processors) if isinstance(p, LogRedactionFilter))
+    assert fmt_idx < redact_idx

@@ -26,7 +26,16 @@ HEX32 = re.compile(r"^[a-f0-9]{32}$")
 SENTINEL = "SENSITIVE_PAYLOAD_42"
 PDF_CANARY = "CANARY_BYTES_XYZ"
 
-_TEST_PATHS = {"/_t/log_safe", "/_t/log_sensitive", "/_t/log_pdf", "/_t/log_error"}
+_TEST_PATHS = {
+    "/_t/log_safe",
+    "/_t/log_sensitive",
+    "/_t/log_pdf",
+    "/_t/log_error",
+    "/_t/log_unhandled",
+}
+
+EMAIL_CANARY = "pii+canary@example.com"
+NUMBER_CANARY = "1847.50"
 
 
 @pytest.fixture
@@ -71,6 +80,12 @@ def test_app() -> Iterator[FastAPI]:
             prompt="ignore me",
         )
         return JSONResponse(status_code=400, content={"error": "bad"})
+
+    @app.get("/_t/log_unhandled")
+    async def _unhandled() -> JSONResponse:
+        # Mimics handle_unhandled: raise an exception whose message carries PII.
+        msg = f"{EMAIL_CANARY} paid ${NUMBER_CANARY}"
+        raise ValueError(msg)
 
     yield app
 
@@ -135,3 +150,37 @@ async def test_error_log_keeps_error_code_but_strips_sensitive_fields(
     assert "VALIDATION_FAILED" in captured  # allowlisted key survives
     assert SENTINEL not in captured  # extracted_value stripped
     assert "ignore me" not in captured  # prompt stripped
+
+
+async def test_unhandled_exception_traceback_pii_is_redacted(
+    test_app: FastAPI,
+) -> None:
+    """Issue #134: rendered exception tracebacks from handle_unhandled must not leak PII."""
+    # raise_app_exceptions=False lets the app's exception-handler chain catch
+    # the ValueError and fire ``handle_unhandled``'s ``logger.exception`` call,
+    # which is what we want to observe here. With the default True, httpx
+    # re-raises the endpoint exception out of the client and the log line is
+    # never emitted.
+    transport = ASGITransport(app=test_app, raise_app_exceptions=False)
+    # Redirect the production-configured handler's stream so the capture goes
+    # through the real ProcessorFormatter (which is what redacts exc_info).
+    # Adding a bare second handler would re-render ``record.exc_info`` via
+    # stdlib's default Formatter and bypass the structlog processor chain
+    # entirely — the capture would show a fake "leak" that production never
+    # produces because production has only one handler.
+    root = logging.getLogger()
+    prod_handler = root.handlers[0]
+    assert isinstance(prod_handler, logging.StreamHandler)
+    original_stream = prod_handler.stream
+    buf = io.StringIO()
+    prod_handler.setStream(buf)
+    try:
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            response = await ac.get("/_t/log_unhandled")
+    finally:
+        prod_handler.setStream(original_stream)
+    captured = buf.getvalue()
+    assert response.status_code == 500
+    assert "unhandled_exception" in captured  # log line was emitted
+    assert EMAIL_CANARY not in captured  # email in ValueError message is redacted
+    assert NUMBER_CANARY not in captured  # numeric amount in message is redacted

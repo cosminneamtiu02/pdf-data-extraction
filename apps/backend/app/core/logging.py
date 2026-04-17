@@ -36,8 +36,17 @@ def configure_logging(
     # but before any processor that might enrich the dict with sensitive data.
     # Today no enrichment processor adds sensitive keys, but if one is added
     # later it must be placed before the redaction filter, not after.
+    #
+    # ``format_exc_info`` runs before the redaction filter so that any exc_info
+    # tuple attached by ``logger.exception(...)`` is rendered into the
+    # ``exception`` string key BEFORE the filter walks the event dict. That way
+    # the filter sees the full traceback text and can scrub PII out of the
+    # rendered message — rather than passing the untouched exc_info tuple down
+    # to stdlib's ``ProcessorFormatter`` where rendering would happen after the
+    # redaction pass has already finished (issue #134).
     shared_processors: list[structlog.types.Processor] = [
         structlog.contextvars.merge_contextvars,
+        structlog.processors.format_exc_info,
         redaction_filter,
         structlog.stdlib.add_log_level,
         structlog.stdlib.add_logger_name,

@@ -175,3 +175,121 @@ def test_long_bytes_inside_nested_dict_is_truncated() -> None:
     out = _call(_filter(), event="test", ctx={"blob": b"z" * 600})
     assert out["ctx"]["blob"] != b"z" * 600
     assert "600" in str(out["ctx"]["blob"])
+
+
+def test_exception_key_email_is_redacted() -> None:
+    """Issue #134: rendered exception tracebacks must have email PII scrubbed."""
+    traceback = (
+        "Traceback (most recent call last):\n"
+        '  File "<string>", line 1, in <module>\n'
+        "ValueError: cosmin@example.com paid the fee"
+    )
+    out = _call(_filter(), event="unhandled_exception", exception=traceback)
+    assert "cosmin@example.com" not in out["exception"]
+
+
+def test_exception_key_long_numeric_is_redacted() -> None:
+    """Issue #134: rendered exception tracebacks must have numeric PII scrubbed."""
+    traceback = (
+        "Traceback (most recent call last):\n"
+        '  File "<string>", line 1, in <module>\n'
+        "ValueError: invoice total was 1847.50 dollars"
+    )
+    out = _call(_filter(), event="unhandled_exception", exception=traceback)
+    assert "1847.50" not in out["exception"]
+    assert "1847" not in out["exception"]
+
+
+def test_exception_key_preserves_traceback_structure() -> None:
+    """Redacted exception strings still retain the traceback header so operators see the shape."""
+    traceback = (
+        "Traceback (most recent call last):\n"
+        '  File "<string>", line 1, in <module>\n'
+        "ValueError: user@example.com did something"
+    )
+    out = _call(_filter(), event="unhandled_exception", exception=traceback)
+    assert "Traceback" in out["exception"]
+    assert "ValueError" in out["exception"]
+
+
+def test_exception_key_oversize_string_is_truncated() -> None:
+    """An exception string exceeding max_value_length is still truncated."""
+    long_tb = "Traceback\n" + "x" * 1000
+    out = _call(_filter(), event="unhandled_exception", exception=long_tb)
+    assert out["exception"].endswith("... [truncated]")
+    assert len(out["exception"]) == 500 + len("... [truncated]")
+
+
+def test_non_exception_string_values_not_pattern_scrubbed() -> None:
+    """Regression guard: regex scrubbing must only apply to the 'exception' key."""
+    # A normal log field that happens to contain an email must pass through
+    # unchanged; redaction patterns are only applied to rendered tracebacks.
+    out = _call(_filter(), event="test", message="user@example.com signed in")
+    assert out["message"] == "user@example.com signed in"
+
+
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        'File "app/foo.py", line 1, in <module>',
+        "python3.13",
+        "timeout=0.5",
+        "v1.0.2",
+        "duration=1.25",
+    ],
+)
+def test_exception_key_preserves_short_decimals_and_versions(fragment: str) -> None:
+    """Short decimals (versions, floats, timeouts) in tracebacks must pass through.
+
+    The numeric pattern targets 4+ digit sequences and thousands-separated
+    amounts; version strings like ``python3.13`` and short floats like
+    ``timeout=0.5`` are not PII and mangling them destroys traceback readability.
+    """
+    traceback = f"Traceback (most recent call last):\n  {fragment}\nValueError: boom"
+    out = _call(_filter(), event="unhandled_exception", exception=traceback)
+    assert fragment in out["exception"]
+
+
+def test_exception_key_redacts_thousands_separated_amount() -> None:
+    """Thousands-separated monetary amounts (e.g. ``1,847.50``) are scrubbed."""
+    traceback = (
+        "Traceback (most recent call last):\n"
+        '  File "<string>", line 1, in <module>\n'
+        "ValueError: invoice total was 1,847.50 dollars"
+    )
+    out = _call(_filter(), event="unhandled_exception", exception=traceback)
+    assert "1,847.50" not in out["exception"]
+    assert "1,847" not in out["exception"]
+
+
+@pytest.mark.parametrize(
+    "line_number",
+    ["42", "1234", "9999", "12345"],
+)
+def test_exception_key_preserves_frame_line_numbers(line_number: str) -> None:
+    """Traceback frame line references (``line N``) must survive redaction.
+
+    Large files legitimately produce 4+ digit line numbers; mangling them to
+    ``[REDACTED_NUMBER]`` destroys the file/line locator that operators need
+    to pin incident root causes. The numeric pattern excludes ``line N``
+    specifically via a negative lookbehind.
+    """
+    traceback = (
+        "Traceback (most recent call last):\n"
+        f'  File "app/foo.py", line {line_number}, in handler\n'
+        "ValueError: boom"
+    )
+    out = _call(_filter(), event="unhandled_exception", exception=traceback)
+    assert f"line {line_number}" in out["exception"]
+
+
+def test_exception_key_still_redacts_long_numbers_not_after_line_keyword() -> None:
+    """Lookbehind only spares ``line N``; bare long numerics are still scrubbed."""
+    traceback = (
+        "Traceback (most recent call last):\n"
+        '  File "<string>", line 1, in <module>\n'
+        "ValueError: account 987654321 has a balance of 4321.00"
+    )
+    out = _call(_filter(), event="unhandled_exception", exception=traceback)
+    assert "987654321" not in out["exception"]
+    assert "4321" not in out["exception"]
