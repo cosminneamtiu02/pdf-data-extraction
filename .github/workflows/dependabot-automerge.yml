@@ -7,8 +7,8 @@
 #
 #   1. Complete Phase 4 of docs/new-project-setup.md -- create the
 #      `main-protection` branch ruleset with required status checks for
-#      backend-checks, frontend-checks, api-client-checks, error-contracts
-#      (and CodeQL once Phase 10 adds it).
+#      backend-checks and error-contracts (and CodeQL once Phase 10
+#      adds it).
 #   2. Complete Phase 3 -- uncheck Allow merge commits / rebase merging,
 #      check Automatically delete head branches.
 #   3. Complete Phase 5 partial -- Settings -> Actions -> General ->
@@ -24,10 +24,10 @@
 # ruleset has required status checks. Without them, --auto has nothing
 # to wait for and merges immediately, even if CI is red. This is not a
 # theoretical risk -- it happened on PR #19, which was merged with
-# failing frontend-checks and api-client-checks because no ruleset was
-# in place. Main was accidentally red for ~2 minutes until a follow-up
-# PR with a lockfile fix raced in and restored the invariant. The guard
-# below ensures this cannot happen again.
+# failing CI checks because no ruleset was in place. Main was
+# accidentally red for ~2 minutes until a follow-up PR with a lockfile
+# fix raced in and restored the invariant. The guard below ensures this
+# cannot happen again.
 #
 # Safe to merge this workflow file to main even when disabled: with
 # DEPENDABOT_AUTOMERGE_ENABLED unset (or not "true"), the job's `if:`
