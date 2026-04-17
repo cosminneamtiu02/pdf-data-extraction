@@ -100,10 +100,11 @@ Run: gh pr merge --auto --squash $PR_URL
 GitHub sets autoMergeRequest on the PR
   │
   ▼
-GitHub waits for ALL ruleset conditions to be green:
+GitHub waits for the ruleset's required conditions to be green, such as:
   - All required status checks pass
   - Branch up to date with main
   - All conversations resolved
+  - (Any other ruleset rules that are enabled, e.g. "Require code scanning results")
   │
   ▼
 GitHub squash-merges the PR
