@@ -23,7 +23,6 @@ guard when the provider is the first dependency touched.
 """
 
 import threading
-from functools import lru_cache
 from typing import Annotated
 
 from fastapi import Depends, Request
@@ -82,8 +81,16 @@ def get_settings(request: Request) -> Settings:
     return request.app.state.settings
 
 
-@lru_cache(maxsize=1)
 def get_correction_prompt_builder() -> CorrectionPromptBuilder:
+    """Return a fresh `CorrectionPromptBuilder` per call.
+
+    Intentionally uncached: per this module's docstring, factories must
+    not memoize via `lru_cache` because that would hand every app — and
+    every test — the same instance, breaking per-app state isolation and
+    silently bleeding state across `create_app()` boundaries. The builder
+    is a lightweight, stateless object; constructing it on every call is
+    cheap. Issue #148.
+    """
     return CorrectionPromptBuilder()
 
 
