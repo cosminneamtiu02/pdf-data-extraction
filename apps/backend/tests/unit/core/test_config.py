@@ -10,7 +10,8 @@ def test_settings_defaults() -> None:
     """Settings should construct with sensible defaults from environment or code."""
     s = Settings()
     assert s.app_env == "development"
-    assert s.log_level == "info"
+    # log_level is normalized to uppercase by the validator (issue #146).
+    assert s.log_level == "INFO"
     assert s.cors_origins == ["http://localhost:5173"]
 
 
@@ -22,7 +23,8 @@ def test_settings_accepts_overrides() -> None:
         cors_origins=["https://example.com"],
     )
     assert s.app_env == "production"
-    assert s.log_level == "warning"
+    # Validator normalizes lowercase inputs to canonical uppercase (issue #146).
+    assert s.log_level == "WARNING"
     assert s.cors_origins == ["https://example.com"]
 
 
@@ -173,3 +175,68 @@ def test_settings_cors_origins_empty_array_via_env(
     monkeypatch.setenv("CORS_ORIGINS", "[]")
     s = Settings(_env_file=None)  # type: ignore[call-arg]
     assert s.cors_origins == []
+
+
+# -- log_level validation (issue #146) --------------------------------------
+
+
+def test_settings_log_level_typo_rejected() -> None:
+    """A typo like ``debg`` must fail validation with a clear error.
+
+    Without this validator, the typo slipped past Settings construction
+    and only surfaced when structlog / the stdlib logger tried to parse
+    it — crashing the app *before* the FastAPI exception handlers install.
+    """
+    with pytest.raises(ValidationError, match="log_level"):
+        Settings(log_level="debg")
+
+
+def test_settings_log_level_empty_string_rejected() -> None:
+    """An empty string for log_level must be rejected."""
+    with pytest.raises(ValidationError, match="log_level"):
+        Settings(log_level="")
+
+
+def test_settings_log_level_nonstandard_alias_rejected() -> None:
+    """A non-standard alias like ``warn`` (vs. ``warning``) must be rejected."""
+    with pytest.raises(ValidationError, match="log_level"):
+        Settings(log_level="warn")
+
+
+def test_settings_log_level_lowercase_normalized_to_uppercase() -> None:
+    """Lowercase values (common in ``.env`` files) normalize to uppercase."""
+    s = Settings(log_level="debug")
+    assert s.log_level == "DEBUG"
+
+
+def test_settings_log_level_mixed_case_normalized_to_uppercase() -> None:
+    """Mixed-case input is normalized to the canonical uppercase form."""
+    s = Settings(log_level="Warning")
+    assert s.log_level == "WARNING"
+
+
+def test_settings_log_level_uppercase_accepted() -> None:
+    """Uppercase values pass through unchanged."""
+    s = Settings(log_level="ERROR")
+    assert s.log_level == "ERROR"
+
+
+def test_settings_log_level_whitespace_stripped() -> None:
+    """Leading/trailing whitespace must be stripped before validation."""
+    s = Settings(log_level="  info  ")
+    assert s.log_level == "INFO"
+
+
+def test_settings_log_level_default_normalized_to_uppercase() -> None:
+    """The default value is also normalized by the validator."""
+    s = Settings()
+    assert s.log_level == "INFO"
+
+
+def test_settings_log_level_error_lists_valid_options() -> None:
+    """Validation error must list the valid options so operators can self-correct."""
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(log_level="debg")
+    message = str(exc_info.value)
+    for level in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
+        assert level in message
