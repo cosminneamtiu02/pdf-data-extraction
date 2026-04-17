@@ -1,5 +1,7 @@
 """Exception handlers — maps DomainError subclasses to HTTP error responses."""
 
+from uuid import uuid4
+
 import structlog
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -12,7 +14,7 @@ logger = structlog.get_logger(__name__)
 
 def _get_request_id(request: Request) -> str:
     """Extract request ID from request state, set by RequestIdMiddleware."""
-    return getattr(request.state, "request_id", "unknown")
+    return getattr(request.state, "request_id", uuid4().hex)
 
 
 def register_exception_handlers(app: FastAPI) -> None:

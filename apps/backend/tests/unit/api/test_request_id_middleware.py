@@ -76,6 +76,7 @@ async def test_x_request_id_present_on_domain_error_responses() -> None:
     assert response.status_code == 404
     assert "x-request-id" in response.headers
     assert HEX32.match(response.headers["x-request-id"])
+    assert response.headers["x-request-id"] == response.json()["error"]["request_id"]
 
 
 async def test_x_request_id_present_on_unhandled_500_responses() -> None:
@@ -101,6 +102,7 @@ async def test_x_request_id_present_on_unhandled_500_responses() -> None:
     assert response.status_code == 500
     assert "x-request-id" in response.headers
     assert HEX32.match(response.headers["x-request-id"])
+    assert response.headers["x-request-id"] == response.json()["error"]["request_id"]
 
 
 async def test_concurrent_requests_each_get_distinct_ids(app: FastAPI) -> None:
