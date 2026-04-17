@@ -265,3 +265,134 @@ class _TransientExplodingProbe:
             self._raised = True
             raise self._error
         return self._results.pop(0)
+
+
+# ---------------------------------------------------------------------------
+# Tests — lock-based coalescing of concurrent refreshes (issue #154)
+#
+# The ``asyncio.Lock`` inside ``ProbeCache.is_ready()`` is there so N concurrent
+# callers that all see an expired cache entry do not each trigger a separate
+# ``probe.check()``. One caller owns the lock and does the refresh; the others
+# block, then read the just-refreshed cache via the double-check inside the
+# critical section. A future refactor that drops the lock, swaps it for a
+# non-coalescing primitive, or forgets the inside-the-lock double-check would
+# silently regress this invariant — these tests lock it in.
+# ---------------------------------------------------------------------------
+
+
+class _GatedProbe:
+    """Probe whose ``check()`` blocks on an ``asyncio.Event`` before returning.
+
+    The gate lets the test hold every concurrent caller inside the refresh path
+    simultaneously. Without it, the first caller would typically finish the
+    probe synchronously and populate the cache before any other task even
+    reaches the lock — defeating the point of the concurrency assertion.
+    """
+
+    def __init__(self, *, gate: asyncio.Event, result: bool = True) -> None:
+        self._gate = gate
+        self._result = result
+        self.call_count = 0
+
+    async def check(self) -> bool:
+        self.call_count += 1
+        # Yield until the test releases the gate so all N tasks pile up on the
+        # lock together.
+        await self._gate.wait()
+        return self._result
+
+
+async def test_concurrent_is_ready_after_ttl_expiry_coalesces_into_single_probe() -> None:
+    """N concurrent callers against an expired cache → exactly one probe call.
+
+    This is the load-bearing contract of the ``asyncio.Lock`` inside
+    ``ProbeCache.is_ready()``: a thundering herd of ``/ready`` requests at
+    TTL expiry must not produce N simultaneous Ollama probes. Only the first
+    coroutine to acquire the lock should call ``probe.check()``; the others
+    must block on the lock and then hit the inside-the-lock double-check,
+    which sees ``_has_previous_result`` is now True and the last check is
+    within the TTL window — so they return the cached value instead of
+    re-probing.
+
+    Uses a non-zero TTL so the inside-the-lock double-check actually covers
+    the follow-on callers. A TTL of ``0.0`` would not coalesce at all: every
+    caller would pass the double-check and re-probe. The pre-refresh "expired"
+    state is instead modeled by starting from a freshly-constructed cache
+    (``_has_previous_result = False``) so all N tasks pile up on the lock,
+    and the first one's refresh is what flips the double-check inside the
+    lock from "probe again" to "return cached".
+    """
+    gate = asyncio.Event()
+    probe = _GatedProbe(gate=gate, result=True)
+    cache = ProbeCache(
+        probe=probe,  # type: ignore[arg-type]  # test seam
+        ttl_seconds=5.0,
+    )
+
+    # Spawn N concurrent callers. At this point the first one has (or is about
+    # to acquire) the lock and is awaiting ``gate``; the other 19 are blocked
+    # on ``self._lock``. If coalescing is broken, multiple of them reach
+    # ``probe.check()`` and bump ``call_count`` past 1.
+    tasks = [asyncio.create_task(cache.is_ready()) for _ in range(20)]
+
+    # Give the event loop enough rounds to schedule every task so they all
+    # arrive at the lock before the refresher finishes. Multiple ``sleep(0)``
+    # calls flush any queued callbacks in both directions (lock acquisition,
+    # ``Event.wait`` setup). A single yield is sometimes not enough on CPython
+    # when the event-loop policy batches scheduling.
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    gate.set()
+    results = await asyncio.gather(*tasks)
+
+    assert all(results), f"expected every caller to see True, got {results}"
+    assert probe.call_count == 1, (
+        f"expected exactly one probe.check() call under concurrent load, got {probe.call_count}"
+    )
+
+
+async def test_blocked_caller_observes_refresher_result_not_stale_or_reprobed() -> None:
+    """Second caller blocked on the lock returns the value the refresher just wrote.
+
+    Verifies the inside-the-lock double-check works as intended: after the
+    refresher finishes writing a fresh result, the coroutine that was waiting
+    on the lock must return that *fresh* value (not re-probe, not see
+    pre-refresh state). This is what makes coalescing a correctness property
+    rather than just a performance optimisation — if the blocked caller went
+    on to re-probe after acquiring the lock, concurrent ``/ready`` bursts
+    would still thunder.
+    """
+    gate = asyncio.Event()
+    probe = _GatedProbe(gate=gate, result=True)
+    cache = ProbeCache(
+        probe=probe,  # type: ignore[arg-type]  # test seam
+        ttl_seconds=5.0,
+    )
+
+    refresher_task = asyncio.create_task(cache.is_ready())
+    # Let the refresher acquire the lock and start awaiting the gate.
+    for _ in range(3):
+        await asyncio.sleep(0)
+    # Second caller arrives while refresher still holds the lock → it blocks
+    # on ``self._lock``. If the inside-the-lock double-check is broken, it
+    # would reach ``probe.check()`` after the refresher releases the lock
+    # and bump ``call_count``.
+    blocked_task = asyncio.create_task(cache.is_ready())
+    for _ in range(3):
+        await asyncio.sleep(0)
+
+    # Release the refresher; it populates the cache and returns True.
+    gate.set()
+    refresher_result = await refresher_task
+    blocked_result = await blocked_task
+
+    assert refresher_result is True
+    assert blocked_result is True, (
+        "blocked caller should observe the refresher's result (True), not "
+        "trigger its own probe or return stale state"
+    )
+    assert probe.call_count == 1, (
+        f"blocked caller should read the cache inside the lock, "
+        f"not re-probe; got {probe.call_count} probe calls"
+    )
