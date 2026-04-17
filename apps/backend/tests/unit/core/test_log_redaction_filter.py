@@ -143,3 +143,35 @@ def test_list_values_are_walked_for_nested_dicts() -> None:
 def test_long_string_inside_nested_dict_is_truncated() -> None:
     out = _call(_filter(), event="test", ctx={"msg": "y" * 600})
     assert out["ctx"]["msg"] == "y" * 500 + "... [truncated]"
+
+
+@pytest.mark.parametrize("key", ["Raw_Output", "RAW_OUTPUT", "PDF_Bytes", "Prompt"])
+def test_denylisted_key_is_redacted_case_insensitively(key: str) -> None:
+    """Denylist matching must be case-insensitive — ``Raw_Output`` bypasses redaction otherwise."""
+    out = _call(_filter(), event="test", **{key: "sensitive content"})
+    assert key not in out
+    assert all("sensitive content" not in str(v) for v in out.values())
+
+
+def test_long_bytes_value_under_non_denylisted_key_is_truncated() -> None:
+    """Large ``bytes`` payloads must not pass through untruncated — they get a length-summary placeholder."""
+    payload = b"x" * 1000
+    out = _call(_filter(), event="test", blob=payload)
+    # Raw 1000-byte payload must not appear verbatim in the output.
+    assert out["blob"] != payload
+    # The original byte length is surfaced so operators can tell something was truncated.
+    assert "1000" in str(out["blob"])
+
+
+def test_short_bytes_value_passes_through_unchanged() -> None:
+    """Bytes values at or below the limit must pass through unchanged."""
+    payload = b"y" * 500
+    out = _call(_filter(), event="test", blob=payload)
+    assert out["blob"] == payload
+
+
+def test_long_bytes_inside_nested_dict_is_truncated() -> None:
+    """Nested bytes payloads over the limit are also summarized."""
+    out = _call(_filter(), event="test", ctx={"blob": b"z" * 600})
+    assert out["ctx"]["blob"] != b"z" * 600
+    assert "600" in str(out["ctx"]["blob"])
