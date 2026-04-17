@@ -89,6 +89,7 @@ permissions:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     if: github.event.pull_request.user.login == 'dependabot[bot]' && vars.DEPENDABOT_LOCKFILE_SYNC_ENABLED == 'true'
     steps:
       - name: Verify PAT is configured
