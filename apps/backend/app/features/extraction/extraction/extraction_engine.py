@@ -142,21 +142,26 @@ class _ValidatingLangExtractAdapter(BaseLanguageModel):
                 # on the class would also catch an inner `TimeoutError`
                 # raised by the coroutine body, conflating a hung Ollama
                 # (this adapter's concern) with an inner-provider timeout
-                # (not our concern). We distinguish by `future.done()`:
-                # only a *pending* future means `future.result(timeout=)`
-                # itself timed out; a *done* future with a `TimeoutError`
-                # means the coroutine finished by raising — so we re-raise
-                # the original exception unchanged, preserving the cause.
+                # (not our concern). There is also a boundary race:
+                # `future.result(timeout=...)` may time out and THEN the
+                # future may settle before we inspect it. We distinguish
+                # by `future.done()`: a done future means the coroutine
+                # settled (success or exception) — call `future.result()`
+                # with no timeout so a just-completed success continues
+                # normally and a coroutine-raised `TimeoutError` still
+                # propagates unchanged. Only a still-pending future
+                # should be cancelled and remapped to our domain error.
                 if future.done():
-                    raise
-                # Best-effort cancel — a coroutine already blocked in a
-                # syscall on the main loop may still complete, but we stop
-                # caring about its result. Without this bound, a hung
-                # Ollama would pin this worker thread forever (issue #152).
-                future.cancel()
-                raise IntelligenceTimeoutError(
-                    budget_seconds=self._timeout_seconds,
-                ) from None
+                    result = future.result()
+                else:
+                    # Best-effort cancel — a coroutine already blocked in a
+                    # syscall on the main loop may still complete, but we stop
+                    # caring about its result. Without this bound, a hung
+                    # Ollama would pin this worker thread forever (issue #152).
+                    future.cancel()
+                    raise IntelligenceTimeoutError(
+                        budget_seconds=self._timeout_seconds,
+                    ) from None
             yield [ScoredOutput(score=1.0, output=json.dumps(result.data))]
 
 

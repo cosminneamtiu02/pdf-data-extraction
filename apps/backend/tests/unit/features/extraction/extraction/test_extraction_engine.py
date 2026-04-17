@@ -691,6 +691,82 @@ async def test_validating_adapter_infer_propagates_inner_timeout_error_distinct_
     assert "provider's own timeout" in str(exc_info.value)
 
 
+async def test_validating_adapter_infer_returns_settled_result_on_boundary_race(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression for Copilot review on PR #173: there is a boundary race
+    where `future.result(timeout=...)` raises `TimeoutError` AND the future
+    settles (successfully) just before we inspect `future.done()`. In that
+    case the adapter must return the settled result — NOT re-raise the
+    stale `TimeoutError` from the timed-out `.result(timeout=...)` call.
+
+    Before the fix, `if future.done(): raise` would leak the `TimeoutError`
+    past the adapter for a future that had actually completed successfully.
+    After the fix, a done future gets `.result()` called WITHOUT a timeout,
+    returning the settled value (or re-raising the coroutine's real error).
+    """
+    import asyncio as _asyncio
+    import concurrent.futures as _cf
+
+    from app.features.extraction.intelligence.generation_result import GenerationResult
+
+    settled_payload = GenerationResult(
+        data={"ok": True, "source": "settled-just-in-time"},
+        raw_output="{}",
+        attempts=1,
+    )
+
+    class _RacyFuture:
+        """Simulates the boundary race: first `.result(timeout=...)` raises
+        TimeoutError, but `.done()` returns True and `.result()` (no timeout)
+        returns the already-settled payload."""
+
+        def __init__(self, settled: GenerationResult) -> None:
+            self._settled = settled
+            self._timed_out_once = False
+
+        def result(self, timeout: float | None = None) -> GenerationResult:
+            if timeout is not None and not self._timed_out_once:
+                self._timed_out_once = True
+                raise _cf.TimeoutError
+            return self._settled
+
+        def done(self) -> bool:
+            return True
+
+        def cancel(self) -> bool:
+            return False
+
+    def _stub_run_coro_threadsafe(coro: Any, _loop: Any) -> _RacyFuture:
+        # Close the coroutine so we don't leak a "never awaited" warning.
+        coro.close()
+        return _RacyFuture(settled_payload)
+
+    monkeypatch.setattr(
+        "app.features.extraction.extraction.extraction_engine.asyncio.run_coroutine_threadsafe",
+        _stub_run_coro_threadsafe,
+    )
+
+    main_loop = _asyncio.get_running_loop()
+    adapter = _ValidatingLangExtractAdapter(
+        _FakeProvider(),
+        main_loop,
+        timeout_seconds=0.001,  # small; the stub controls behavior regardless
+    )
+
+    def _run_infer() -> list[list[Any]]:
+        return [list(batch) for batch in adapter.infer(["prompt"])]
+
+    results = await _asyncio.to_thread(_run_infer)
+
+    assert len(results) == 1
+    assert len(results[0]) == 1
+    assert json.loads(results[0][0].output) == {
+        "ok": True,
+        "source": "settled-just-in-time",
+    }
+
+
 async def test_validating_adapter_infer_returns_normally_when_generate_completes_in_time() -> None:
     """Positive regression for the timeout fix: when `provider.generate` finishes
     well within `timeout_seconds`, `infer` must yield the expected ScoredOutput
