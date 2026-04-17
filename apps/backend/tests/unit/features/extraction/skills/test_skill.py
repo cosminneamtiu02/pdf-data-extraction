@@ -86,6 +86,40 @@ def test_skill_output_schema_is_deeply_immutable() -> None:
         required.append("b")  # type: ignore[attr-defined]
 
 
+def test_skill_example_output_is_deeply_immutable() -> None:
+    """SkillExample.output must be deep-frozen so callers cannot silently
+    mutate example outputs and change extraction prompts.
+    """
+    example = SkillExample(
+        input="invoice text",
+        output={"vendor": "Acme", "items": [{"sku": "A1"}]},
+    )
+
+    # Top-level dict mutation must fail
+    with pytest.raises(TypeError):
+        example.output["injected"] = "hacked"  # type: ignore[index]
+
+    # Nested dict mutation must fail
+    with pytest.raises(TypeError):
+        example.output["items"][0]["sku"] = "B2"  # type: ignore[index]
+
+    # Nested list → tuple, so .append must fail
+    items = example.output["items"]
+    assert isinstance(items, tuple)
+    with pytest.raises((TypeError, AttributeError)):
+        items.append({"sku": "C3"})  # type: ignore[attr-defined]
+
+
+def test_skill_example_output_frozen_from_schema() -> None:
+    """SkillExample.output must remain frozen when accessed through Skill."""
+    schema = _valid_schema()
+    skill = Skill.from_schema(schema)
+    ex = skill.examples[0]
+
+    with pytest.raises(TypeError):
+        ex.output["a"] = "hacked"  # type: ignore[index]
+
+
 def test_docling_config_is_merged_not_raw_override() -> None:
     schema = _valid_schema(docling=SkillDoclingConfig(ocr="auto"))
     default = SkillDoclingConfig(ocr="off", table_mode="fast")

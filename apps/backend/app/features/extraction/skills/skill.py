@@ -9,9 +9,9 @@ defaults — the resulting `docling_config` is always a concrete
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from types import MappingProxyType
-from typing import Any, cast
+from typing import Any
 
+from app.features.extraction.skills.deep_freeze import deep_freeze_mapping
 from app.features.extraction.skills.skill_docling_config import SkillDoclingConfig
 from app.features.extraction.skills.skill_example import SkillExample
 from app.features.extraction.skills.skill_yaml_schema import SkillYamlSchema
@@ -64,19 +64,6 @@ class Skill:
             # Deep-freeze nested dicts/lists too — a shallow `MappingProxyType`
             # would leave `output_schema["properties"][...]` mutable, which
             # violates the "immutable runtime object" contract.
-            output_schema=_deep_freeze_mapping(schema.output_schema),
+            output_schema=deep_freeze_mapping(schema.output_schema),
             docling_config=merged,
         )
-
-
-def _deep_freeze_mapping(value: Mapping[str, Any]) -> Mapping[str, Any]:
-    """Recursively wrap nested mappings in `MappingProxyType` and lists in tuples."""
-    return MappingProxyType({str(k): _freeze_any(v) for k, v in value.items()})
-
-
-def _freeze_any(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return _deep_freeze_mapping(cast("Mapping[str, Any]", value))
-    if isinstance(value, list):
-        return tuple(_freeze_any(item) for item in cast("list[Any]", value))
-    return value
