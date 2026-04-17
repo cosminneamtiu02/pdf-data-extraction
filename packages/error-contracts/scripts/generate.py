@@ -159,7 +159,9 @@ def generate_python(errors_path: Path, output_dir: Path) -> list[Path]:
             # Check if the super().__init__ line would exceed 100 chars (ruff line-length)
             super_line = f"        super().__init__(params={params_class_name}({params_construct}))"
             if len(super_line) > 100:
-                params_lines = ",\n                ".join(f"{name}={name}" for name in params)
+                params_lines = ",\n                ".join(
+                    f"{name}={name}" for name in params
+                )
                 super_block = (
                     f"        super().__init__(\n"
                     f"            params={params_class_name}(\n"
@@ -178,8 +180,7 @@ def generate_python(errors_path: Path, output_dir: Path) -> list[Path]:
                 f'    """Error: {code}."""\n\n'
                 f'    code: ClassVar[str] = "{code}"\n'
                 f"    http_status: ClassVar[int] = {http_status}\n\n"
-                f"    def __init__(self, *, {init_signature}) -> None:\n"
-                + super_block
+                f"    def __init__(self, *, {init_signature}) -> None:\n" + super_block
             )
         else:
             error_content = (
