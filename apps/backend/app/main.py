@@ -51,13 +51,17 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None]:
     )
     app.state.probe_cache = cache
 
-    reachable = await probe.check()
-    cache.prime(result=reachable)
+    # ``probe.check()`` now returns readiness — reachable AND the configured
+    # model tag is installed — so the startup log event reflects "ready"
+    # rather than the older "reachable" wording which was misleading when
+    # Ollama responded 200 but was missing the pinned model (issue #107).
+    ready = await probe.check()
+    cache.prime(result=ready)
 
-    if reachable:
-        _logger.info("ollama_reachable_at_startup")
+    if ready:
+        _logger.info("ollama_ready_at_startup")
     else:
-        _logger.warning("ollama_unreachable_at_startup")
+        _logger.warning("ollama_not_ready_at_startup")
 
     try:
         yield

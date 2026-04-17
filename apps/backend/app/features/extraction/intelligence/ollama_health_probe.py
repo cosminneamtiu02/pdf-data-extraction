@@ -15,7 +15,7 @@ the C6 httpx-containment contract in ``import-linter-contracts.ini``.
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import structlog
@@ -90,23 +90,33 @@ class OllamaHealthProbe:
         await self._http_client.aclose()
 
 
-def _extract_model_names(body: Any) -> list[str]:
+def _extract_model_names(body: object) -> list[str]:
     """Return the list of model ``name`` values from an ``/api/tags`` body.
 
     Defensive against unexpected shapes: returns an empty list for any
     body that is not the documented ``{"models": [{"name": str, ...}, ...]}``
     structure. The caller treats "no names" the same as "expected model
     missing," so the probe fails closed on unfamiliar payloads.
+
+    Takes ``object`` rather than ``Any`` so ``isinstance(body, dict)``
+    narrows correctly under pyright strict. After each narrowing we
+    ``cast`` to the project-wide ``dict[str, Any]`` / ``list[Any]`` shape
+    used by ``ollama_gemma_provider.py``, keeping JSON-decoded access
+    untyped but consolidated into a single cast per layer — which pyright
+    accepts without ``type: ignore`` suppressions.
     """
     if not isinstance(body, dict):
         return []
-    models: object = body.get("models")  # type: ignore[reportUnknownMemberType]  # httpx Response.json() returns Any
+    body_dict = cast("dict[str, Any]", body)
+    models = body_dict.get("models")
     if not isinstance(models, list):
         return []
+    models_list = cast("list[Any]", models)
     names: list[str] = []
-    for entry in models:  # type: ignore[reportUnknownVariableType]  # list items are Any after JSON decode
+    for entry in models_list:
         if isinstance(entry, dict):
-            name: object = entry.get("name")  # type: ignore[reportUnknownMemberType]  # dict values are Any after JSON decode
+            entry_dict = cast("dict[str, Any]", entry)
+            name = entry_dict.get("name")
             if isinstance(name, str):
                 names.append(name)
     return names

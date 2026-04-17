@@ -158,7 +158,11 @@ async def test_check_returns_false_when_body_is_not_json() -> None:
     fake = _FakeAsyncClient(get_outcomes=[_FakeResponse(body=None)])
     probe = _build_probe(fake)
 
-    assert await probe.check() is False
+    with capture_logs() as logs:
+        assert await probe.check() is False
+
+    events = [entry.get("event") for entry in logs]
+    assert "ollama_probe_invalid_json" in events
 
 
 async def test_check_returns_false_on_connect_error() -> None:

@@ -175,11 +175,17 @@ async def test_degraded_boot_extract_returns_503_intelligence_unavailable(
     assert body["error"]["code"] == "INTELLIGENCE_UNAVAILABLE"
 
 
-async def test_degraded_boot_logs_ollama_unreachable_at_startup(
+async def test_degraded_boot_logs_ollama_not_ready_at_startup(
     tmp_path: Path,
     capfd: pytest.CaptureFixture[str],
 ) -> None:
-    """Ollama unreachable at boot → startup emits WARNING-level log event."""
+    """Ollama not ready at boot → startup emits WARNING-level log event.
+
+    The probe now checks readiness (reachable AND expected model present),
+    so the startup event name reflects "not ready" rather than the older
+    "unreachable" wording which was misleading when Ollama responded 200
+    but was missing the pinned model tag.
+    """
     _write_valid_skill(tmp_path)
     app = create_app(_degraded_settings(tmp_path))
     app.state.ollama_health_probe = FakeProbe(results=[False])
@@ -188,7 +194,7 @@ async def test_degraded_boot_logs_ollama_unreachable_at_startup(
         pass
 
     captured = capfd.readouterr()
-    assert "ollama_unreachable_at_startup" in captured.out
+    assert "ollama_not_ready_at_startup" in captured.out
     assert "warning" in captured.out.lower()
 
 

@@ -94,8 +94,9 @@ This is intentional — not a crash-loop condition.
 
 **What you will see:**
 
-- `ollama_unreachable_at_startup` (WARNING) in logs during boot — the
-  startup probe failed, the service continues in degraded mode.
+- `ollama_not_ready_at_startup` (WARNING) in logs during boot — the
+  startup probe failed (Ollama unreachable OR reachable but missing the
+  pinned `OLLAMA_MODEL` tag), the service continues in degraded mode.
 - `GET /health` → 200 (`{"status": "ok"}`) — the process is alive.
 - `GET /ready` → 503 (`{"status": "not_ready", ...}`) — the service
   is not yet ready to serve extraction requests.
