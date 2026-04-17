@@ -85,7 +85,21 @@ def build_tags_url(base_url: str) -> str:
 
 
 def _build_payload(model: str, prompt: str) -> dict[str, Any]:
-    return {"model": model, "prompt": prompt, "stream": False}
+    # ``format="json"`` engages Ollama's native JSON-constrained decoding so the
+    # server returns well-formed JSON on the first attempt instead of forcing
+    # ``StructuredOutputValidator`` to re-prompt for parse errors on every
+    # request. ``options={"temperature": 0}`` pins deterministic sampling: same
+    # prompt -> same completion, so any validator retry repeats from a stable
+    # baseline rather than drifting between attempts. The validator still
+    # enforces our downstream schema shape, but it no longer pays the malformed-
+    # output retry cost on the happy path. See issue #136.
+    return {
+        "model": model,
+        "prompt": prompt,
+        "stream": False,
+        "format": "json",
+        "options": {"temperature": 0},
+    }
 
 
 @register(r"^gemma", priority=20)
