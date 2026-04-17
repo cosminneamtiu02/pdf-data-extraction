@@ -29,14 +29,17 @@ Each ``infer()`` call creates a fresh ``httpx.AsyncClient`` inside the
 ``asyncio.run`` closes the event loop on return, and httpx binds its connection
 pool to the loop on first use; reusing the instance client across two
 ``asyncio.run`` calls would raise ``RuntimeError: Event loop is closed`` on the
-second invocation. The instance-level ``http_client`` is still used by the
-``generate()`` and ``health_check()`` async paths, which run inside an
-already-running loop and do not have the loop-per-call problem.
+second invocation. The ``generate()`` and ``health_check()`` async paths now
+also rebuild ``self.http_client`` when the running event loop changes — the
+provider is safe to reuse across ``asyncio.run`` scopes from sync callers
+(issue #132). Within one loop, the cached client is retained so connection
+pooling still works.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from typing import TYPE_CHECKING, Any, cast
 
@@ -134,14 +137,68 @@ class OllamaGemmaProvider(BaseLanguageModel):
         self._timeout_seconds = effective_settings.ollama_timeout_seconds
         self._timeout = httpx.Timeout(self._timeout_seconds)
         self._validator = effective_validator
+        # `http_client` is eagerly created (matching the long-standing contract
+        # that `.http_client` is a plain attribute) OR taken from `http_client`
+        # if injected. `_get_http_client` rebuilds it when the running event
+        # loop changes, so reusing a single provider across `asyncio.run`
+        # scopes no longer trips `RuntimeError: Event loop is closed` (issue
+        # #132). The rebuild ONLY fires inside async methods where a real
+        # running loop exists — plain `.http_client` reads from sync code
+        # (e.g. lifespan post-shutdown test assertions) never rebuild.
+        self._injected_http_client = http_client
         self.http_client = http_client or httpx.AsyncClient(timeout=self._timeout)
+        self._http_client_loop: asyncio.AbstractEventLoop | None = None
+
+    def _get_http_client(self) -> httpx.AsyncClient:
+        """Return an `AsyncClient` bound to the currently-running event loop.
+
+        If the caller injected a client via the constructor, return it
+        unchanged — they own its loop affinity. Otherwise rebuild
+        `self.http_client` when the running loop differs from the one the
+        current client was first used on. This fixes the cross-loop
+        regression in issue #132 where a single provider instance used
+        across `asyncio.run` scopes would raise `RuntimeError: Event loop
+        is closed` on the second call.
+
+        Old-client cleanup: when we rebind, the outgoing client is bound to
+        the previous loop. If that loop is still running we schedule
+        ``aclose()`` onto it via ``run_coroutine_threadsafe`` so sockets
+        close cleanly; if it is already closed we cannot run any coroutine
+        on it — the transport was torn down when the loop closed, so the
+        only observable residue is a possible `httpx` "unclosed client"
+        warning on GC, which is acceptable given the alternative is an
+        error (the correct place for callers who care is to call
+        `provider.aclose()` inside each `asyncio.run` scope before leaving
+        it — see the regression tests).
+        """
+        if self._injected_http_client is not None:
+            return self._injected_http_client
+        current_loop = asyncio.get_running_loop()
+        if self._http_client_loop is not None and current_loop is not self._http_client_loop:
+            old_loop = self._http_client_loop
+            old_client = self.http_client
+            self.http_client = httpx.AsyncClient(timeout=self._timeout)
+            # Best-effort close of the prior client. `is_closed` on an
+            # `asyncio.AbstractEventLoop` is the canonical "can we schedule
+            # work on it" check. If the old loop is alive we submit
+            # `aclose()` to it from this thread/loop; if closed, we skip —
+            # the transport already went with the loop.
+            if not old_loop.is_closed():
+                # Loop may transition to closed between the check and the
+                # submit — `run_coroutine_threadsafe` raises `RuntimeError`
+                # if so, which is benign (we fall through as if the loop was
+                # already closed at check time).
+                with contextlib.suppress(RuntimeError):
+                    asyncio.run_coroutine_threadsafe(old_client.aclose(), old_loop)
+        self._http_client_loop = current_loop
+        return self.http_client
 
     async def generate(
         self,
         prompt: str,
         output_schema: dict[str, Any],
     ) -> GenerationResult:
-        return await self._validated_generate(prompt, output_schema, client=self.http_client)
+        return await self._validated_generate(prompt, output_schema, client=self._get_http_client())
 
     async def _validated_generate(
         self,
@@ -286,11 +343,14 @@ class OllamaGemmaProvider(BaseLanguageModel):
 
     async def health_check(self) -> bool:
         try:
-            response = await self.http_client.get(self._tags_url)
+            response = await self._get_http_client().get(self._tags_url)
             response.raise_for_status()
         except (httpx.RequestError, httpx.HTTPStatusError):
             return False
         return True
 
     async def aclose(self) -> None:
+        # Close the current `http_client`. Any earlier client that was
+        # replaced by a cross-loop rebind is already unreachable and was
+        # torn down when its loop exited.
         await self.http_client.aclose()
