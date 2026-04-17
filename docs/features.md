@@ -78,10 +78,11 @@ exception handlers directly.
 ## Backend — Architecture Enforcement
 
 ### Import-Linter Contracts ([apps/backend/architecture/import-linter-contracts.ini](../apps/backend/architecture/import-linter-contracts.ini))
-The shipped contract set (landed in PDFX-E007-F004):
+The shipped contract set includes a pre-existing `shared-no-features`
+contract; PDFX-E007-F004 added C1-C6 and related enforcement:
 
-- `shared-no-features`: `shared/`, `core/`, and `schemas/` cannot import from
-  `features/`.
+- `shared-no-features` (predates PDFX-E007-F004): `app/shared/`, `app/core/`,
+  and `app/schemas/` cannot import from `app/features/`.
 - `C1` feature independence (placeholder): documents the intent that the
   extraction feature cannot reach into sibling features. Vacuously satisfied
   today with a single feature module; the real enforcement for dynamic and
@@ -91,24 +92,24 @@ The shipped contract set (landed in PDFX-E007-F004):
   contracts that encode the extraction feature's non-linear subpackage DAG
   (leaves independent and non-upward; `extraction` may not import
   `coordinates` or `annotation`; `coordinates` may not import `annotation`,
-  `intelligence`, or `skills`; `schemas` is the base with no sibling
-  imports).
+  `intelligence`, or `skills`; `app/features/extraction/schemas/` is the
+  base with no sibling imports).
 - `C3` Docling containment: `docling` may only be imported in
-  `features/extraction/parsing/docling_document_parser.py`.
+  `app/features/extraction/parsing/docling_document_parser.py`.
 - `C4` PyMuPDF containment: `pymupdf` and its `fitz` alias may only be
-  imported in `features/extraction/annotation/pdf_annotator.py` and
-  `features/extraction/parsing/docling_document_parser.py` (password-detection
-  preflight).
+  imported in `app/features/extraction/annotation/pdf_annotator.py` and
+  `app/features/extraction/parsing/docling_document_parser.py`
+  (password-detection preflight).
 - `C5` LangExtract containment: `langextract` may only be imported in
-  `features/extraction/extraction/extraction_engine.py` and
-  `features/extraction/intelligence/ollama_gemma_provider.py` (the community
-  provider plugin entry point).
+  `app/features/extraction/extraction/extraction_engine.py` and
+  `app/features/extraction/intelligence/ollama_gemma_provider.py` (the
+  community provider plugin entry point).
 - `C6` httpx containment: `httpx` may only be imported in
-  `features/extraction/intelligence/ollama_gemma_provider.py` and
-  `features/extraction/intelligence/ollama_health_probe.py`. The contract is
-  broader than "the Ollama client" — both the provider and the readiness
-  probe build their own `httpx.AsyncClient`, so the containment targets
-  `httpx` itself.
+  `app/features/extraction/intelligence/ollama_gemma_provider.py` and
+  `app/features/extraction/intelligence/ollama_health_probe.py`. The
+  contract is broader than "the Ollama client" — both the provider and the
+  readiness probe build their own `httpx.AsyncClient`, so the containment
+  targets `httpx` itself.
 
 `C3-C6` use `source_modules = app` so the entire backend (including
 `app.api`, `app.core`, etc.) is covered, not just the extraction feature.
