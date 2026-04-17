@@ -165,3 +165,30 @@ def test_codegen_rejects_invalid_param_type(tmp_path: Path, output_dir: Path):
 
     with pytest.raises(ValueError, match="[Tt]ype"):
         load_and_validate(path)
+
+
+@pytest.mark.parametrize(
+    ("content", "label"),
+    [
+        ("", "empty"),
+        ("   \n  \n", "whitespace"),
+        ("- 1\n- 2\n", "list"),
+        ("just a string\n", "scalar"),
+    ],
+)
+def test_codegen_rejects_non_mapping_yaml(tmp_path: Path, content: str, label: str):
+    """Codegen must raise ValueError (not AttributeError) when the YAML
+    top-level is not a mapping.
+
+    yaml.safe_load returns None for empty/whitespace-only input, a list for
+    sequences, and a str for bare scalars; calling .get on any of those would
+    otherwise crash with AttributeError deep inside the generator.
+    """
+    path = tmp_path / "errors.yaml"
+    path.write_text(content)
+
+    from scripts.generate import load_and_validate
+
+    with pytest.raises(ValueError, match="[Mm]apping"):
+        load_and_validate(path)
+    assert label  # keep parametrize label visible in test IDs

@@ -84,8 +84,20 @@ def load_and_validate(errors_path: Path) -> ErrorsYaml:
     raw_text = errors_path.read_text()
     _detect_duplicate_keys(raw_text)
 
-    data = cast("ErrorsYaml", yaml.safe_load(raw_text))
-    errors = cast("dict[str, ErrorSpec]", data.get("errors", {}))
+    loaded = yaml.safe_load(raw_text)
+    if not isinstance(loaded, dict):
+        msg = f"errors.yaml top-level must be a mapping, got {type(loaded).__name__}"
+        raise ValueError(msg)
+    data = cast("ErrorsYaml", loaded)
+
+    errors_raw = data.get("errors", {})
+    if not isinstance(errors_raw, dict):
+        msg = (
+            f"errors.yaml 'errors' key must be a mapping, got "
+            f"{type(errors_raw).__name__}"
+        )
+        raise ValueError(msg)
+    errors = cast("dict[str, ErrorSpec]", errors_raw)
 
     for code, spec in errors.items():
         # Validate code format
