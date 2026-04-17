@@ -129,15 +129,63 @@ def _serialize_result(result: ExtractionResult, output_mode: OutputMode) -> Resp
 @router.post(
     "/extract",
     responses={
+        # A 200 response is multi-mediaType: the Content-Type on the wire is
+        # determined by the submitted ``output_mode``. We advertise the
+        # non-JSON variants here so generated clients and schemathesis see
+        # the real contract. This route does not declare a FastAPI
+        # ``response_model``; JSON responses (for ``OutputMode.JSON_ONLY``)
+        # are produced directly by the handler via ``JSONResponse``. The
+        # other two output modes are opaque binary bodies, declared as raw
+        # ``content`` with an empty schema per the FastAPI docs.
         200: {
             "description": (
                 "Extraction succeeded. Content-Type depends on output_mode: "
                 "application/json (JSON_ONLY), application/pdf (PDF_ONLY), "
                 "or multipart/mixed (BOTH)."
             ),
+            "content": {
+                "application/pdf": {},
+                "multipart/mixed": {},
+            },
         },
-        413: {"description": "PDF exceeds max_pdf_bytes", "model": ErrorResponse},
-        504: {"description": "Extraction pipeline timed out", "model": ErrorResponse},
+        # Every error envelope is the DomainError ``ErrorResponse`` shape
+        # produced by ``app.api.errors.register_exception_handlers``. The
+        # 422 entry overrides FastAPI's default ``HTTPValidationError`` so
+        # the advertised contract matches what the custom
+        # ``RequestValidationError`` handler actually emits.
+        400: {
+            "description": "PDF is invalid or password-protected",
+            "model": ErrorResponse,
+        },
+        404: {
+            "description": "Requested skill (name, version) is not registered",
+            "model": ErrorResponse,
+        },
+        413: {
+            "description": "PDF exceeds max_pdf_bytes or max_pages",
+            "model": ErrorResponse,
+        },
+        422: {
+            "description": (
+                "Request validation failed, or the PDF yielded no extractable text even after OCR"
+            ),
+            "model": ErrorResponse,
+        },
+        502: {
+            "description": (
+                "Structured output extraction failed for every declared field, "
+                "or the skill declared zero fields and zero fields were extracted"
+            ),
+            "model": ErrorResponse,
+        },
+        503: {
+            "description": "Intelligence backend (Ollama) is unavailable",
+            "model": ErrorResponse,
+        },
+        504: {
+            "description": "Extraction pipeline timed out",
+            "model": ErrorResponse,
+        },
     },
 )
 async def extract(  # noqa: PLR0913  # FastAPI DI handler — each param is an injected dependency
