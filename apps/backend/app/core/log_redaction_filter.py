@@ -24,13 +24,20 @@ class LogRedactionFilter:
 
     Walks the event dict recursively so a forbidden key nested inside a dict
     value (e.g. ``log.info("evt", context={"extracted_value": "..."})``) is
-    still stripped. Long string values under non-denylisted keys are truncated
-    to ``max_value_length`` characters with a ``... [truncated]`` suffix so
-    operators see something without the full payload landing in logs.
+    still stripped. Denylist matching is case-insensitive (``Raw_Output`` and
+    ``RAW_OUTPUT`` are redacted just like ``raw_output``) because callers may
+    construct log keys from external identifiers whose casing cannot be
+    guaranteed. Long string values under non-denylisted keys are truncated to
+    ``max_value_length`` characters with a ``... [truncated]`` suffix; long
+    ``bytes`` values are replaced with a length-summary placeholder so
+    operators see the size without the full payload landing in logs.
     """
 
     def __init__(self, *, redacted_keys: list[str], max_value_length: int) -> None:
-        self._redacted_keys: frozenset[str] = frozenset(redacted_keys)
+        # Store the denylist in case-folded form so matching ignores casing.
+        # ``str.casefold`` is preferred over ``str.lower`` for Unicode keys, but
+        # in practice keys are ASCII; casefold is the safe default either way.
+        self._redacted_keys: frozenset[str] = frozenset(key.casefold() for key in redacted_keys)
         self._max_value_length: int = max_value_length
 
     def __call__(
@@ -52,10 +59,16 @@ class LogRedactionFilter:
             # 'event' is sacrosanct: it holds the log message body and is never
             # dropped, even if a misconfigured denylist contains it.
             is_event = top_level and key == _EVENT_KEY
-            if not is_event and key in self._redacted_keys:
+            if not is_event and self._is_redacted_key(key):
                 continue
             result[key] = self._scrub_value(value, preserve_length=is_event)
         return result
+
+    def _is_redacted_key(self, key: Any) -> bool:
+        # Non-string keys cannot be case-folded and are not in the denylist.
+        if not isinstance(key, str):
+            return False
+        return key.casefold() in self._redacted_keys
 
     def _scrub_value(self, value: Any, *, preserve_length: bool) -> Any:
         if isinstance(value, Mapping):
@@ -69,6 +82,17 @@ class LogRedactionFilter:
                 self._scrub_value(item, preserve_length=False)
                 for item in cast("tuple[Any, ...]", value)
             )
-        if not preserve_length and isinstance(value, str) and len(value) > self._max_value_length:
+        if preserve_length:
+            return value
+        return self._truncate_if_oversize(value)
+
+    def _truncate_if_oversize(self, value: Any) -> Any:
+        if isinstance(value, str) and len(value) > self._max_value_length:
             return value[: self._max_value_length] + _TRUNCATION_SUFFIX
+        if isinstance(value, bytes) and len(value) > self._max_value_length:
+            # Replace oversize bytes payloads with a length-summary placeholder
+            # rather than a truncated prefix: binary data is rarely human-
+            # readable and a byte-count tells operators what they need without
+            # risking a partial leak of document content.
+            return f"<bytes len={len(value)} truncated>"
         return value
