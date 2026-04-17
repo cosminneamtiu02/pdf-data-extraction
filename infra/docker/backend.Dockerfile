@@ -1,5 +1,6 @@
 # ── Build stage ──────────────────────────────────────────────
-FROM python:3.13-slim AS builder
+# python:3.13-slim (pinned 2026-04-17, https://hub.docker.com/_/python)
+FROM python:3.13-slim@sha256:d168b8d9eb761f4d3fe305ebd04aeb7e7f2de0297cec5fb2f8f6403244621664 AS builder
 
 COPY --from=ghcr.io/astral-sh/uv:0.7.2 /uv /uvx /bin/
 
@@ -25,7 +26,8 @@ COPY apps/backend/pyproject.toml ./
 RUN uv sync --frozen --no-dev
 
 # ── Runtime stage ────────────────────────────────────────────
-FROM python:3.13-slim
+# python:3.13-slim (pinned 2026-04-17, https://hub.docker.com/_/python)
+FROM python:3.13-slim@sha256:d168b8d9eb761f4d3fe305ebd04aeb7e7f2de0297cec5fb2f8f6403244621664
 
 # Run as non-root user
 RUN groupadd --gid 1000 appuser && \
