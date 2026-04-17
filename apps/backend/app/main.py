@@ -40,6 +40,7 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None]:
 
     probe: OllamaHealthProbe = getattr(app.state, "ollama_health_probe", None) or OllamaHealthProbe(  # type: ignore[assignment]  # test seam allows FakeProbe
         tags_url=build_tags_url(settings.ollama_base_url),
+        expected_model=settings.ollama_model,
         timeout_seconds=settings.ollama_probe_timeout_seconds,
     )
     app.state.ollama_health_probe = probe
