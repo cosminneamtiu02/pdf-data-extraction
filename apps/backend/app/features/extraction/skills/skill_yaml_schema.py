@@ -178,7 +178,7 @@ def _is_empty_object_schema(schema: dict[str, Any]) -> bool:
         allows_object = True
     elif isinstance(declared_type, str):
         allows_object = declared_type == "object"
-    elif isinstance(declared_type, list | tuple):
+    elif isinstance(declared_type, (list, tuple)):
         # `declared_type` here is a list/tuple of unknown element types; the
         # membership test is safe regardless of element type.
         allows_object = "object" in declared_type
