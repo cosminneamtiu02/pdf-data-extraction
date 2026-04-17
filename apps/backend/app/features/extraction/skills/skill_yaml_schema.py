@@ -5,6 +5,12 @@ essentially free; at request time they are ruinous. This module enforces:
 
 - Structural shape via Pydantic (name, version, prompt, examples, output_schema).
 - `output_schema` is itself a valid JSONSchema (Draft 7 meta-validation).
+- When `output_schema` declares `type: object` (explicitly or by implication
+  when the `type` keyword is omitted, per JSONSchema Draft 7 semantics for
+  object-shaped extraction results), it must declare at least one entry in
+  `properties`. A zero-field object schema is structurally unable to produce
+  an extraction result and would otherwise surface as a confusing deferred
+  `STRUCTURED_OUTPUT_FAILED` at request time (issue #114).
 - Every example's `output` satisfies `output_schema`.
 - The filename integer (e.g. `2.yaml`) matches the body `version` field.
 
@@ -60,6 +66,17 @@ class SkillYamlSchema(BaseModel):
             # `file` is filled in by `load_from_file` when it re-raises with the
             # known path; inner-validator raises never escape unwrapped.
             raise SkillValidationFailedError(file="", reason="\n".join(problems)) from exc
+
+        if _is_empty_object_schema(self.output_schema):
+            problems.append(
+                "output_schema must declare at least one entry in 'properties' "
+                "for object-typed schemas; a zero-field schema cannot produce "
+                "an extraction result",
+            )
+            # Examples against a zero-field schema carry no useful signal:
+            # any non-empty example output would be a false-positive
+            # violation of the (structurally empty) schema. Raise now.
+            raise SkillValidationFailedError(file="", reason="\n".join(problems))
 
         validator = Draft7Validator(self.output_schema)
         for index, example in enumerate(self.examples):
@@ -130,3 +147,31 @@ class SkillYamlSchema(BaseModel):
             raise SkillValidationFailedError(file=file_str, reason=msg)
 
         return instance
+
+
+def _is_empty_object_schema(schema: dict[str, Any]) -> bool:
+    """Return True when `schema` is an object-typed schema with zero properties.
+
+    Covers the three variants that Draft 7 meta-validation accepts but that
+    cannot produce any extraction field (issue #114):
+
+    - `{}` — wholly empty schema (treated as an object schema by our domain,
+      since skills always return structured object output).
+    - `{"type": "object"}` — type declared, `properties` absent.
+    - `{"type": "object", "properties": {}}` — type declared, `properties`
+      present but empty.
+
+    Schemas with an explicit non-`object` `type` (e.g. `{"type": "string"}`)
+    are outside the scope of this invariant — they would fail elsewhere if
+    ever used for an extraction skill.
+    """
+    declared_type = schema.get("type", "object")
+    if declared_type != "object":
+        return False
+    properties = schema.get("properties", {})
+    if not isinstance(properties, dict):
+        return True
+    # `properties` here is typed `dict[Unknown, Unknown]` from `schema.get`'s
+    # `dict[str, Any]` return; `bool(dict)` sidesteps pyright strict
+    # complaining about `len(...)` needing a fully-parametrised argument.
+    return not properties
