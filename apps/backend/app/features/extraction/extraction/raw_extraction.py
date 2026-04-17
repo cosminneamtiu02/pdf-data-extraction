@@ -31,8 +31,13 @@ class RawExtraction:
     `grounded` summarises whether a source span exists — downstream
     `SpanResolver` uses it to decide whether to look up a bounding box at all.
     Placeholder rows always have `grounded=False`.
-    `attempts` is reserved for forward compatibility; LangExtract 1.2.x does
-    not surface retry counts, so the engine fills it with 1.
+    `attempts` is the number of attempts StructuredOutputValidator spent on
+    the LLM call that produced this row (1-based). LangExtract 1.2.x does
+    not surface retry counts natively; the engine reads them from the
+    validating adapter's side-channel and stamps the same count on every
+    declared field of a given extraction call (see
+    ``_ValidatingLangExtractAdapter.max_observed_attempts``). Short-circuit
+    paths (empty text, zero declared fields) default to 1.
     """
 
     field_name: str
