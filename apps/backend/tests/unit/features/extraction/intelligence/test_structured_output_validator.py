@@ -377,7 +377,7 @@ def test_clean_strips_trailing_fence_when_no_opening_fence_present() -> None:
     """Regression: trailing ``` must be stripped even without an opening fence.
 
     Before the fix, `_clean` only stripped a trailing fence inside the branch
-    that detected an opening fence, so output like `{...}\\n```` left the
+    that detected an opening fence, so output like `{...}\\n``` left the
     closing backticks in the cleaned text. `raw_decode` happens to tolerate
     the trailing noise today, but the contract of `_clean` is to hand JSON
     parsing a fence-free string — relying on `raw_decode`'s leniency is

@@ -114,10 +114,10 @@ class StructuredOutputValidator:
 
 
 def _clean(raw_text: str) -> str:
-    # Three sequential, independent passes. Order matters — the opening-fence
-    # pass must run before the trailing-fence pass so the leading prefix is
-    # consumed first, but each pass is self-contained: whether the opening
-    # fence matched has no bearing on whether the trailing fence is stripped.
+    # Three sequential, independent passes. The opening-fence and trailing-fence
+    # passes are self-contained: one inspects the start of the string and the
+    # other inspects the end, so neither depends on whether the other matched.
+    # They are applied in this order simply as the cleanup flow.
     text = raw_text.strip()
     text = _strip_opening_fence(text)
     text = _strip_trailing_fence(text)
