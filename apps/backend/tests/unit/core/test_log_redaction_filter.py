@@ -226,3 +226,37 @@ def test_non_exception_string_values_not_pattern_scrubbed() -> None:
     # unchanged; redaction patterns are only applied to rendered tracebacks.
     out = _call(_filter(), event="test", message="user@example.com signed in")
     assert out["message"] == "user@example.com signed in"
+
+
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        'File "app/foo.py", line 1, in <module>',
+        "python3.13",
+        "timeout=0.5",
+        "v1.0.2",
+        "duration=1.25",
+    ],
+)
+def test_exception_key_preserves_short_decimals_and_versions(fragment: str) -> None:
+    """Short decimals (versions, floats, timeouts) in tracebacks must pass through.
+
+    The numeric pattern targets 4+ digit sequences and thousands-separated
+    amounts; version strings like ``python3.13`` and short floats like
+    ``timeout=0.5`` are not PII and mangling them destroys traceback readability.
+    """
+    traceback = f"Traceback (most recent call last):\n  {fragment}\nValueError: boom"
+    out = _call(_filter(), event="unhandled_exception", exception=traceback)
+    assert fragment in out["exception"]
+
+
+def test_exception_key_redacts_thousands_separated_amount() -> None:
+    """Thousands-separated monetary amounts (e.g. ``1,847.50``) are scrubbed."""
+    traceback = (
+        "Traceback (most recent call last):\n"
+        '  File "<string>", line 1, in <module>\n'
+        "ValueError: invoice total was 1,847.50 dollars"
+    )
+    out = _call(_filter(), event="unhandled_exception", exception=traceback)
+    assert "1,847.50" not in out["exception"]
+    assert "1,847" not in out["exception"]

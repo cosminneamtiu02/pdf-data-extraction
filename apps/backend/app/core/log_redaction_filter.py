@@ -40,8 +40,10 @@ _EMAIL_PATTERN = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 # Long numeric sequences (4+ digits) that may be monetary amounts, identifiers,
 # or phone numbers. Matches optional thousands-separators and a decimal part so
 # "$1,847.50" and "1847.50" both collapse to the same placeholder. Line numbers
-# in traceback frames ("line 42") are only 1-3 digits and therefore untouched.
-_NUMERIC_PATTERN = re.compile(r"\d{1,3}(?:[,\s]\d{3})+(?:\.\d+)?|\d{4,}(?:\.\d+)?|\d+\.\d+")
+# in traceback frames ("line 42"), version strings ("python3.13"), and short
+# decimals ("timeout=0.5") are only 1-3 digits and therefore untouched —
+# mangling them would destroy traceback readability without scrubbing PII.
+_NUMERIC_PATTERN = re.compile(r"\d{1,3}(?:[,\s]\d{3})+(?:\.\d+)?|\d{4,}(?:\.\d+)?")
 
 
 class LogRedactionFilter:
