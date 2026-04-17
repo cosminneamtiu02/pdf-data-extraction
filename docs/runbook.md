@@ -68,8 +68,13 @@ task docker:down
 
 - **Liveness**: `GET /health` → `{"status": "ok"}`
 - **Readiness**: `GET /ready` → `{"status": "ready"}` (200) when Ollama is
-  reachable within the probe TTL (`OLLAMA_PROBE_TTL_SECONDS`, default 10 s),
-  or `{"status": "not_ready", "reason": "ollama_unreachable"}` (503) otherwise
+  reachable AND the configured `OLLAMA_MODEL` tag is present, checked within
+  the probe TTL (`OLLAMA_PROBE_TTL_SECONDS`, default 10 s). Returns
+  `{"status": "not_ready", "reason": "ollama_unreachable"}` (503) when either
+  check fails (Ollama unreachable, OR reachable but missing the pinned model
+  tag). The `reason` value is `ollama_unreachable` in both cases to preserve
+  the response contract; consult logs for the specific failure
+  (`ollama_model_not_found` is emitted when the model is missing).
 
 ## Ollama
 
@@ -89,8 +94,9 @@ If `/ready` returns 503 or extraction requests return
 
 ## Degraded-Mode Startup
 
-The service starts successfully even when Ollama is unreachable at boot.
-This is intentional — not a crash-loop condition.
+The service starts successfully even when Ollama is unreachable at boot or
+reachable but missing the configured `OLLAMA_MODEL` tag. This is intentional
+— not a crash-loop condition.
 
 **What you will see:**
 
