@@ -622,21 +622,22 @@ async def test_validating_adapter_infer_raises_intelligence_timeout_when_generat
     def _run_infer() -> None:
         list(adapter.infer(["prompt-that-hangs"]))
 
+    # Start the blocking adapter call in the background, wait until the
+    # provider coroutine has definitely started, and only then assert that
+    # the adapter returns promptly with IntelligenceTimeoutError. Avoids a
+    # race where the adapter's 0.2s cancel could fire before the main loop
+    # has scheduled `generate` on slow/busy CI runners — in which case the
+    # old assertion (`hang_started.wait()` after the thread returned) would
+    # flake because `hang_started` never got set.
+    infer_task = _asyncio.create_task(_asyncio.to_thread(_run_infer))
+    await _asyncio.wait_for(hang_started.wait(), timeout=1.0)
+
     # The overall await must return promptly with IntelligenceTimeoutError,
     # not hang the caller. `asyncio.wait_for` as a belt-and-braces guard
     # proves we were not rescued by the test harness killing the loop.
     with pytest.raises(IntelligenceTimeoutError) as exc_info:
-        await _asyncio.wait_for(_asyncio.to_thread(_run_infer), timeout=5.0)
+        await _asyncio.wait_for(infer_task, timeout=5.0)
     assert exc_info.value.code == "INTELLIGENCE_TIMEOUT"
-    # Sanity: the hanging coroutine actually started (so we really did hit
-    # the timeout path, not short-circuit somewhere earlier). Because
-    # `future.cancel()` on a coroutine that has already been scheduled on
-    # the main loop is best-effort, the coroutine continues running for
-    # its `sleep(3)` duration even after the adapter raises — so we wait
-    # with our own timeout to absorb event-loop scheduling jitter rather
-    # than flaking when the timeout budget (0.2s) elapses before the
-    # scheduled `generate` gets CPU time.
-    await _asyncio.wait_for(hang_started.wait(), timeout=1.0)
 
 
 async def test_validating_adapter_infer_propagates_inner_timeout_error_distinct_from_adapter_timeout() -> (
