@@ -347,6 +347,12 @@ def test_docling_rejects_invalid_values_at_load_time(
         {},
         {"type": "object"},
         {"type": "object", "properties": {}},
+        # Draft 7 allows `type` to be a list of types; when that list contains
+        # "object", the schema still permits object-shaped output and so must
+        # be subject to the same "at least one property" invariant. Without
+        # the list-handling branch this case would silently slip through.
+        {"type": ["object", "null"]},
+        {"type": ["object", "null"], "properties": {}},
     ],
 )
 def test_output_schema_with_zero_declared_properties_rejected_at_load_time(
@@ -373,6 +379,48 @@ def test_output_schema_with_zero_declared_properties_rejected_at_load_time(
     reason = _reason(exc_info.value)
     assert "output_schema" in reason
     assert "properties" in reason
+
+
+@pytest.mark.parametrize(
+    ("schema", "expected"),
+    [
+        # Object-permitting — must be flagged when zero properties:
+        ({}, True),
+        ({"type": "object"}, True),
+        ({"type": "object", "properties": {}}, True),
+        ({"type": ["object", "null"]}, True),
+        ({"type": ("object", "null")}, True),  # tuple form, for Python callers
+        ({"type": ["null", "object"], "properties": {}}, True),
+        # Object-permitting but has at least one property — not empty:
+        ({"type": "object", "properties": {"a": {"type": "string"}}}, False),
+        (
+            {"type": ["object", "null"], "properties": {"a": {"type": "string"}}},
+            False,
+        ),
+        # Not object-permitting — outside scope:
+        ({"type": "string"}, False),
+        ({"type": ["string", "null"]}, False),
+        ({"type": ["integer", "number"]}, False),
+    ],
+)
+def test_is_empty_object_schema_classifies_draft7_type_variants(
+    schema: dict[str, object],
+    expected: bool,  # noqa: FBT001 -- parametrized expected return value, not a flag argument
+) -> None:
+    """`_is_empty_object_schema` must handle string- and list-form `type`.
+
+    Draft 7 allows `type` to be either a single string OR a list of strings
+    (see jsonschema 4.26.0 meta-schema). When the list contains `"object"`,
+    the schema still permits object-shaped extraction output and so falls
+    under the same "at least one declared property" invariant as the plain
+    `type: object` form. Before this case was handled, `{"type": ["object",
+    "null"]}` with zero properties silently slipped past the validator.
+    """
+    from app.features.extraction.skills.skill_yaml_schema import (
+        _is_empty_object_schema,
+    )
+
+    assert _is_empty_object_schema(schema) is expected
 
 
 def test_output_schema_with_one_property_still_loads_successfully(

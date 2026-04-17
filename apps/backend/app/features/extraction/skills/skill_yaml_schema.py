@@ -5,11 +5,13 @@ essentially free; at request time they are ruinous. This module enforces:
 
 - Structural shape via Pydantic (name, version, prompt, examples, output_schema).
 - `output_schema` is itself a valid JSONSchema (Draft 7 meta-validation).
-- When `output_schema` declares `type: object` (explicitly or by implication
-  when the `type` keyword is omitted, per JSONSchema Draft 7 semantics for
-  object-shaped extraction results), it must declare at least one entry in
-  `properties`. A zero-field object schema is structurally unable to produce
-  an extraction result and would otherwise surface as a confusing deferred
+- When `output_schema` permits object-shaped output — either via
+  `type: object`, via a list-form `type` that contains `"object"`, or via
+  the domain rule that an omitted `type` is treated as object-shaped for
+  extraction skills (not a JSONSchema Draft 7 rule; Draft 7 leaves a missing
+  `type` unconstrained) — it must declare at least one entry in `properties`.
+  A zero-field object schema is structurally unable to produce an extraction
+  result and would otherwise surface as a confusing deferred
   `STRUCTURED_OUTPUT_FAILED` at request time (issue #114).
 - Every example's `output` satisfies `output_schema`.
 - The filename integer (e.g. `2.yaml`) matches the body `version` field.
@@ -74,8 +76,10 @@ class SkillYamlSchema(BaseModel):
                 "an extraction result",
             )
             # Examples against a zero-field schema carry no useful signal:
-            # any non-empty example output would be a false-positive
-            # violation of the (structurally empty) schema. Raise now.
+            # a Draft 7 object schema with no declared `properties` (and no
+            # `additionalProperties: false`) accepts arbitrary properties, so
+            # non-empty example outputs would silently pass — a false negative.
+            # Raise now so the author sees the structural defect directly.
             raise SkillValidationFailedError(file="", reason="\n".join(problems))
 
         validator = Draft7Validator(self.output_schema)
@@ -150,24 +154,42 @@ class SkillYamlSchema(BaseModel):
 
 
 def _is_empty_object_schema(schema: dict[str, Any]) -> bool:
-    """Return True when `schema` is an object-typed schema with zero properties.
+    """Return True when `schema` permits object output but declares zero properties.
 
-    Covers the three variants that Draft 7 meta-validation accepts but that
-    cannot produce any extraction field (issue #114):
+    Covers the Draft 7 variants that meta-validation accepts but that cannot
+    produce any extraction field (issue #114):
 
-    - `{}` — wholly empty schema (treated as an object schema by our domain,
-      since skills always return structured object output).
+    - `{}` — wholly empty schema. Draft 7 treats this as unconstrained;
+      this project treats an omitted `type` as object-shaped output for
+      extraction skills, so a no-properties `{}` falls under this invariant.
     - `{"type": "object"}` — type declared, `properties` absent.
     - `{"type": "object", "properties": {}}` — type declared, `properties`
       present but empty.
+    - `{"type": ["object", "null"]}` (or any list/tuple `type` containing
+      `"object"`) — the schema still permits object-shaped output and so is
+      subject to the same at-least-one-property rule.
 
-    Schemas with an explicit non-`object` `type` (e.g. `{"type": "string"}`)
-    are outside the scope of this invariant — they would fail elsewhere if
-    ever used for an extraction skill.
+    Schemas whose `type` does not permit `object` (e.g. `{"type": "string"}`,
+    `{"type": ["string", "null"]}`) are outside the scope of this invariant —
+    they would fail elsewhere if ever used for an extraction skill.
     """
-    declared_type = schema.get("type", "object")
-    if declared_type != "object":
+    declared_type = schema.get("type")
+    if declared_type is None:
+        allows_object = True
+    elif isinstance(declared_type, str):
+        allows_object = declared_type == "object"
+    elif isinstance(declared_type, list | tuple):
+        # `declared_type` here is a list/tuple of unknown element types; the
+        # membership test is safe regardless of element type.
+        allows_object = "object" in declared_type
+    else:
+        # Any other shape (e.g. bool, dict) is not a valid JSONSchema `type`
+        # and Draft 7 meta-validation would already have rejected it.
+        allows_object = False
+
+    if not allows_object:
         return False
+
     properties = schema.get("properties", {})
     if not isinstance(properties, dict):
         return True
