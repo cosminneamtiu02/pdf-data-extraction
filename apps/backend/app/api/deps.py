@@ -73,7 +73,6 @@ from app.features.extraction.skills.skill_manifest import SkillManifest
 # can depend on ``get_skill_manifest`` from ``app.api.deps`` — the
 # canonical shared-deps module — while keeping a single definition in
 # ``app.features.extraction.deps``. Two definitions would drift.
-__all__ = ["get_skill_manifest"]
 
 _dep_init_lock = threading.RLock()
 

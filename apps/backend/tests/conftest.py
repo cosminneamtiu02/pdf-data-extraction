@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from app.features.extraction.skills import Skill, SkillDoclingConfig, SkillExample
+from app.features.extraction.skills.deep_freeze import deep_freeze_mapping
 
 
 class FakeProbe:
@@ -44,12 +45,14 @@ def make_skill(name: str, version: int) -> Skill:
         "properties": {"number": {"type": "string"}},
         "required": ["number"],
     }
+    # Deep-freeze to match production `Skill.from_schema` behaviour so
+    # accidental in-test mutations fail the same way they would at runtime.
     return Skill(
         name=name,
         version=version,
         description=None,
         prompt="Extract header fields.",
         examples=(SkillExample(input="INV-1", output={"number": "INV-1"}),),
-        output_schema=output_schema,
+        output_schema=deep_freeze_mapping(output_schema),
         docling_config=SkillDoclingConfig(),
     )
