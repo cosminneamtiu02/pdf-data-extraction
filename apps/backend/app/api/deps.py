@@ -69,6 +69,11 @@ from app.features.extraction.parsing.document_parser import DocumentParser
 from app.features.extraction.service import ExtractionService
 from app.features.extraction.skills.skill_manifest import SkillManifest
 
+# Re-exported so ``app.api.health_router`` (and other shared call sites)
+# can depend on ``get_skill_manifest`` from ``app.api.deps`` — the
+# canonical shared-deps module — while keeping a single definition in
+# ``app.features.extraction.deps``. Two definitions would drift.
+
 _dep_init_lock = threading.RLock()
 
 

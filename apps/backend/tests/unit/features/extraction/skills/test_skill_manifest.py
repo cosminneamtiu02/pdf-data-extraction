@@ -1,38 +1,19 @@
 """Unit tests for `SkillManifest` — keyed lookup, `latest` resolution, misses."""
 
-from typing import Any
-
 import pytest
 
 from app.exceptions import SkillNotFoundError
-from app.features.extraction.skills import Skill, SkillDoclingConfig, SkillExample
 from app.features.extraction.skills.skill_manifest import SkillManifest
-
-
-def _make_skill(name: str, version: int) -> Skill:
-    output_schema: dict[str, Any] = {
-        "type": "object",
-        "properties": {"number": {"type": "string"}},
-        "required": ["number"],
-    }
-    return Skill(
-        name=name,
-        version=version,
-        description=None,
-        prompt="Extract header fields.",
-        examples=(SkillExample(input="INV-1", output={"number": "INV-1"}),),
-        output_schema=output_schema,
-        docling_config=SkillDoclingConfig(),
-    )
+from tests.conftest import make_skill
 
 
 @pytest.fixture
 def manifest() -> SkillManifest:
     return SkillManifest(
         {
-            ("invoice", 1): _make_skill("invoice", 1),
-            ("invoice", 2): _make_skill("invoice", 2),
-            ("research_paper", 1): _make_skill("research_paper", 1),
+            ("invoice", 1): make_skill("invoice", 1),
+            ("invoice", 2): make_skill("invoice", 2),
+            ("research_paper", 1): make_skill("research_paper", 1),
         },
     )
 
@@ -83,3 +64,24 @@ def test_empty_manifest_lookup_raises() -> None:
 
     with pytest.raises(SkillNotFoundError):
         manifest.lookup("anything", "latest")
+
+
+def test_empty_manifest_is_empty_true() -> None:
+    assert SkillManifest({}).is_empty is True
+
+
+def test_populated_manifest_is_empty_false(manifest: SkillManifest) -> None:
+    assert manifest.is_empty is False
+
+
+def test_make_skill_helper_produces_valid_skill() -> None:
+    """Guard against silent ``make_skill`` breakage across test modules.
+
+    ``make_skill`` lives in ``tests/conftest.py`` and is imported by
+    unit and integration tests; if its shape drifts from ``Skill``'s
+    runtime invariants, the callers surface misleading errors. This
+    test is the canonical check so breakage shows up here first.
+    """
+    skill = make_skill("invoice", 7)
+    assert skill.name == "invoice"
+    assert skill.version == 7

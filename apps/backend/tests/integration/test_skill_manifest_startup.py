@@ -105,6 +105,38 @@ async def test_manifest_is_stable_across_reads(tmp_path: Path) -> None:
     assert first is second
 
 
+async def test_ready_returns_503_when_skills_dir_empty(tmp_path: Path) -> None:
+    """Empty skills_dir (directory exists but holds no valid YAMLs) → /ready 503.
+
+    Mirrors the production Docker scenario where the image ships
+    ``apps/backend/skills/`` with only a ``.gitkeep`` and the operator
+    has not mounted a real skills directory over it. The startup path
+    survives (loader emits ``skill_manifest_empty`` warning, boot
+    continues), but /ready must report ``not_ready`` so the container
+    is pulled out of rotation until skills are supplied.
+    """
+    # Directory exists but contains no YAMLs — the exact prod boot shape.
+    empty_skills_dir = tmp_path / "skills_empty"
+    empty_skills_dir.mkdir()
+
+    app = create_app(_settings_with_skills(empty_skills_dir))
+
+    # Override the probe cache to a reachable Ollama so only the skills
+    # dimension is exercised by this test.
+    cache = ProbeCache(probe=FakeProbe(results=[True]), ttl_seconds=60.0)  # type: ignore[arg-type]  # test seam
+    app.dependency_overrides[get_probe_cache] = lambda: cache
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/ready")
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 503
+    body = response.json()
+    assert body["status"] == "not_ready"
+    assert body["reason"] == "no_skills_loaded"
+
+
 async def test_docling_override_flows_from_settings(tmp_path: Path) -> None:
     _write_skill(
         tmp_path,

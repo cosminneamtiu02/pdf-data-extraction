@@ -1,8 +1,12 @@
 """Integration tests for health, readiness, middleware, and CORS.
 
-The /ready endpoint is gated on a TTL-cached Ollama probe (PDFX-E007-F001).
-These tests override the ``get_probe_cache`` dependency to inject a
-controllable ``ProbeCache`` with a ``FakeProbe``, so no real Ollama is needed.
+The /ready endpoint is gated on a TTL-cached Ollama probe (PDFX-E007-F001)
+*and* on a non-empty skill manifest (issue #108). These tests override
+``get_probe_cache`` to inject a controllable ``ProbeCache`` with a
+``FakeProbe`` and ``get_skill_manifest`` to inject a non-empty manifest,
+so no real Ollama is needed and the default module-level ``app`` (whose
+packaged ``apps/backend/skills/`` ships only ``.gitkeep``) does not short-
+circuit every test on ``no_skills_loaded``.
 """
 
 from __future__ import annotations
@@ -13,10 +17,11 @@ from typing import Any
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.api.deps import get_probe_cache
+from app.api.deps import get_probe_cache, get_skill_manifest
 from app.api.probe_cache import ProbeCache
+from app.features.extraction.skills import SkillManifest
 from app.main import app
-from tests.conftest import FakeProbe
+from tests.conftest import FakeProbe, make_skill
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -35,6 +40,17 @@ def _make_cache(
     return cache, probe
 
 
+def _non_empty_manifest() -> SkillManifest:
+    """Manifest with one skill so ``/ready`` does not short-circuit on empty.
+
+    The module-level ``app`` is constructed against the packaged
+    ``apps/backend/skills/`` directory which ships only ``.gitkeep``, so
+    without this override every ``/ready`` request would return 503 with
+    ``no_skills_loaded`` regardless of the probe state under test.
+    """
+    return SkillManifest({("invoice", 1): make_skill("invoice", 1)})
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -42,10 +58,24 @@ def _make_cache(
 
 @pytest.fixture
 async def client() -> AsyncClient:
-    """HTTP client bound to the FastAPI ASGI app in-process (no DB, no network)."""
+    """HTTP client bound to the FastAPI ASGI app in-process (no DB, no network).
+
+    Installs a non-empty ``SkillManifest`` dependency override for the
+    duration of each test so ``/ready`` does not short-circuit on
+    ``no_skills_loaded`` (the packaged ``apps/backend/skills/`` ships
+    only ``.gitkeep``). Individual tests that install their own probe
+    override must tear it down with
+    ``app.dependency_overrides.pop(get_probe_cache, None)`` rather than
+    ``.clear()`` — the latter would also erase the manifest stand-in
+    this fixture owns.
+    """
+    app.dependency_overrides[get_skill_manifest] = _non_empty_manifest
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        yield ac
+    try:
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            yield ac
+    finally:
+        app.dependency_overrides.pop(get_skill_manifest, None)
 
 
 # ---------------------------------------------------------------------------
@@ -74,7 +104,7 @@ async def test_ready_returns_200_when_probe_ok(client: AsyncClient) -> None:
         assert response.status_code == 200
         assert response.json() == {"status": "ready"}
     finally:
-        app.dependency_overrides.clear()
+        app.dependency_overrides.pop(get_probe_cache, None)
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +123,7 @@ async def test_ready_returns_503_when_probe_fails(client: AsyncClient) -> None:
         assert body["status"] == "not_ready"
         assert body["reason"] == "ollama_unreachable"
     finally:
-        app.dependency_overrides.clear()
+        app.dependency_overrides.pop(get_probe_cache, None)
 
 
 async def test_ready_503_has_json_content_type(client: AsyncClient) -> None:
@@ -105,7 +135,7 @@ async def test_ready_503_has_json_content_type(client: AsyncClient) -> None:
         assert response.status_code == 503
         assert response.headers["content-type"] == "application/json"
     finally:
-        app.dependency_overrides.clear()
+        app.dependency_overrides.pop(get_probe_cache, None)
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +152,7 @@ async def test_ready_caches_probe_within_ttl(client: AsyncClient) -> None:
         await client.get("/ready")
         assert probe.call_count == 1
     finally:
-        app.dependency_overrides.clear()
+        app.dependency_overrides.pop(get_probe_cache, None)
 
 
 async def test_ready_ttl_flip_true_to_false(client: AsyncClient) -> None:
@@ -145,7 +175,7 @@ async def test_ready_ttl_flip_true_to_false(client: AsyncClient) -> None:
         assert r3.status_code == 503
         assert probe.call_count == 2
     finally:
-        app.dependency_overrides.clear()
+        app.dependency_overrides.pop(get_probe_cache, None)
 
 
 # ---------------------------------------------------------------------------

@@ -34,6 +34,18 @@ class SkillManifest:
         self._skills: Mapping[tuple[str, int], Skill] = MappingProxyType(dict(loaded))
         self._latest: Mapping[str, int] = MappingProxyType(latest)
 
+    @property
+    def is_empty(self) -> bool:
+        """Return True when no skills were registered at load time.
+
+        Consumed by the `/ready` probe (``health_router.ready``) so the
+        container can report unhealthy when operators ship a bare image
+        (`apps/backend/skills/` holding only `.gitkeep`) without mounting
+        a real skills directory, which would otherwise surface as every
+        extraction request 404-ing on lookup.
+        """
+        return len(self._skills) == 0
+
     def lookup(self, name: str, version: str) -> Skill:
         """Return the `Skill` for `(name, version)` or raise `SkillNotFoundError`.
 

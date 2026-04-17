@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
+
+from app.features.extraction.skills import Skill, SkillDoclingConfig, SkillExample
+from app.features.extraction.skills.deep_freeze import deep_freeze_mapping
 
 
 class FakeProbe:
@@ -25,3 +30,29 @@ class FakeProbe:
         result = self._results[self.call_count]
         self.call_count += 1
         return result
+
+
+def make_skill(name: str, version: int) -> Skill:
+    """Construct a minimal valid ``Skill`` for test fixtures.
+
+    Lives here (not in ``tests/unit/features/extraction/skills/...``) because
+    multiple test modules across unit and integration need it — keeping it
+    co-located with ``test_skill_manifest.py`` forced cross-test imports
+    that coupled unrelated files to that module's private helper.
+    """
+    output_schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {"number": {"type": "string"}},
+        "required": ["number"],
+    }
+    # Deep-freeze to match production `Skill.from_schema` behaviour so
+    # accidental in-test mutations fail the same way they would at runtime.
+    return Skill(
+        name=name,
+        version=version,
+        description=None,
+        prompt="Extract header fields.",
+        examples=(SkillExample(input="INV-1", output={"number": "INV-1"}),),
+        output_schema=deep_freeze_mapping(output_schema),
+        docling_config=SkillDoclingConfig(),
+    )
