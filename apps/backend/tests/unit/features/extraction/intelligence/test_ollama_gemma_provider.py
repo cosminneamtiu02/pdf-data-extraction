@@ -213,6 +213,29 @@ async def test_generate_sends_model_and_url_from_settings() -> None:
     assert payload["stream"] is False
 
 
+async def test_generate_payload_includes_format_json_and_zero_temperature() -> None:
+    """Regression guard for issue #136.
+
+    The ``/api/generate`` payload must include ``format="json"`` so Ollama
+    constrains output to valid JSON natively (reducing ``StructuredOutputValidator``
+    retries for malformed text) and ``options={"temperature": 0}`` so generations
+    are deterministic (repeatable retries, no drift between attempts). Before the
+    fix, the payload carried only ``model``/``prompt``/``stream``, and every
+    request paid the full formatting cost in validator retries.
+    """
+    fake = _FakeAsyncClient(
+        post_outcomes=[_FakeResponse(body={"response": '{"name":"Alice"}'})],
+    )
+    provider = _build_provider(fake_client=fake)
+
+    await provider.generate("hi", _NAME_STRING_SCHEMA)
+
+    _, payload = fake.post_calls[0]
+    assert payload["format"] == "json"
+    assert isinstance(payload["options"], dict)
+    assert payload["options"]["temperature"] == 0
+
+
 async def test_generate_strips_trailing_slash_from_base_url() -> None:
     fake = _FakeAsyncClient(
         post_outcomes=[_FakeResponse(body={"response": '{"name":"Alice"}'})],
