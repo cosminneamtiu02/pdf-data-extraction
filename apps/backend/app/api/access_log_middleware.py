@@ -14,17 +14,30 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         start = time.perf_counter()
-        status_code = 500
         try:
             response = await call_next(request)
-            status_code = response.status_code
-        finally:
+        except BaseException as exc:
+            # Catch BaseException (not just Exception) so that asyncio.CancelledError
+            # from client disconnects still produces an access log entry. Operators
+            # diagnosing a disconnect storm otherwise have no per-request record of
+            # the failed requests. We re-raise unchanged so the exception handler
+            # middleware (or the ASGI server) can do its normal job (issue #147).
             duration_ms = (time.perf_counter() - start) * 1000
             _logger.info(
                 "http_request",
                 method=request.method,
                 path=request.url.path,
-                status_code=status_code,
+                status_code=500,
                 duration_ms=round(duration_ms, 2),
+                error=type(exc).__name__,
             )
+            raise
+        duration_ms = (time.perf_counter() - start) * 1000
+        _logger.info(
+            "http_request",
+            method=request.method,
+            path=request.url.path,
+            status_code=response.status_code,
+            duration_ms=round(duration_ms, 2),
+        )
         return response
