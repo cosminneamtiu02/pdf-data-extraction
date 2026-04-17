@@ -153,6 +153,7 @@ def test_openapi_declares_all_reachable_status_codes_and_media_types(tmp_path: P
 
     # 200 path is a multi-media response. All three output_modes must be
     # advertised so codegen clients and schemathesis see the real contract.
+    assert "200" in responses, "200 success response not declared for /api/v1/extract"
     ok_content = responses["200"].get("content", {})
     assert "application/json" in ok_content, "200 missing application/json (JSON_ONLY mode)"
     assert "application/pdf" in ok_content, "200 missing application/pdf (PDF_ONLY mode)"
