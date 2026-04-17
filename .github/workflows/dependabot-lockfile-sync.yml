@@ -82,6 +82,16 @@ on:
     branches: [main]
     types: [opened, synchronize, reopened]
 
+# Serialize runs on the same PR to prevent competing `git push` attempts
+# (a second run would hit non-fast-forward against the first run's push).
+# cancel-in-progress is deliberately false: once a run is regenerating
+# lockfiles, it must finish to keep the lockfile-fix + auto-merge chain
+# intact. Cancelling mid-run would leave the PR stuck with the lockfile
+# gap bug and block auto-merge.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
 permissions:
   contents: write
   pull-requests: write
@@ -89,6 +99,7 @@ permissions:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     if: github.event.pull_request.user.login == 'dependabot[bot]' && vars.DEPENDABOT_LOCKFILE_SYNC_ENABLED == 'true'
     steps:
       - name: Verify PAT is configured
