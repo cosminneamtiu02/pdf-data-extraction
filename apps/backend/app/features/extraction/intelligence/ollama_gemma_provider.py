@@ -39,6 +39,7 @@ pooling still works.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from typing import TYPE_CHECKING, Any, cast
 
@@ -158,15 +159,37 @@ class OllamaGemmaProvider(BaseLanguageModel):
         regression in issue #132 where a single provider instance used
         across `asyncio.run` scopes would raise `RuntimeError: Event loop
         is closed` on the second call.
+
+        Old-client cleanup: when we rebind, the outgoing client is bound to
+        the previous loop. If that loop is still running we schedule
+        ``aclose()`` onto it via ``run_coroutine_threadsafe`` so sockets
+        close cleanly; if it is already closed we cannot run any coroutine
+        on it — the transport was torn down when the loop closed, so the
+        only observable residue is a possible `httpx` "unclosed client"
+        warning on GC, which is acceptable given the alternative is an
+        error (the correct place for callers who care is to call
+        `provider.aclose()` inside each `asyncio.run` scope before leaving
+        it — see the regression tests).
         """
         if self._injected_http_client is not None:
             return self._injected_http_client
         current_loop = asyncio.get_running_loop()
         if self._http_client_loop is not None and current_loop is not self._http_client_loop:
-            # A previous call bound the client to a now-different loop.
-            # Build a fresh one for this loop; the old client's transport
-            # was already torn down when its loop closed.
+            old_loop = self._http_client_loop
+            old_client = self.http_client
             self.http_client = httpx.AsyncClient(timeout=self._timeout)
+            # Best-effort close of the prior client. `is_closed` on an
+            # `asyncio.AbstractEventLoop` is the canonical "can we schedule
+            # work on it" check. If the old loop is alive we submit
+            # `aclose()` to it from this thread/loop; if closed, we skip —
+            # the transport already went with the loop.
+            if not old_loop.is_closed():
+                # Loop may transition to closed between the check and the
+                # submit — `run_coroutine_threadsafe` raises `RuntimeError`
+                # if so, which is benign (we fall through as if the loop was
+                # already closed at check time).
+                with contextlib.suppress(RuntimeError):
+                    asyncio.run_coroutine_threadsafe(old_client.aclose(), old_loop)
         self._http_client_loop = current_loop
         return self.http_client
 

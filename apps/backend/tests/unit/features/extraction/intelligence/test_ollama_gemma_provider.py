@@ -935,13 +935,20 @@ def test_infer_survives_repeated_calls_on_same_provider(
         validator=_build_validator(settings),
     )
 
-    first_results = list(provider.infer(["p1"]))
-    second_results = list(provider.infer(["p2"]))
+    try:
+        first_results = list(provider.infer(["p1"]))
+        second_results = list(provider.infer(["p2"]))
 
-    assert len(first_results) == 1
-    assert len(second_results) == 1
-    assert json.loads(first_results[0][0].output) == {"extractions": []}
-    assert json.loads(second_results[0][0].output) == {"extractions": []}
+        assert len(first_results) == 1
+        assert len(second_results) == 1
+        assert json.loads(first_results[0][0].output) == {"extractions": []}
+        assert json.loads(second_results[0][0].output) == {"extractions": []}
+    finally:
+        # Close the eagerly-created instance `http_client` so the test
+        # does not leak a real `httpx.AsyncClient` (the `infer()` path
+        # uses its own per-batch client, but `__init__` still constructs
+        # the instance client for `generate()`/`health_check()` paths).
+        asyncio.run(provider.aclose())
 
 
 def test_generate_single_call_still_succeeds_positive_regression(
