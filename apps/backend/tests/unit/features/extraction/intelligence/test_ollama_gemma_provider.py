@@ -844,8 +844,14 @@ def local_ollama_stub() -> Iterator[str]:
     opens real connections whose pool is bound to the running event loop — the
     exact code path under test in the cross-loop regression.
     """
-    server = socketserver.ThreadingTCPServer(("127.0.0.1", 0), _StaticOllamaHandler)
-    server.allow_reuse_address = True
+
+    # `allow_reuse_address` must be a *class* attribute to take effect (it's
+    # consulted inside `server_bind` before instantiation). Setting it on the
+    # instance after bind is a no-op, so subclass here instead.
+    class _ReusableThreadingTCPServer(socketserver.ThreadingTCPServer):
+        allow_reuse_address = True
+
+    server = _ReusableThreadingTCPServer(("127.0.0.1", 0), _StaticOllamaHandler)
     port = server.server_address[1]
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -899,9 +905,13 @@ def test_generate_survives_rebinding_to_fresh_event_loop_across_calls(
     loop2 = asyncio.new_event_loop()
     try:
         second = loop2.run_until_complete(provider.generate("p2", schema))
+        assert second.data == {"extractions": []}
     finally:
+        # Close the provider on the same loop that just used it so the
+        # rebound `http_client` tears down cleanly instead of leaking a
+        # socket pool through `loop2.close()`.
+        loop2.run_until_complete(provider.aclose())
         loop2.close()
-    assert second.data == {"extractions": []}
 
 
 def test_infer_survives_repeated_calls_on_same_provider(
@@ -957,6 +967,14 @@ def test_generate_single_call_still_succeeds_positive_regression(
         validator=_build_validator(settings),
     )
 
-    result = asyncio.run(provider.generate("p1", schema))
+    async def _run_generate() -> Any:
+        try:
+            return await provider.generate("p1", schema)
+        finally:
+            # Close the httpx client inside the same `asyncio.run` scope so
+            # it tears down cleanly rather than leaking once the loop exits.
+            await provider.aclose()
+
+    result = asyncio.run(_run_generate())
 
     assert result.data == {"extractions": []}
