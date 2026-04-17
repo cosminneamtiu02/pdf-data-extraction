@@ -571,10 +571,19 @@ def test_default_factory_off_mode_disables_ocr_and_skips_ocr_options(
     assert pipeline_options.ocr_options is None
 
 
-def test_default_factory_raises_runtime_error_when_docling_not_installed(
+def test_default_factory_raises_domain_error_when_docling_not_installed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Missing Docling must surface as a DomainError, not a generic RuntimeError.
+
+    Regression guard for issue #153: CLAUDE.md forbids `RuntimeError` inside the
+    extraction pipeline. The lazy-import fallback in `_default_converter_factory`
+    previously raised `RuntimeError`, which surfaced as an opaque 500 instead of
+    a structured `PdfParserUnavailableError` response.
+    """
     import importlib as _importlib
+
+    from app.exceptions import PdfParserUnavailableError
 
     real_import_module = _importlib.import_module
 
@@ -585,8 +594,47 @@ def test_default_factory_raises_runtime_error_when_docling_not_installed(
 
     monkeypatch.setattr(parser_mod.importlib, "import_module", failing_import)
 
-    with pytest.raises(RuntimeError, match="docling is not installed"):
+    with pytest.raises(PdfParserUnavailableError) as excinfo:
         _default_converter_factory(DoclingConfig(ocr="auto", table_mode="fast"))
+
+    assert excinfo.value.params is not None
+    assert excinfo.value.params.model_dump() == {"dependency": "docling"}
+    # The original ImportError must chain via `raise ... from exc` so operators
+    # still see the underlying cause in the traceback.
+    assert isinstance(excinfo.value.__cause__, ImportError)
+
+
+def test_default_pdf_preflight_raises_domain_error_when_pymupdf_not_installed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Missing PyMuPDF must surface as a DomainError, not a generic RuntimeError.
+
+    Regression guard for issue #153: `_default_pdf_preflight` previously raised
+    `RuntimeError` on missing pymupdf. Must now raise
+    `PdfParserUnavailableError` with the offending dependency name.
+    """
+    import importlib as _importlib
+
+    from app.exceptions import PdfParserUnavailableError
+    from app.features.extraction.parsing.docling_document_parser import (
+        _default_pdf_preflight,
+    )
+
+    real_import_module = _importlib.import_module
+
+    def failing_import(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "pymupdf":
+            raise ImportError(name)
+        return real_import_module(name, *args, **kwargs)
+
+    monkeypatch.setattr(parser_mod.importlib, "import_module", failing_import)
+
+    with pytest.raises(PdfParserUnavailableError) as excinfo:
+        _default_pdf_preflight(b"%PDF-fake")
+
+    assert excinfo.value.params is not None
+    assert excinfo.value.params.model_dump() == {"dependency": "pymupdf"}
+    assert isinstance(excinfo.value.__cause__, ImportError)
 
 
 # ---------------------------------------------------------------------------

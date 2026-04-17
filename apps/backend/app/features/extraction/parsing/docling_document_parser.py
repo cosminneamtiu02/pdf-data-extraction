@@ -61,6 +61,7 @@ import structlog
 from app.exceptions import (
     PdfInvalidError,
     PdfNoTextExtractableError,
+    PdfParserUnavailableError,
     PdfPasswordProtectedError,
     PdfTooManyPagesError,
 )
@@ -160,13 +161,17 @@ def _default_pdf_preflight(pdf_bytes: bytes) -> int:
     """
     try:
         pymupdf: Any = importlib.import_module("pymupdf")
-    except ImportError as exc:  # pragma: no cover - pymupdf is a pinned dep
-        msg = (
-            "pymupdf is not installed; the default PDF preflight cannot "
-            "validate raw bytes. Tests must inject a preflight via "
-            "DoclingDocumentParser(pdf_preflight=...)."
+    except ImportError as exc:
+        _log.error(
+            "parser_dependency_unavailable",
+            dependency="pymupdf",
+            detail=(
+                "pymupdf is not installed; the default PDF preflight cannot "
+                "validate raw bytes. Tests must inject a preflight via "
+                "DoclingDocumentParser(pdf_preflight=...)."
+            ),
         )
-        raise RuntimeError(msg) from exc
+        raise PdfParserUnavailableError(dependency="pymupdf") from exc
 
     # Narrow catch: only PyMuPDF's own data-error hierarchy maps to
     # PdfInvalidError. Anything else (MemoryError, OSError, etc.) propagates
@@ -218,14 +223,18 @@ def _default_converter_factory(config: DoclingConfig) -> _DoclingConverterLike:
             "docling.document_converter",
         )
     except ImportError as exc:
-        msg = (
-            "docling is not installed; DoclingDocumentParser's default "
-            "converter factory cannot build a real Docling pipeline. "
-            "Docling becomes a pinned runtime dependency in PDFX-E001-F002. "
-            "Until then, unit tests must inject a fake `converter_factory` "
-            "via DoclingDocumentParser(converter_factory=...)."
+        _log.error(
+            "parser_dependency_unavailable",
+            dependency="docling",
+            detail=(
+                "docling is not installed; DoclingDocumentParser's default "
+                "converter factory cannot build a real Docling pipeline. "
+                "Docling becomes a pinned runtime dependency in PDFX-E001-F002. "
+                "Until then, unit tests must inject a fake `converter_factory` "
+                "via DoclingDocumentParser(converter_factory=...)."
+            ),
         )
-        raise RuntimeError(msg) from exc
+        raise PdfParserUnavailableError(dependency="docling") from exc
 
     input_format: Any = base_models.InputFormat
     pdf_pipeline_options_cls: Any = pipeline_options_mod.PdfPipelineOptions
