@@ -14,6 +14,14 @@ from app.core.docling_modes import OcrMode, TableMode
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent.parent
 _DEFAULT_SKILLS_DIR = _BACKEND_ROOT / "skills"
 
+# Canonical stdlib-logging level names accepted by this validator.
+# Aliases such as ``WARN`` and ``FATAL`` are intentionally excluded —
+# operators should spell ``WARNING`` in full so the error message is
+# unambiguous.
+_VALID_LOG_LEVELS: frozenset[str] = frozenset(
+    {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"},
+)
+
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
@@ -45,6 +53,36 @@ class Settings(BaseSettings):
 
     ollama_base_url: str = "http://host.docker.internal:11434"
     ollama_model: str = "gemma4:e2b"
+
+    @field_validator("log_level", mode="after")
+    @classmethod
+    def _validate_log_level(cls, v: str) -> str:
+        """Normalize and validate ``log_level`` against stdlib-logging levels.
+
+        Without this validator, a typo like ``LOG_LEVEL=debg`` slipped
+        past ``Settings`` construction and only crashed later when
+        structlog / ``logging.Logger.setLevel`` tried to parse it —
+        *before* the FastAPI exception handlers install, producing an
+        opaque traceback on startup (issue #146).
+
+        The validator:
+
+        * accepts any case (``debug``, ``Debug``, ``DEBUG``);
+        * strips surrounding whitespace (common ``.env`` paper-cut);
+        * rejects the empty string, non-standard aliases (``warn``),
+          and typos, with a message that lists the valid options so
+          operators can self-correct.
+
+        ``mode="after"`` is safe because the field is typed ``str`` and
+        pydantic-settings coerces env vars to strings before this
+        validator runs.
+        """
+        normalized = v.strip().upper()
+        if normalized not in _VALID_LOG_LEVELS:
+            valid = ", ".join(sorted(_VALID_LOG_LEVELS))
+            msg = f"log_level must be one of {{{valid}}} (case-insensitive); got {v!r}"
+            raise ValueError(msg)
+        return normalized
 
     @field_validator("cors_origins", mode="before")
     @classmethod
