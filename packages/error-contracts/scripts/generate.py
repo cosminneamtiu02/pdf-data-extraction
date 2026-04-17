@@ -7,17 +7,24 @@ Generated files are committed but never edited by hand.
 import json
 import re
 from pathlib import Path
+from typing import Any, cast
 
 import yaml
 
+# The YAML shape is: {"version": int, "errors": {CODE: {http_status: int, description: str, params: {name: type}}}}.
+# We keep the in-memory representation duck-typed as dict[str, Any] because
+# yaml.safe_load returns Any; validation happens in `load_and_validate`.
+ErrorSpec = dict[str, Any]
+ErrorsYaml = dict[str, Any]
+
 VALID_PARAM_TYPES = {"string", "integer", "number", "boolean"}
-PARAM_TYPE_TO_PYTHON = {
+PARAM_TYPE_TO_PYTHON: dict[str, str] = {
     "string": "str",
     "integer": "int",
     "number": "float",
     "boolean": "bool",
 }
-PARAM_TYPE_TO_TS = {
+PARAM_TYPE_TO_TS: dict[str, str] = {
     "string": "string",
     "integer": "number",
     "number": "number",
@@ -36,11 +43,6 @@ def _code_to_class_name(code: str) -> str:
     if base.endswith("Error"):
         return base
     return base + "Error"
-
-
-def _code_to_snake(code: str) -> str:
-    """Convert SCREAMING_SNAKE to snake_case. e.g. WIDGET_NOT_FOUND -> widget_not_found."""
-    return code.lower()
 
 
 def _class_to_snake(name: str) -> str:
@@ -77,13 +79,13 @@ def _detect_duplicate_keys(raw_text: str) -> None:
                 in_errors = False
 
 
-def load_and_validate(errors_path: Path) -> dict:
+def load_and_validate(errors_path: Path) -> ErrorsYaml:
     """Load errors.yaml and validate its contents."""
     raw_text = errors_path.read_text()
     _detect_duplicate_keys(raw_text)
 
-    data = yaml.safe_load(raw_text)
-    errors = data.get("errors", {})
+    data = cast("ErrorsYaml", yaml.safe_load(raw_text))
+    errors = cast("dict[str, ErrorSpec]", data.get("errors", {}))
 
     for code, spec in errors.items():
         # Validate code format
@@ -98,7 +100,7 @@ def load_and_validate(errors_path: Path) -> dict:
             raise ValueError(msg)
 
         # Validate param types
-        params = spec.get("params", {})
+        params = cast("dict[str, str]", spec.get("params", {}))
         for param_name, param_type in params.items():
             if param_type not in VALID_PARAM_TYPES:
                 msg = (
@@ -113,7 +115,7 @@ def load_and_validate(errors_path: Path) -> dict:
 def generate_python(errors_path: Path, output_dir: Path) -> list[Path]:
     """Generate Python exception classes from errors.yaml."""
     data = load_and_validate(errors_path)
-    errors = data["errors"]
+    errors = cast("dict[str, ErrorSpec]", data["errors"])
     output_dir.mkdir(parents=True, exist_ok=True)
     generated_files: list[Path] = []
 
@@ -124,10 +126,12 @@ def generate_python(errors_path: Path, output_dir: Path) -> list[Path]:
         error_class_name = _code_to_class_name(code)
         base_name = error_class_name.removesuffix("Error")
         error_file_stem = _class_to_snake(error_class_name)  # e.g. "internal_error"
-        params = spec.get("params", {})
-        http_status = spec["http_status"]
+        params = cast("dict[str, str]", spec.get("params", {}))
+        http_status = cast("int", spec["http_status"])
 
-        # Generate params class if params exist
+        # Generate error class (and params class first, when params exist, so
+        # the two branches share the scope of params_class_name / params_file_stem).
+        error_file = output_dir / f"{error_file_stem}.py"
         if params:
             params_class_name = f"{base_name}Params"
             params_file_stem = _class_to_snake(params_class_name)
@@ -148,12 +152,10 @@ def generate_python(errors_path: Path, output_dir: Path) -> list[Path]:
                 f"from app.exceptions._generated.{params_file_stem} import {params_class_name}"
             )
 
-        # Generate error class
-        error_file = output_dir / f"{error_file_stem}.py"
-        if params:
-            kw_args = []
-            for name, ptype in params.items():
-                kw_args.append(f"{name}: {PARAM_TYPE_TO_PYTHON[ptype]}")
+            kw_args = [
+                f"{name}: {PARAM_TYPE_TO_PYTHON[ptype]}"
+                for name, ptype in params.items()
+            ]
             init_signature = ", ".join(kw_args)
             params_construct = ", ".join(f"{name}={name}" for name in params)
             # Check if the super().__init__ line would exceed 100 chars (ruff line-length)
@@ -243,14 +245,14 @@ def generate_python(errors_path: Path, output_dir: Path) -> list[Path]:
 def generate_typescript(errors_path: Path, output_path: Path) -> Path:
     """Generate TypeScript types from errors.yaml."""
     data = load_and_validate(errors_path)
-    errors = data["errors"]
+    errors = cast("dict[str, ErrorSpec]", data["errors"])
 
     codes_array = ", ".join(f'"{code}"' for code in errors)
 
     params_entries: list[str] = []
     status_entries: list[str] = []
     for code, spec in errors.items():
-        params = spec.get("params", {})
+        params = cast("dict[str, str]", spec.get("params", {}))
         if params:
             fields = "; ".join(
                 f"{name}: {PARAM_TYPE_TO_TS[ptype]}" for name, ptype in params.items()
@@ -285,11 +287,12 @@ def generate_typescript(errors_path: Path, output_path: Path) -> Path:
 def generate_required_keys(errors_path: Path, output_path: Path) -> Path:
     """Generate required-keys.json for translation validation."""
     data = load_and_validate(errors_path)
-    errors = data["errors"]
+    errors = cast("dict[str, ErrorSpec]", data["errors"])
 
     keys = list(errors.keys())
-    params_by_key = {
-        code: list(spec.get("params", {}).keys()) for code, spec in errors.items()
+    params_by_key: dict[str, list[str]] = {
+        code: list(cast("dict[str, str]", spec.get("params", {})).keys())
+        for code, spec in errors.items()
     }
 
     result = {
