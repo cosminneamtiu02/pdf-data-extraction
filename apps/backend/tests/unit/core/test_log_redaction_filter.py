@@ -260,3 +260,36 @@ def test_exception_key_redacts_thousands_separated_amount() -> None:
     out = _call(_filter(), event="unhandled_exception", exception=traceback)
     assert "1,847.50" not in out["exception"]
     assert "1,847" not in out["exception"]
+
+
+@pytest.mark.parametrize(
+    "line_number",
+    ["42", "1234", "9999", "12345"],
+)
+def test_exception_key_preserves_frame_line_numbers(line_number: str) -> None:
+    """Traceback frame line references (``line N``) must survive redaction.
+
+    Large files legitimately produce 4+ digit line numbers; mangling them to
+    ``[REDACTED_NUMBER]`` destroys the file/line locator that operators need
+    to pin incident root causes. The numeric pattern excludes ``line N``
+    specifically via a negative lookbehind.
+    """
+    traceback = (
+        "Traceback (most recent call last):\n"
+        f'  File "app/foo.py", line {line_number}, in handler\n'
+        "ValueError: boom"
+    )
+    out = _call(_filter(), event="unhandled_exception", exception=traceback)
+    assert f"line {line_number}" in out["exception"]
+
+
+def test_exception_key_still_redacts_long_numbers_not_after_line_keyword() -> None:
+    """Lookbehind only spares ``line N``; bare long numerics are still scrubbed."""
+    traceback = (
+        "Traceback (most recent call last):\n"
+        '  File "<string>", line 1, in <module>\n'
+        "ValueError: account 987654321 has a balance of 4321.00"
+    )
+    out = _call(_filter(), event="unhandled_exception", exception=traceback)
+    assert "987654321" not in out["exception"]
+    assert "4321" not in out["exception"]

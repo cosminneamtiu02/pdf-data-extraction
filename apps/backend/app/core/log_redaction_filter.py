@@ -8,10 +8,10 @@ should not include forbidden fields in the first place; this filter exists so
 that an accidental log statement cannot leak document content.
 
 For the 'exception' key produced by ``structlog.processors.format_exc_info``,
-the filter additionally regex-scrubs email addresses and long numeric sequences
-from the rendered traceback string. Exception messages (e.g. the ``args[0]`` of
-a ``ValueError``) pass through the rendering verbatim and would otherwise leak
-PII such as filenames, emails, and monetary amounts from the exception's string
+the filter additionally regex-scrubs email addresses and monetary amounts or
+other long numeric identifiers from the rendered traceback string. Exception
+messages (e.g. the ``args[0]`` of a ``ValueError``) pass through the rendering
+verbatim and would otherwise leak PII from the exception's string
 representation (issue #134).
 """
 
@@ -39,11 +39,16 @@ _REDACTED_NUMBER = "[REDACTED_NUMBER]"
 _EMAIL_PATTERN = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 # Long numeric sequences (4+ digits) that may be monetary amounts, identifiers,
 # or phone numbers. Matches optional thousands-separators and a decimal part so
-# "$1,847.50" and "1847.50" both collapse to the same placeholder. Line numbers
-# in traceback frames ("line 42"), version strings ("python3.13"), and short
-# decimals ("timeout=0.5") are only 1-3 digits and therefore untouched —
-# mangling them would destroy traceback readability without scrubbing PII.
-_NUMERIC_PATTERN = re.compile(r"\d{1,3}(?:[,\s]\d{3})+(?:\.\d+)?|\d{4,}(?:\.\d+)?")
+# "$1,847.50" and "1847.50" both collapse to the same placeholder. Version
+# strings like "python3.13" and short decimals like "timeout=0.5" are only 1-3
+# digits and therefore untouched. Traceback frame line references of the form
+# "line 42" or "line 1234" are preserved explicitly via a negative lookbehind
+# so file/line locators remain readable for incident debugging — large files
+# legitimately produce 4+ digit line numbers, and mangling them would destroy
+# traceback usefulness without scrubbing any PII.
+_NUMERIC_PATTERN = re.compile(
+    r"(?<!line )\b(?:\d{1,3}(?:[,\s]\d{3})+(?:\.\d+)?|\d{4,}(?:\.\d+)?)\b"
+)
 
 
 class LogRedactionFilter:
