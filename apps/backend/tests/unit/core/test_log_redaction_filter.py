@@ -175,3 +175,54 @@ def test_long_bytes_inside_nested_dict_is_truncated() -> None:
     out = _call(_filter(), event="test", ctx={"blob": b"z" * 600})
     assert out["ctx"]["blob"] != b"z" * 600
     assert "600" in str(out["ctx"]["blob"])
+
+
+def test_exception_key_email_is_redacted() -> None:
+    """Issue #134: rendered exception tracebacks must have email PII scrubbed."""
+    traceback = (
+        "Traceback (most recent call last):\n"
+        '  File "<string>", line 1, in <module>\n'
+        "ValueError: cosmin@example.com paid the fee"
+    )
+    out = _call(_filter(), event="unhandled_exception", exception=traceback)
+    assert "cosmin@example.com" not in out["exception"]
+
+
+def test_exception_key_long_numeric_is_redacted() -> None:
+    """Issue #134: rendered exception tracebacks must have numeric PII scrubbed."""
+    traceback = (
+        "Traceback (most recent call last):\n"
+        '  File "<string>", line 1, in <module>\n'
+        "ValueError: invoice total was 1847.50 dollars"
+    )
+    out = _call(_filter(), event="unhandled_exception", exception=traceback)
+    assert "1847.50" not in out["exception"]
+    assert "1847" not in out["exception"]
+
+
+def test_exception_key_preserves_traceback_structure() -> None:
+    """Redacted exception strings still retain the traceback header so operators see the shape."""
+    traceback = (
+        "Traceback (most recent call last):\n"
+        '  File "<string>", line 1, in <module>\n'
+        "ValueError: user@example.com did something"
+    )
+    out = _call(_filter(), event="unhandled_exception", exception=traceback)
+    assert "Traceback" in out["exception"]
+    assert "ValueError" in out["exception"]
+
+
+def test_exception_key_oversize_string_is_truncated() -> None:
+    """An exception string exceeding max_value_length is still truncated."""
+    long_tb = "Traceback\n" + "x" * 1000
+    out = _call(_filter(), event="unhandled_exception", exception=long_tb)
+    assert out["exception"].endswith("... [truncated]")
+    assert len(out["exception"]) == 500 + len("... [truncated]")
+
+
+def test_non_exception_string_values_not_pattern_scrubbed() -> None:
+    """Regression guard: regex scrubbing must only apply to the 'exception' key."""
+    # A normal log field that happens to contain an email must pass through
+    # unchanged; redaction patterns are only applied to rendered tracebacks.
+    out = _call(_filter(), event="test", message="user@example.com signed in")
+    assert out["message"] == "user@example.com signed in"

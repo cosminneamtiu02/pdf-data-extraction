@@ -6,8 +6,16 @@ the event dict outright, and long string values under any other key are truncate
 so operators see something without the full payload landing in logs. Call sites
 should not include forbidden fields in the first place; this filter exists so
 that an accidental log statement cannot leak document content.
+
+For the 'exception' key produced by ``structlog.processors.format_exc_info``,
+the filter additionally regex-scrubs email addresses and long numeric sequences
+from the rendered traceback string. Exception messages (e.g. the ``args[0]`` of
+a ``ValueError``) pass through the rendering verbatim and would otherwise leak
+PII such as filenames, emails, and monetary amounts from the exception's string
+representation (issue #134).
 """
 
+import re
 from collections.abc import Mapping, MutableMapping
 from typing import Any, cast
 
@@ -16,7 +24,24 @@ from typing import Any, cast
 # filter refuses to drop it — losing the message body would silently destroy
 # operator visibility.
 _EVENT_KEY = "event"
+# The 'exception' key is produced by ``structlog.processors.format_exc_info``
+# when a log call carries ``exc_info``. Its value is a multi-line traceback
+# string that may embed the original exception message verbatim; PII inside
+# that message must be scrubbed before the event reaches the renderer.
+_EXCEPTION_KEY = "exception"
 _TRUNCATION_SUFFIX = "... [truncated]"
+_REDACTED_EMAIL = "[REDACTED_EMAIL]"
+_REDACTED_NUMBER = "[REDACTED_NUMBER]"
+
+# Standard RFC-5322-ish email pattern; intentionally conservative to avoid
+# matching Python identifiers, filenames with dots, or module paths in a
+# traceback's frame lines.
+_EMAIL_PATTERN = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+# Long numeric sequences (4+ digits) that may be monetary amounts, identifiers,
+# or phone numbers. Matches optional thousands-separators and a decimal part so
+# "$1,847.50" and "1847.50" both collapse to the same placeholder. Line numbers
+# in traceback frames ("line 42") are only 1-3 digits and therefore untouched.
+_NUMERIC_PATTERN = re.compile(r"\d{1,3}(?:[,\s]\d{3})+(?:\.\d+)?|\d{4,}(?:\.\d+)?|\d+\.\d+")
 
 
 class LogRedactionFilter:
@@ -59,10 +84,21 @@ class LogRedactionFilter:
             # 'event' is sacrosanct: it holds the log message body and is never
             # dropped, even if a misconfigured denylist contains it.
             is_event = top_level and key == _EVENT_KEY
+            is_exception = top_level and key == _EXCEPTION_KEY
             if not is_event and self._is_redacted_key(key):
+                continue
+            if is_exception and isinstance(value, str):
+                # Rendered tracebacks may embed exception messages containing
+                # PII from upstream ValueErrors; scrub patterns before the
+                # standard truncation pass runs (issue #134).
+                result[key] = self._truncate_if_oversize(self._scrub_exception_string(value))
                 continue
             result[key] = self._scrub_value(value, preserve_length=is_event)
         return result
+
+    def _scrub_exception_string(self, value: str) -> str:
+        scrubbed = _EMAIL_PATTERN.sub(_REDACTED_EMAIL, value)
+        return _NUMERIC_PATTERN.sub(_REDACTED_NUMBER, scrubbed)
 
     def _is_redacted_key(self, key: Any) -> bool:
         # Non-string keys cannot be case-folded and are not in the denylist.
