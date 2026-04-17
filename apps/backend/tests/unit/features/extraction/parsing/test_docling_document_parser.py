@@ -713,8 +713,10 @@ class _FakeDoclingBBox:
     Implements only the attributes the adapter reads (`l/t/r/b/coord_origin`)
     and the `to_bottom_left_origin(page_height=...)` conversion whose semantics
     the adapter must drive. `coord_origin` is a `str` (not an enum) because
-    Docling's own `CoordOrigin` subclasses `str, Enum` and the adapter compares
-    against its string form (`"TOPLEFT"` / `"BOTTOMLEFT"`).
+    Docling's own `CoordOrigin` subclasses `str, Enum` and the adapter checks
+    `str(coord_origin).endswith("TOPLEFT")` to match real enum string values
+    like `"CoordOrigin.TOPLEFT"` — so bare strings like `"TOPLEFT"` and
+    `"BOTTOMLEFT"` also satisfy the suffix check and work in these fixtures.
     """
 
     def __init__(
