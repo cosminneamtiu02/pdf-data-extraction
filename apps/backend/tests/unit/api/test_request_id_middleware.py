@@ -76,6 +76,33 @@ async def test_x_request_id_present_on_domain_error_responses() -> None:
     assert response.status_code == 404
     assert "x-request-id" in response.headers
     assert HEX32.match(response.headers["x-request-id"])
+    assert response.headers["x-request-id"] == response.json()["error"]["request_id"]
+
+
+async def test_x_request_id_present_on_unhandled_500_responses() -> None:
+    """X-Request-Id must appear on 500 responses produced by the catch-all
+    ``handle_unhandled`` exception handler.  Before the fix, when ``call_next``
+    raised an exception that was later caught by the exception handler, the
+    middleware never got to set the header on the resulting response.
+    """
+    from app.api.errors import register_exception_handlers
+
+    application = FastAPI()
+    application.add_middleware(RequestIdMiddleware)
+    register_exception_handlers(application)
+
+    @application.get("/_unhandled")
+    async def _unhandled() -> dict[str, str]:
+        msg = "boom"
+        raise RuntimeError(msg)
+
+    transport = ASGITransport(app=application, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        response = await ac.get("/_unhandled")
+    assert response.status_code == 500
+    assert "x-request-id" in response.headers
+    assert HEX32.match(response.headers["x-request-id"])
+    assert response.headers["x-request-id"] == response.json()["error"]["request_id"]
 
 
 async def test_concurrent_requests_each_get_distinct_ids(app: FastAPI) -> None:

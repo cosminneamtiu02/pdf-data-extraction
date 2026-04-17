@@ -1,5 +1,7 @@
 """Exception handlers — maps DomainError subclasses to HTTP error responses."""
 
+from uuid import uuid4
+
 import structlog
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -11,8 +13,13 @@ logger = structlog.get_logger(__name__)
 
 
 def _get_request_id(request: Request) -> str:
-    """Extract request ID from request state, set by RequestIdMiddleware."""
-    return getattr(request.state, "request_id", "unknown")
+    """Extract request ID from request state, set by RequestIdMiddleware.
+
+    Falls back to a fresh ``uuid4().hex`` when the middleware is absent so the
+    ``X-Request-Id`` header always contains a valid 32-char hex string.
+    """
+    rid: str | None = getattr(request.state, "request_id", None)
+    return rid or uuid4().hex
 
 
 def register_exception_handlers(app: FastAPI) -> None:
@@ -26,6 +33,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         request_id = _get_request_id(request)
         return JSONResponse(
             status_code=exc.http_status,
+            headers={"X-Request-Id": request_id},
             content={
                 "error": {
                     "code": exc.code,
@@ -53,6 +61,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         first = details[0] if details else {"field": "unknown", "reason": "unknown"}
         return JSONResponse(
             status_code=422,
+            headers={"X-Request-Id": request_id},
             content={
                 "error": {
                     "code": "VALIDATION_FAILED",
@@ -76,6 +85,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         )
         return JSONResponse(
             status_code=500,
+            headers={"X-Request-Id": request_id},
             content={
                 "error": {
                     "code": "INTERNAL_ERROR",
