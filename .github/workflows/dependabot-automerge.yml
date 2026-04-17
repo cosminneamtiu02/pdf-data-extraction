@@ -7,8 +7,9 @@
 #
 #   1. Complete Phase 4 of docs/new-project-setup.md -- create the
 #      `main-protection` branch ruleset with required status checks for
-#      backend-checks and error-contracts (and CodeQL once Phase 10
-#      adds it).
+#      backend-checks and error-contracts, then complete Phase 9 to add
+#      CodeQL enforcement via the ruleset's "Require code scanning
+#      results" rule.
 #   2. Complete Phase 3 -- uncheck Allow merge commits / rebase merging,
 #      check Automatically delete head branches.
 #   3. Complete Phase 5 partial -- Settings -> Actions -> General ->
