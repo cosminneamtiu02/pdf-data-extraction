@@ -130,11 +130,13 @@ def _serialize_result(result: ExtractionResult, output_mode: OutputMode) -> Resp
     "/extract",
     responses={
         # A 200 response is multi-mediaType: the Content-Type on the wire is
-        # determined by the submitted ``output_mode``. We advertise all three
-        # so generated clients and schemathesis see the real contract. The
-        # JSON body is ``ExtractResponse`` (default response_model). The
-        # other two are opaque binary bodies, declared as raw ``content``
-        # with an empty schema per the FastAPI docs.
+        # determined by the submitted ``output_mode``. We advertise the
+        # non-JSON variants here so generated clients and schemathesis see
+        # the real contract. This route does not declare a FastAPI
+        # ``response_model``; JSON responses (for ``OutputMode.JSON_ONLY``)
+        # are produced directly by the handler via ``JSONResponse``. The
+        # other two output modes are opaque binary bodies, declared as raw
+        # ``content`` with an empty schema per the FastAPI docs.
         200: {
             "description": (
                 "Extraction succeeded. Content-Type depends on output_mode: "
