@@ -1,11 +1,13 @@
 """Tests for the exception handler."""
 
+import ast
 from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+import app.api.errors as errors_module
 from app.exceptions import InternalError, NotFoundError, ValidationFailedError
 
 
@@ -64,9 +66,9 @@ def test_error_handler_serializes_parameterised_domain_error(test_client: TestCl
     """A parameterised DomainError should serialize its params dict."""
     response = test_client.get("/trigger-validation-error")
 
-    assert response.status_code == 422
+    assert response.status_code == ValidationFailedError.http_status
     body = response.json()
-    assert body["error"]["code"] == "VALIDATION_FAILED"
+    assert body["error"]["code"] == ValidationFailedError.code
     assert body["error"]["params"] == {"field": "name", "reason": "too short"}
 
 
@@ -74,9 +76,9 @@ def test_error_handler_maps_validation_error(test_client: TestClient) -> None:
     """Pydantic RequestValidationError should map to VALIDATION_FAILED."""
     response = test_client.get("/trigger-validation?required_param=not_an_int")
 
-    assert response.status_code == 422
+    assert response.status_code == ValidationFailedError.http_status
     body = response.json()
-    assert body["error"]["code"] == "VALIDATION_FAILED"
+    assert body["error"]["code"] == ValidationFailedError.code
 
 
 def test_error_handler_includes_all_validation_errors_in_details(test_client: TestClient) -> None:
@@ -94,9 +96,9 @@ def test_error_handler_maps_unhandled_to_internal_error(test_client: TestClient)
     """Unhandled exceptions should map to INTERNAL_ERROR with 500 status."""
     response = test_client.get("/trigger-unhandled")
 
-    assert response.status_code == 500
+    assert response.status_code == InternalError.http_status
     body = response.json()
-    assert body["error"]["code"] == "INTERNAL_ERROR"
+    assert body["error"]["code"] == InternalError.code
     assert body["error"]["params"] == {}
     assert "request_id" in body["error"]
 
@@ -127,22 +129,60 @@ def test_error_handler_internal_code_sourced_from_generated_error(test_client: T
     assert body["error"]["code"] == InternalError.code
 
 
+def test_error_handler_validation_status_sourced_from_generated_error(
+    test_client: TestClient,
+) -> None:
+    """The VALIDATION_FAILED response status must equal ``ValidationFailedError.http_status``.
+
+    Same drift-avoidance motivation as the ``.code`` test: ``errors.yaml`` is
+    the source of truth for HTTP status as well, and the handler must not
+    silently diverge from the contract if the status changes.
+    """
+    response = test_client.get("/trigger-validation?required_param=not_an_int")
+
+    assert response.status_code == ValidationFailedError.http_status
+
+
+def test_error_handler_internal_status_sourced_from_generated_error(
+    test_client: TestClient,
+) -> None:
+    """The INTERNAL_ERROR response status must equal ``InternalError.http_status``."""
+    response = test_client.get("/trigger-unhandled")
+
+    assert response.status_code == InternalError.http_status
+
+
+_FORBIDDEN_HANDLER_CODE_LITERALS = frozenset({"VALIDATION_FAILED", "INTERNAL_ERROR"})
+
+
 def test_error_handler_source_has_no_hardcoded_error_codes() -> None:
-    """The handler module must not contain the literal error-code strings.
+    """The handler module must not contain the literal error-code strings as constants.
 
     ``errors.yaml`` is the source of truth; Python codes are generated from
     it. If the handler hardcodes the string, renaming the code in the YAML
     silently diverges the handler from the rest of the codebase. Source the
     code from the generated class attribute instead (see issue #142).
-    """
-    handler_source = Path(__file__).resolve().parents[3] / "app" / "api" / "errors.py"
-    content = handler_source.read_text(encoding="utf-8")
 
-    assert '"VALIDATION_FAILED"' not in content, (
-        "app/api/errors.py must not hardcode the string 'VALIDATION_FAILED'; "
-        "use ValidationFailedError.code instead."
-    )
-    assert '"INTERNAL_ERROR"' not in content, (
-        "app/api/errors.py must not hardcode the string 'INTERNAL_ERROR'; "
-        "use InternalError.code instead."
+    Implementation notes: the path is derived from ``app.api.errors.__file__``
+    so the test follows the Python import system and survives test-directory
+    refactors. The scan uses an AST walk over string constants (mirroring the
+    pattern used by ``test_gemma_literal_containment``), which catches both
+    single- and double-quoted literals and ignores occurrences in comments,
+    while still flagging mentions inside docstrings — the conservative choice,
+    since a docstring that names the literal is already a drift risk.
+    """
+    handler_path = Path(errors_module.__file__)
+    tree = ast.parse(handler_path.read_text(encoding="utf-8"))
+    offenders = [
+        (node.lineno, node.value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and node.value in _FORBIDDEN_HANDLER_CODE_LITERALS
+    ]
+    assert not offenders, (
+        f"{handler_path.name} must not contain hardcoded error-code string "
+        f"constants {sorted(_FORBIDDEN_HANDLER_CODE_LITERALS)}; use the "
+        f"generated class attributes (e.g. ValidationFailedError.code) "
+        f"instead. Offenders: {offenders}"
     )
