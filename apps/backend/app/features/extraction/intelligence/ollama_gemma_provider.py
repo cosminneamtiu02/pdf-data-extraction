@@ -190,6 +190,14 @@ class OllamaGemmaProvider(BaseLanguageModel):
             )
             _logger.warning("intelligence_unavailable", cause=cause, status=status)
             raise IntelligenceUnavailableError from exc
+        except httpx.RequestError as exc:
+            # Catch-all for transport-level failures that the specific handlers
+            # above do not cover: ReadError, RemoteProtocolError, WriteError,
+            # etc. Without this, those RequestError subclasses escape as raw
+            # exceptions and surface as HTTP 500 instead of 503.
+            # See issue #49.
+            _logger.warning("intelligence_unavailable", cause="request_error", error=str(exc))
+            raise IntelligenceUnavailableError from exc
 
         try:
             decoded: Any = response.json()
@@ -266,7 +274,7 @@ class OllamaGemmaProvider(BaseLanguageModel):
         try:
             response = await self.http_client.get(self._tags_url)
             response.raise_for_status()
-        except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError):
+        except (httpx.RequestError, httpx.HTTPStatusError):
             return False
         return True
 
