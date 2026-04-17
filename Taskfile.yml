@@ -52,9 +52,10 @@ tasks:
       - task: test:contract
 
   check:errors:
-    desc: Fail on generated error contract drift vs errors.yaml
+    desc: Fail on generated error contract drift vs errors.yaml and run error-contracts tests
     cmds:
       - task: errors:check
+      - task: errors:test
 
   # ── Testing ──────────────────────────────────────────────────
   test:
@@ -160,6 +161,12 @@ tasks:
     cmds:
       - |
         uv run --with pyyaml python -c "from pathlib import Path; from scripts.generate import generate_python, generate_typescript, generate_required_keys; p = Path('errors.yaml'); generate_python(p, Path('../../apps/backend/app/exceptions/_generated')); generate_typescript(p, Path('src/generated.ts')); generate_required_keys(p, Path('src/required-keys.json')); print('Generated all error contract files')"
+
+  errors:test:
+    desc: Run error-contracts package tests (codegen + validator); CI parity with .github/workflows/ci.yml error-contracts job
+    dir: packages/error-contracts
+    cmds:
+      - uv run --with pytest --with pyyaml pytest tests/ -v
 
   # ── Docker ───────────────────────────────────────────────────
   docker:build:
