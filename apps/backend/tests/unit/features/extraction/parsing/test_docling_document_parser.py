@@ -712,7 +712,7 @@ class _FakeDoclingBBox:
 
     Implements only the attributes the adapter reads (`l/t/r/b/coord_origin`)
     and the `to_bottom_left_origin(page_height=...)` conversion whose semantics
-    the adapter must drive. `coord_origin` is an `str` (not an enum) because
+    the adapter must drive. `coord_origin` is a `str` (not an enum) because
     Docling's own `CoordOrigin` subclasses `str, Enum` and the adapter compares
     against its string form (`"TOPLEFT"` / `"BOTTOMLEFT"`).
     """
@@ -894,6 +894,7 @@ def test_adapter_normalization_yields_valid_bounding_box_invariant() -> None:
 
     items = list(adapter.iter_text_items())
 
+    assert len(items) == 1
     # Feeding the item's bbox coords into BoundingBox must not raise.
     from app.features.extraction.parsing.bounding_box import BoundingBox
 
@@ -905,3 +906,37 @@ def test_adapter_normalization_yields_valid_bounding_box_invariant() -> None:
     )
     assert bbox.y0 <= bbox.y1
     assert bbox.x0 <= bbox.x1
+
+
+def test_adapter_raises_key_error_when_prov_page_no_missing_from_pages() -> None:
+    """If a text item's prov references a page_no that isn't in `doc.pages`,
+    the adapter must surface the programmer/library-contract violation with a
+    KeyError whose message names the missing page. Silently falling through
+    `pages.get(...)` would yield `None` and blow up with a less actionable
+    AttributeError on `page.size.height`.
+    """
+    raw_doc = _FakeRawDoclingDocument(
+        texts=[
+            _FakeDoclingTextNode(
+                text="orphan-prov",
+                prov=[
+                    _FakeDoclingProv(
+                        page_no=7,
+                        bbox=_FakeDoclingBBox(
+                            left=10.0,
+                            top=100.0,
+                            right=80.0,
+                            bottom=300.0,
+                            coord_origin="TOPLEFT",
+                        ),
+                    ),
+                ],
+            ),
+        ],
+        pages={1: _FakeDoclingPageItem(size=_FakeDoclingPageSize(height=1000.0))},
+    )
+    adapter = _RealDoclingDocumentAdapter(raw_doc)
+
+    with pytest.raises(KeyError) as excinfo:
+        list(adapter.iter_text_items())
+    assert "7" in str(excinfo.value)

@@ -307,12 +307,14 @@ class _RealDoclingDocumentAdapter:
     exposes bottom-left-origin coordinates. Docling's `BoundingBox` carries a
     `coord_origin` field (`CoordOrigin.TOPLEFT` or `CoordOrigin.BOTTOMLEFT`) —
     TOPLEFT is in fact Docling's *default* for most pipeline outputs — so the
-    adapter cannot assume one origin. Every prov bbox is normalized to
-    BOTTOMLEFT via `bbox.to_bottom_left_origin(page_height=...)` before
-    unpacking, using the owning page's height from `doc.pages[page_no].size`.
-    This matches our canonical `BoundingBox` convention (origin bottom-left,
-    `y0 <= y1`) and matches PyMuPDF, which the annotator uses downstream
-    without further transformation. (GH issue #133.)
+    adapter cannot assume one origin. When a prov bbox reports TOPLEFT
+    coordinates (via `coord_origin`), the adapter flips it to BOTTOMLEFT with
+    `bbox.to_bottom_left_origin(page_height=...)` before unpacking, using the
+    owning page's height from `doc.pages[page_no].size`; boxes already in
+    BOTTOMLEFT are unpacked as-is. This matches our canonical `BoundingBox`
+    convention (origin bottom-left, `y0 <= y1`) and matches PyMuPDF, which
+    the annotator uses downstream without further transformation. (GH issue
+    #133.)
     """
 
     def __init__(self, docling_document: Any) -> None:
@@ -336,13 +338,17 @@ class _RealDoclingDocumentAdapter:
             page_no: int = int(prov.page_no)
             raw_bbox: Any = prov.bbox
             # Docling's `CoordOrigin` is a `str, Enum` whose members stringify
-            # to "TOPLEFT" / "BOTTOMLEFT". Compare against the string form so
-            # the check is robust to test doubles that pass plain strings and
-            # to the real enum — both satisfy `str(origin) == "TOPLEFT"`.
+            # to "CoordOrigin.TOPLEFT" / "CoordOrigin.BOTTOMLEFT" (standard
+            # `Enum.__str__`). Match on `str(origin).endswith("TOPLEFT")` so
+            # the check accepts both the real enum's string form and plain-
+            # string test doubles like "TOPLEFT".
             origin: Any = getattr(raw_bbox, "coord_origin", None)
             needs_flip: bool = origin is not None and str(origin).endswith("TOPLEFT")
             if needs_flip:
-                page: Any = pages.get(page_no) if hasattr(pages, "get") else pages[page_no]
+                # Direct indexing: if `page_no` is missing from `doc.pages`,
+                # raise KeyError with the offending page number instead of
+                # silently returning None and blowing up later on `.size`.
+                page: Any = pages[page_no]
                 page_height: float = float(page.size.height)
                 bbox: Any = raw_bbox.to_bottom_left_origin(page_height=page_height)
             else:
