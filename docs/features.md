@@ -85,9 +85,13 @@ contract; PDFX-E007-F004 added C1-C6 and related enforcement:
   and `app/schemas/` cannot import from `app/features/`.
 - `C1` feature independence (placeholder): documents the intent that the
   extraction feature cannot reach into sibling features. Vacuously satisfied
-  today with a single feature module; the real enforcement for dynamic and
-  cross-feature imports is the AST-scan test in
-  [test_dynamic_import_containment.py](../apps/backend/tests/unit/architecture/test_dynamic_import_containment.py).
+  today with a single feature module; related cross-feature import checks
+  live in the AST-scan test
+  [test_dynamic_import_containment.py](../apps/backend/tests/unit/architecture/test_dynamic_import_containment.py),
+  but this placeholder contract does not itself claim dynamic sibling-feature
+  enforcement (its `_collect_dynamic_import_targets()` helper currently returns
+  only the root module of each `importlib.import_module` call, so dynamic
+  sibling-feature imports are not flagged by the C1 check today).
 - `C2a-C2e` intra-feature layer DAG: narrow `forbidden` and `independence`
   contracts that encode the extraction feature's non-linear subpackage DAG
   (leaves independent and non-upward; `extraction` may not import
