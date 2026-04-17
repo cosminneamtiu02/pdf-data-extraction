@@ -1,6 +1,10 @@
 # ── Build stage ──────────────────────────────────────────────
+# Sourced once as an `ARG` so the builder and runtime stages always point at
+# the identical digest. Updating the pin means editing one line.
 # python:3.13-slim (pinned 2026-04-17, https://hub.docker.com/_/python)
-FROM python:3.13-slim@sha256:d168b8d9eb761f4d3fe305ebd04aeb7e7f2de0297cec5fb2f8f6403244621664 AS builder
+ARG PYTHON_IMAGE=python:3.13-slim@sha256:d168b8d9eb761f4d3fe305ebd04aeb7e7f2de0297cec5fb2f8f6403244621664
+
+FROM ${PYTHON_IMAGE} AS builder
 
 # ghcr.io/astral-sh/uv:0.7.2 (pinned 2026-04-17)
 COPY --from=ghcr.io/astral-sh/uv:0.7.2@sha256:3b898ca84fbe7628c5adcd836c1de78a0f1ded68344d019af8478d4358417399 /uv /uvx /bin/
@@ -27,8 +31,11 @@ COPY apps/backend/pyproject.toml ./
 RUN uv sync --frozen --no-dev
 
 # ── Runtime stage ────────────────────────────────────────────
-# python:3.13-slim (pinned 2026-04-17, https://hub.docker.com/_/python)
-FROM python:3.13-slim@sha256:d168b8d9eb761f4d3fe305ebd04aeb7e7f2de0297cec5fb2f8f6403244621664
+# Same `ARG PYTHON_IMAGE` as the builder stage above (declared at the top of
+# the file). Re-declared here so the value is in-scope for this stage — the
+# default expression is unchanged, so the digests stay in lockstep.
+ARG PYTHON_IMAGE
+FROM ${PYTHON_IMAGE}
 
 # Run as non-root user
 RUN groupadd --gid 1000 appuser && \
