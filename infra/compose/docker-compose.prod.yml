@@ -15,9 +15,13 @@ services:
       # the container out of load-balancer rotation. Override the host
       # path via the `SKILLS_DIR_HOST` env var (or a `.env` file next to
       # this compose file); the default `../../apps/backend/skills`
-      # points at the repo's own skills directory for local prod-parity
-      # testing. Read-only because the container never writes to
-      # `skills/`. Container path matches `Settings.skills_dir`'s
+      # points at the repo's own skills directory, which currently
+      # ships with only `.gitkeep` — so running this compose file
+      # as-is will still get a 503 `no_skills_loaded` from `/ready`
+      # until operators either drop `<name>/<version>.yaml` skill
+      # files into that directory or set `SKILLS_DIR_HOST` to a
+      # populated directory. Read-only because the container never
+      # writes to `skills/`. Container path matches `Settings.skills_dir`'s
       # default (`/app/skills`, mirrored in `SKILLS_DIR` below).
       - ${SKILLS_DIR_HOST:-../../apps/backend/skills}:/app/skills:ro
     environment:
@@ -44,7 +48,12 @@ services:
     # `python:3.13-slim` ships no `curl` or `wget`, but Python is
     # guaranteed. `urllib.request.urlopen` raises on non-2xx, so a zero
     # exit code means `/ready` returned 200 (skills loaded, Ollama
-    # reachable). Mirrors the Dockerfile's HEALTHCHECK approach.
+    # reachable). Same urllib-based technique as the Dockerfile's
+    # HEALTHCHECK, but deliberately hits `/ready` instead of the
+    # Dockerfile's `/health`: at the orchestration layer we need the
+    # strong readiness signal (skills + Ollama) to keep the container
+    # in load-balancer rotation, whereas the Dockerfile-level check
+    # only needs liveness.
     healthcheck:
       test:
         - CMD
