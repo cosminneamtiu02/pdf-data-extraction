@@ -1,5 +1,10 @@
 # Reshape Plan
 
+> **Status: Historical** — this document captures the plan from the template-reshape phase
+> of the project. It is preserved for context and traceability but is not
+> current operational guidance. For current architecture, see
+> [docs/architecture.md](./architecture.md).
+
 > Single source of truth for the template monorepo reshape.
 > Produced in a planning session. No code changes accompany this file.
 > The execution session that follows this plan treats this document as authoritative.
