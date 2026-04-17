@@ -55,7 +55,28 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None]:
     # model tag is installed — so the startup log event reflects "ready"
     # rather than the older "reachable" wording which was misleading when
     # Ollama responded 200 but was missing the pinned model (issue #107).
-    ready = await probe.check()
+    #
+    # The probe's own ``check()`` catches ``httpx.HTTPError`` and JSON decode
+    # errors and returns ``False``, but any other exception (e.g.
+    # ``ValueError`` from a bad config, a ``DomainError`` raised deeper in
+    # the probe path, an ``AttributeError`` on a wrapped client) would
+    # escape and crash the ASGI boot, causing the container to crash-loop
+    # (issue #144). Degrading on startup is always preferable to dying on
+    # startup: ``/health`` stays green, ``/ready`` returns 503 with the
+    # existing ``ollama_unreachable`` contract, and the self-healing TTL
+    # refresh in ``ProbeCache`` recovers once Ollama behaves. ``except
+    # Exception`` is deliberate here — this is one of the rare places where
+    # "catch everything and degrade" is the correct failure mode.
+    try:
+        ready = await probe.check()
+    except Exception as exc:  # noqa: BLE001 - degrade-don't-crash is the contract
+        _logger.warning(
+            "probe_check_failed_at_startup",
+            error_class=type(exc).__name__,
+            exc_info=True,
+        )
+        ready = False
+
     cache.prime(result=ready)
 
     if ready:

@@ -318,3 +318,111 @@ async def test_stays_degraded_when_ollama_always_unreachable(tmp_path: Path) -> 
                 ready = await client.get("/ready")
                 assert ready.status_code == 503
                 assert ready.json()["status"] == "not_ready"
+
+
+# ---------------------------------------------------------------------------
+# Tests — non-httpx probe.check() exceptions must not crash startup (issue #144)
+# ---------------------------------------------------------------------------
+
+
+class _ExplodingProbe:
+    """Probe stub whose ``check()`` raises a non-httpx exception once, then
+    returns ``False`` for any subsequent TTL-triggered refresh.
+
+    Simulates the class of failure described in issue #144 — anything that
+    is not an ``httpx.HTTPError`` (e.g. ``ValueError`` from a bad config,
+    ``JSONDecodeError`` from a malformed payload upstream of the real
+    probe's internal catch, an attribute error on a wrapped client, a
+    ``DomainError`` subclass from the probe path). The previous lifespan
+    had no guard, so any such exception propagated out of ``_lifespan``
+    and crash-looped the container.
+    """
+
+    def __init__(self, *, error: Exception) -> None:
+        self._error = error
+        self.call_count = 0
+
+    async def check(self) -> bool:
+        self.call_count += 1
+        if self.call_count == 1:
+            raise self._error
+        return False
+
+
+async def test_non_httpx_probe_exception_does_not_crash_startup(
+    tmp_path: Path,
+) -> None:
+    """probe.check() raising a non-httpx exception must not propagate out of _lifespan.
+
+    Before the fix, ``ValueError`` (or any non-httpx exception) escaped the
+    lifespan and killed the ASGI app boot, causing a container crash-loop
+    as soon as Ollama's behaviour deviated from the exact httpx error paths
+    the probe internals catch. After the fix, the exception is caught,
+    logged at WARNING, and the cache is primed as not-ready so the service
+    boots into degraded mode.
+    """
+    _write_valid_skill(tmp_path)
+    app = create_app(_degraded_settings(tmp_path))
+    app.state.ollama_health_probe = _ExplodingProbe(error=ValueError("simulated"))
+
+    # If the lifespan fails to guard against the exception, entering this
+    # context manager raises and the assertion below never runs.
+    async with _lifespan(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+async def test_non_httpx_probe_exception_logs_warning_with_event_name(
+    tmp_path: Path,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    """Non-httpx probe failure emits a structured WARNING with the error class.
+
+    The event name is intentionally distinct from ``ollama_not_ready_at_startup``
+    so operators tailing logs can filter on "probe itself exploded" vs
+    "probe ran and reported not-ready". The error class name is included so
+    operators can triage the underlying cause without needing to inspect
+    the stack trace.
+    """
+    _write_valid_skill(tmp_path)
+    app = create_app(_degraded_settings(tmp_path))
+    app.state.ollama_health_probe = _ExplodingProbe(error=ValueError("simulated"))
+
+    async with _lifespan(app):
+        pass
+
+    captured = capfd.readouterr()
+    assert "probe_check_failed_at_startup" in captured.out
+    assert "warning" in captured.out.lower()
+    assert "ValueError" in captured.out
+
+
+async def test_non_httpx_probe_exception_ready_returns_503_ollama_unreachable(
+    tmp_path: Path,
+) -> None:
+    """After a non-httpx probe failure at boot, /ready mirrors the httpx path.
+
+    The readiness cache is primed as not-ready so ``/ready`` returns 503
+    with the existing ``ollama_unreachable`` reason — operators see the
+    same contract whether the probe returned ``False`` or blew up, because
+    from the outside both mean "Ollama is not usable right now."
+    """
+    _write_valid_skill(tmp_path)
+    app = create_app(_degraded_settings(tmp_path))
+    # First call (startup) raises; subsequent TTL-triggered refreshes
+    # return False so /ready stays 503 throughout the test.
+    app.state.ollama_health_probe = _ExplodingProbe(error=ValueError("simulated"))
+
+    async with _lifespan(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get("/ready")
+
+    assert response.status_code == 503
+    body = response.json()
+    assert body["status"] == "not_ready"
+    assert body["reason"] == "ollama_unreachable"
