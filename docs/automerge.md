@@ -57,14 +57,12 @@ Lives at Settings → Rules → Rulesets → `main-protection`. Active. Targets 
   - Allowed merge methods: squash only
 - **Require status checks to pass** — with `strict: true` (branches must be up to date). Required contexts:
   - `backend-checks`
-  - `frontend-checks`
-  - `api-client-checks`
   - `error-contracts`
 - **Block force pushes** — cannot rewrite history on main.
 
 The ruleset is load-bearing for the whole auto-merge system. Specifically, the **required status checks** list is what `gh pr merge --auto` waits for. With an empty or missing ruleset, `--auto` has nothing to wait for and merges immediately — including merging PRs with failing CI. This is not theoretical; it happened once (see the Incident Log below).
 
-**Why `integration_id: 15368` matters in the ruleset response.** When you create the ruleset and add the four check names, they appear in the API response either as free-text placeholders (no `integration_id`) or as bindings to a specific app (`integration_id: 15368` is GitHub Actions). Free-text placeholders only activate on the *next* matching workflow run and may silently fail to match if the context string drifts. Real bindings to GitHub Actions mean GitHub has already resolved each check name to a specific workflow and will gate on it immediately. Verify `integration_id: 15368` is present on all four checks after creating the ruleset — see the [verification commands](#verification-commands) section.
+**Why `integration_id: 15368` matters in the ruleset response.** When you create the ruleset and add the check names, they appear in the API response either as free-text placeholders (no `integration_id`) or as bindings to a specific app (`integration_id: 15368` is GitHub Actions). Free-text placeholders only activate on the *next* matching workflow run and may silently fail to match if the context string drifts. Real bindings to GitHub Actions mean GitHub has already resolved each check name to a specific workflow and will gate on it immediately. Verify `integration_id: 15368` is present on every **required status check context** after creating the ruleset — other ruleset rules (e.g. "Require code scanning results" for CodeQL) are not status checks and will not have an `integration_id` in that list. See the [verification commands](#verification-commands) section.
 
 ### 3. Variable — `DEPENDABOT_AUTOMERGE_ENABLED`
 
@@ -102,10 +100,11 @@ Run: gh pr merge --auto --squash $PR_URL
 GitHub sets autoMergeRequest on the PR
   │
   ▼
-GitHub waits for ALL ruleset conditions to be green:
-  - 4 required status checks pass
+GitHub waits for the ruleset's required conditions to be green, such as:
+  - All required status checks pass
   - Branch up to date with main
   - All conversations resolved
+  - (Any other ruleset rules that are enabled, e.g. "Require code scanning results")
   │
   ▼
 GitHub squash-merges the PR
@@ -141,7 +140,7 @@ The invariant only holds when every component is correctly configured. The setup
 
 ### Incident 1: PR #19 — auto-merged with red CI because ruleset didn't exist yet
 
-**Symptom.** The first grouped TanStack Dependabot PR after the `groups.tanstack` rule landed auto-merged immediately while `frontend-checks` and `api-client-checks` were **red** (`ERR_PNPM_OUTDATED_LOCKFILE`).
+**Symptom.** The first grouped TanStack Dependabot PR after the `groups.tanstack` rule landed auto-merged immediately while the template's then-existing `frontend-checks` and `api-client-checks` status checks were **red** (`ERR_PNPM_OUTDATED_LOCKFILE`). (Those checks no longer exist — the repo is backend-only. The actual required checks today are `backend-checks` and `error-contracts`. The incident pattern below is preserved for its architectural lesson.)
 
 **Cause.** The workflow landed on main before the `main-protection` ruleset had been created. `gh pr merge --auto` waits only for the required status checks declared on the ruleset. With no ruleset, the set of required checks was empty, so `--auto` had zero conditions to wait for and merged on the spot.
 
@@ -188,10 +187,11 @@ Run these after any change to the auto-merge system to confirm the paired contra
 gh api repos/<owner>/<repo>/rulesets --jq '.[] | select(.name=="main-protection") | {name, enforcement, id}'
 # Expect: {"name":"main-protection","enforcement":"active","id":<number>}
 
-# 2. Ruleset has all 4 required status checks bound to GitHub Actions
+# 2. Ruleset has all required status checks bound to GitHub Actions
 gh api repos/<owner>/<repo>/rulesets/<id> \
   --jq '.rules[] | select(.type=="required_status_checks") | .parameters.required_status_checks'
-# Expect: 4 entries, each with "context" and "integration_id": 15368
+# Expect: entries for `backend-checks` and `error-contracts`, each with
+# "context" and "integration_id": 15368
 
 # 3. Variable is set
 gh variable list --repo <owner>/<repo>
@@ -238,8 +238,8 @@ This is the preferred path. It performs the rebase server-side, emits a `synchro
 **4. If the workflow is reporting `skipped` when you expect it to run,** the guard is returning false. Check in order: (a) is the PR author `dependabot[bot]` (not some other bot)? (b) is `DEPENDABOT_AUTOMERGE_ENABLED` set to the literal string `"true"`? Query with `gh variable list`. (c) is the workflow file still present on main with the correct guard condition? Compare against this repo's [.github/workflows/dependabot-automerge.yml](../.github/workflows/dependabot-automerge.yml).
 
 **5. If CI is red on the PR,** the auto-merge is correctly refusing to merge. Investigate the failing check. Common causes:
-   - `frontend-checks` with `ERR_PNPM_OUTDATED_LOCKFILE`: Dependabot modified `package.json` but not `pnpm-lock.yaml`. Close the PR, bump manually with `pnpm update --latest`, open a replacement that touches both files.
-   - `backend-checks` with an `uv sync` error: usually `pyproject.toml` / `uv.lock` divergence. Same pattern — close, manual bump, replacement.
+   - `backend-checks` with an `uv sync` error: usually `pyproject.toml` / `uv.lock` divergence. Close the PR, run `uv lock` locally, commit manifest + lockfile atomically, open a replacement.
+   - `error-contracts` with a codegen drift error: `errors.yaml` changed without a re-run of `task errors:generate`. Close the PR, run the generator locally, commit the regenerated files, open a replacement.
    - A genuine test failure introduced by the dependency bump: investigate as a real regression. Either pin the old version, or fix the code that broke.
 
 ### How to unstick a cascade of stuck PRs
