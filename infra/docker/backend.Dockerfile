@@ -2,7 +2,8 @@
 # python:3.13-slim (pinned 2026-04-17, https://hub.docker.com/_/python)
 FROM python:3.13-slim@sha256:d168b8d9eb761f4d3fe305ebd04aeb7e7f2de0297cec5fb2f8f6403244621664 AS builder
 
-COPY --from=ghcr.io/astral-sh/uv:0.7.2 /uv /uvx /bin/
+# ghcr.io/astral-sh/uv:0.7.2 (pinned 2026-04-17)
+COPY --from=ghcr.io/astral-sh/uv:0.7.2@sha256:3b898ca84fbe7628c5adcd836c1de78a0f1ded68344d019af8478d4358417399 /uv /uvx /bin/
 
 WORKDIR /app
 
