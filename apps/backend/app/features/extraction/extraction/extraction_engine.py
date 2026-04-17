@@ -41,6 +41,7 @@ into field-level semantics.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, cast
@@ -50,6 +51,8 @@ from langextract.core.base_model import BaseLanguageModel
 from langextract.core.data import AnnotatedDocument, ExampleData, Extraction
 from langextract.core.types import ScoredOutput
 
+from app.core.config import Settings
+from app.exceptions import IntelligenceTimeoutError
 from app.features.extraction.extraction.raw_extraction import RawExtraction
 from app.features.extraction.intelligence.langextract_wrapper_schema import (
     LANGEXTRACT_WRAPPER_SCHEMA,
@@ -89,16 +92,37 @@ class _ValidatingLangExtractAdapter(BaseLanguageModel):
     blocking on the returned `concurrent.futures.Future` from the
     worker thread — LangExtract's own orchestration is synchronous,
     so the blocking call is expected.
+
+    **Bounded blocking (issue #152).** The blocking `future.result()` call
+    is always bounded by `timeout_seconds` (sourced from
+    `Settings.ollama_timeout_seconds`). Without a timeout, an unresponsive
+    Ollama pins the worker thread indefinitely; sustained hangs exhaust
+    the thread pool, queue new requests, and degrade the service silently.
+    On `concurrent.futures.TimeoutError` we cancel the pending future
+    (best-effort — a coroutine that has already started awaiting a blocking
+    primitive may still run to completion on the main loop, but any pending
+    result is discarded when this adapter's caller returns) and raise
+    `IntelligenceTimeoutError`, which the global exception handler maps to
+    504. The adapter does NOT own the main loop's executor, so there is
+    nothing to shut down here. Note: `concurrent.futures.TimeoutError` is
+    aliased to the builtin `TimeoutError` in CPython 3.11+, so the `except`
+    clause must distinguish an adapter timeout (future still pending) from
+    an inner `TimeoutError` raised by the coroutine (future already done)
+    via `future.done()` — otherwise inner failures would be silently
+    remapped to `IntelligenceTimeoutError` and lose their cause.
     """
 
     def __init__(
         self,
         inner: IntelligenceProvider,
         main_loop: asyncio.AbstractEventLoop,
+        *,
+        timeout_seconds: float,
     ) -> None:
         super().__init__()
         self._inner = inner
         self._main_loop = main_loop
+        self._timeout_seconds = timeout_seconds
 
     def infer(
         self,
@@ -110,12 +134,60 @@ class _ValidatingLangExtractAdapter(BaseLanguageModel):
                 self._inner.generate(prompt, LANGEXTRACT_WRAPPER_SCHEMA),
                 self._main_loop,
             )
-            result = future.result()
+            try:
+                result = future.result(timeout=self._timeout_seconds)
+            except concurrent.futures.TimeoutError:
+                # In CPython 3.11+, `concurrent.futures.TimeoutError is
+                # TimeoutError is asyncio.TimeoutError`. A bare `except`
+                # on the class would also catch an inner `TimeoutError`
+                # raised by the coroutine body, conflating a hung Ollama
+                # (this adapter's concern) with an inner-provider timeout
+                # (not our concern). There is also a boundary race:
+                # `future.result(timeout=...)` may time out and THEN the
+                # future may settle before we inspect it. We distinguish
+                # by `future.done()`: a done future means the coroutine
+                # settled (success or exception) — call `future.result()`
+                # with no timeout so a just-completed success continues
+                # normally and a coroutine-raised `TimeoutError` still
+                # propagates unchanged. Only a still-pending future
+                # should be cancelled and remapped to our domain error.
+                if future.done():
+                    result = future.result()
+                else:
+                    # Best-effort cancel — a coroutine already blocked in a
+                    # syscall on the main loop may still complete, but we stop
+                    # caring about its result. Without this bound, a hung
+                    # Ollama would pin this worker thread forever (issue #152).
+                    future.cancel()
+                    raise IntelligenceTimeoutError(
+                        budget_seconds=self._timeout_seconds,
+                    ) from None
             yield [ScoredOutput(score=1.0, output=json.dumps(result.data))]
 
 
 class ExtractionEngine:
-    """Constructs LangExtract call parameters from a Skill and invokes it."""
+    """Constructs LangExtract call parameters from a Skill and invokes it.
+
+    The engine's only configuration is the Ollama timeout budget that bounds
+    the `_ValidatingLangExtractAdapter.infer` blocking `future.result(...)`
+    per prompt (issue #152). When no `settings` argument is passed the
+    engine lazily materializes a `Settings()` from environment variables,
+    so callers that instantiated the engine with no argument before the
+    fix still work unchanged.
+    """
+
+    def __init__(self, settings: Settings | None = None) -> None:
+        self._settings = settings
+
+    def _ollama_timeout_seconds(self) -> float:
+        # Materialize Settings lazily so `ExtractionEngine()` call sites
+        # that predate the fix keep working. Pydantic-settings reads from
+        # env variables, matching the rest of the service.
+        settings = self._settings
+        if settings is None:
+            settings = Settings()  # type: ignore[reportCallIssue]  # pydantic-settings loads fields from env
+            self._settings = settings
+        return settings.ollama_timeout_seconds
 
     async def extract(
         self,
@@ -158,7 +230,11 @@ class ExtractionEngine:
         # coroutines back onto THIS loop via `run_coroutine_threadsafe`.
         # That keeps the shared httpx client pool on its original loop.
         main_loop = asyncio.get_running_loop()
-        adapter = _ValidatingLangExtractAdapter(provider, main_loop)
+        adapter = _ValidatingLangExtractAdapter(
+            provider,
+            main_loop,
+            timeout_seconds=self._ollama_timeout_seconds(),
+        )
 
         result = await asyncio.to_thread(
             self._invoke_langextract,

@@ -512,7 +512,7 @@ async def test_validating_adapter_infer_routes_through_provider_generate() -> No
 
     provider = _FakeProvider()
     main_loop = _asyncio.get_running_loop()
-    adapter = _ValidatingLangExtractAdapter(provider, main_loop)
+    adapter = _ValidatingLangExtractAdapter(provider, main_loop, timeout_seconds=30.0)
 
     def _run_infer() -> list[list[Any]]:
         return [list(batch) for batch in adapter.infer(["prompt-a", "prompt-b"])]
@@ -565,7 +565,11 @@ async def test_validating_adapter_routes_generate_back_to_main_event_loop() -> N
                 raw_output='{"ok": true}',
             )
 
-    adapter = _ValidatingLangExtractAdapter(_LoopCapturingProvider(), main_loop)
+    adapter = _ValidatingLangExtractAdapter(
+        _LoopCapturingProvider(),
+        main_loop,
+        timeout_seconds=30.0,
+    )
 
     def _run_infer() -> None:
         list(adapter.infer(["p1", "p2", "p3"]))
@@ -576,6 +580,248 @@ async def test_validating_adapter_routes_generate_back_to_main_event_loop() -> N
     assert all(lid == expected_loop_id for lid in captured_loops), (
         f"expected all prompts on main loop {expected_loop_id}, got {captured_loops}"
     )
+
+
+async def test_validating_adapter_infer_raises_intelligence_timeout_when_generate_hangs() -> None:
+    """If `provider.generate` hangs past `timeout_seconds`, the adapter must
+    raise `IntelligenceTimeoutError` (not block forever on `future.result()`
+    and not leak `concurrent.futures.TimeoutError`). Fix for issue #152:
+    unbounded `future.result()` was a thread-pool leak under sustained Ollama
+    hangs. We assert a hang is bounded by the configured timeout.
+    """
+    import asyncio as _asyncio
+
+    from app.exceptions import IntelligenceTimeoutError
+
+    hang_started = _asyncio.Event()
+
+    class _HangingProvider:
+        async def generate(
+            self,
+            prompt: str,
+            output_schema: dict[str, Any],
+        ) -> GenerationResult:
+            _ = prompt
+            _ = output_schema
+            hang_started.set()
+            # Simulate an unresponsive Ollama with a delay that exceeds the
+            # adapter timeout (0.2s) without stranding a non-daemon worker
+            # thread for an hour if timeout handling ever regresses. A few
+            # seconds is ample headroom vs the 0.2s budget below.
+            await _asyncio.sleep(3)
+            msg = "unreachable — adapter should have timed out"  # pragma: no cover
+            raise AssertionError(msg)  # pragma: no cover
+
+    main_loop = _asyncio.get_running_loop()
+    adapter = _ValidatingLangExtractAdapter(
+        _HangingProvider(),
+        main_loop,
+        timeout_seconds=0.2,
+    )
+
+    def _run_infer() -> None:
+        list(adapter.infer(["prompt-that-hangs"]))
+
+    # Start the blocking adapter call in the background, wait until the
+    # provider coroutine has definitely started, and only then assert that
+    # the adapter returns promptly with IntelligenceTimeoutError. Avoids a
+    # race where the adapter's 0.2s cancel could fire before the main loop
+    # has scheduled `generate` on slow/busy CI runners — in which case the
+    # old assertion (`hang_started.wait()` after the thread returned) would
+    # flake because `hang_started` never got set.
+    infer_task = _asyncio.create_task(_asyncio.to_thread(_run_infer))
+    await _asyncio.wait_for(hang_started.wait(), timeout=1.0)
+
+    # The overall await must return promptly with IntelligenceTimeoutError,
+    # not hang the caller. `asyncio.wait_for` as a belt-and-braces guard
+    # proves we were not rescued by the test harness killing the loop.
+    with pytest.raises(IntelligenceTimeoutError) as exc_info:
+        await _asyncio.wait_for(infer_task, timeout=5.0)
+    assert exc_info.value.code == "INTELLIGENCE_TIMEOUT"
+
+
+async def test_validating_adapter_infer_propagates_inner_timeout_error_distinct_from_adapter_timeout() -> (
+    None
+):
+    """If `provider.generate` itself raises `TimeoutError` (e.g. an inner
+    `asyncio.wait_for` inside a provider implementation expires), the adapter
+    must propagate that exception — NOT remap it to `IntelligenceTimeoutError`.
+
+    Regression for Copilot review on PR #173: in CPython 3.11+,
+    `concurrent.futures.TimeoutError is TimeoutError is asyncio.TimeoutError`.
+    A bare `except concurrent.futures.TimeoutError` would also catch inner
+    `TimeoutError` raised by the underlying coroutine, incorrectly converting
+    inner failures into `IntelligenceTimeoutError` and discarding the original
+    cause. The adapter distinguishes the two cases by checking
+    `future.done()` — only a pending future means `future.result(timeout=...)`
+    itself timed out; a done future with a `TimeoutError` result came from
+    the coroutine body.
+    """
+    import asyncio as _asyncio
+
+    from app.exceptions import IntelligenceTimeoutError
+
+    class _InnerTimeoutProvider:
+        async def generate(
+            self,
+            prompt: str,
+            output_schema: dict[str, Any],
+        ) -> GenerationResult:
+            _ = prompt
+            _ = output_schema
+            msg = "provider's own timeout — NOT adapter's future.result timeout"
+            raise TimeoutError(msg)
+
+    main_loop = _asyncio.get_running_loop()
+    adapter = _ValidatingLangExtractAdapter(
+        _InnerTimeoutProvider(),
+        main_loop,
+        timeout_seconds=30.0,
+    )
+
+    def _run_infer() -> None:
+        list(adapter.infer(["prompt"]))
+
+    # The inner TimeoutError must propagate — it is NOT an adapter timeout.
+    # We assert `not isinstance(..., IntelligenceTimeoutError)` defensively
+    # so a regression that re-maps inner timeouts is caught even if a
+    # future refactor makes IntelligenceTimeoutError extend TimeoutError.
+    with pytest.raises(TimeoutError) as exc_info:
+        await _asyncio.to_thread(_run_infer)
+    assert not isinstance(exc_info.value, IntelligenceTimeoutError)
+    assert "provider's own timeout" in str(exc_info.value)
+
+
+async def test_validating_adapter_infer_returns_settled_result_on_boundary_race(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression for Copilot review on PR #173: there is a boundary race
+    where `future.result(timeout=...)` raises `TimeoutError` AND the future
+    settles (successfully) just before we inspect `future.done()`. In that
+    case the adapter must return the settled result — NOT re-raise the
+    stale `TimeoutError` from the timed-out `.result(timeout=...)` call.
+
+    Before the fix, `if future.done(): raise` would leak the `TimeoutError`
+    past the adapter for a future that had actually completed successfully.
+    After the fix, a done future gets `.result()` called WITHOUT a timeout,
+    returning the settled value (or re-raising the coroutine's real error).
+    """
+    import asyncio as _asyncio
+    import concurrent.futures as _cf
+
+    from app.features.extraction.intelligence.generation_result import GenerationResult
+
+    settled_payload = GenerationResult(
+        data={"ok": True, "source": "settled-just-in-time"},
+        raw_output="{}",
+        attempts=1,
+    )
+
+    class _RacyFuture:
+        """Simulates the boundary race: first `.result(timeout=...)` raises
+        TimeoutError, but `.done()` returns True and `.result()` (no timeout)
+        returns the already-settled payload."""
+
+        def __init__(self, settled: GenerationResult) -> None:
+            self._settled = settled
+            self._timed_out_once = False
+
+        def result(self, timeout: float | None = None) -> GenerationResult:
+            if timeout is not None and not self._timed_out_once:
+                self._timed_out_once = True
+                raise _cf.TimeoutError
+            return self._settled
+
+        def done(self) -> bool:
+            return True
+
+        def cancel(self) -> bool:
+            return False
+
+    def _stub_run_coro_threadsafe(coro: Any, _loop: Any) -> _RacyFuture:
+        # Close the coroutine so we don't leak a "never awaited" warning.
+        coro.close()
+        return _RacyFuture(settled_payload)
+
+    monkeypatch.setattr(
+        "app.features.extraction.extraction.extraction_engine.asyncio.run_coroutine_threadsafe",
+        _stub_run_coro_threadsafe,
+    )
+
+    main_loop = _asyncio.get_running_loop()
+    adapter = _ValidatingLangExtractAdapter(
+        _FakeProvider(),
+        main_loop,
+        timeout_seconds=0.001,  # small; the stub controls behavior regardless
+    )
+
+    def _run_infer() -> list[list[Any]]:
+        return [list(batch) for batch in adapter.infer(["prompt"])]
+
+    results = await _asyncio.to_thread(_run_infer)
+
+    assert len(results) == 1
+    assert len(results[0]) == 1
+    assert json.loads(results[0][0].output) == {
+        "ok": True,
+        "source": "settled-just-in-time",
+    }
+
+
+async def test_validating_adapter_infer_returns_normally_when_generate_completes_in_time() -> None:
+    """Positive regression for the timeout fix: when `provider.generate` finishes
+    well within `timeout_seconds`, `infer` must yield the expected ScoredOutput
+    without surfacing any timeout error. Guards against the timeout guard
+    accidentally short-circuiting the fast path.
+    """
+    import asyncio as _asyncio
+
+    provider = _FakeProvider()
+    main_loop = _asyncio.get_running_loop()
+    adapter = _ValidatingLangExtractAdapter(
+        provider,
+        main_loop,
+        timeout_seconds=30.0,
+    )
+
+    def _run_infer() -> list[list[Any]]:
+        return [list(batch) for batch in adapter.infer(["quick-prompt"])]
+
+    results = await _asyncio.to_thread(_run_infer)
+
+    assert len(results) == 1
+    assert len(results[0]) == 1
+    assert json.loads(results[0][0].output) == {"ok": True}
+
+
+async def test_extract_passes_ollama_timeout_from_settings_into_adapter(
+    patch_extract: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`ExtractionEngine.extract` must build the adapter with the
+    `ollama_timeout_seconds` value from `Settings`, so the timeout honoured
+    inside `future.result(timeout=...)` is the configured Ollama budget.
+    """
+    monkeypatch.setenv("OLLAMA_TIMEOUT_SECONDS", "7.5")
+
+    text = "Alice is 30."
+    skill = _build_skill(("name",))
+    patch_extract(
+        AnnotatedDocument(
+            extractions=[_extraction("name", "Alice", 0, 5)],
+            text=text,
+        ),
+    )
+
+    await ExtractionEngine().extract(text, skill, _FakeProvider())
+
+    call_kwargs = patch_extract.calls[0]  # type: ignore[attr-defined]
+    model = call_kwargs["model"]
+    assert isinstance(model, _ValidatingLangExtractAdapter)
+    # The adapter records the effective budget so downstream
+    # `future.result(timeout=...)` and IntelligenceTimeoutError payload
+    # both use the configured value.
+    assert model._timeout_seconds == 7.5  # noqa: SLF001 — asserting on private state is the point
 
 
 def test_extract_method_is_async() -> None:
