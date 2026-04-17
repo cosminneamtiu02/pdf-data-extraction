@@ -8,11 +8,9 @@ WORKDIR /app
 # Copy dependency files first for better layer caching
 COPY apps/backend/pyproject.toml apps/backend/uv.lock ./
 
-# Install dependencies (without the project itself). The [tool.uv.index] +
-# [tool.uv.sources] entries in pyproject.toml route torch/torchvision to the
-# PyTorch CPU-only wheel index on Linux, keeping the image free of the ~4 GB
-# of nvidia-* / triton / cuda-toolkit wheels the default PyPI torch build
-# pulls in. See issue #139.
+# Install dependencies (without the project itself). For the torch CPU-wheel
+# routing rationale, see the [tool.uv.index] + [tool.uv.sources] block in
+# apps/backend/pyproject.toml (also issue #139).
 RUN uv sync --frozen --no-dev --no-install-project
 
 # Copy application source and the skill manifest directory. `skills/` is

@@ -32,9 +32,13 @@ dependencies = [
     # direct dependencies here so the [tool.uv.sources] override below takes
     # effect (uv's sources table only rewrites direct dependencies, not
     # transitives). The extraction pipeline runs Docling + OCR on CPU; we
-    # don't need the CUDA-bundled wheels. See issue #139.
-    "torch",
-    "torchvision",
+    # don't need the CUDA-bundled wheels. Bounded to a major range so future
+    # `uv lock` runs don't silently cross a torch/torchvision major without a
+    # conscious bump — matches the `<N.0.0` style used by sibling direct deps
+    # above and stays within docling's own `torch<3.0.0, torchvision<1` cap.
+    # See issue #139.
+    "torch>=2.11,<3",
+    "torchvision>=0.26,<1",
 ]
 
 [project.entry-points."langextract.providers"]
