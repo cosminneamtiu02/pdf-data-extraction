@@ -7,7 +7,7 @@ status: complete
 
 # Bootstrap Decisions — PDFX (2026-04-13)
 
-> **Status: Historical** — this document captures the decisions from the 2026-04-13 bootstrap phase
+> **Document status: Historical** — this document captures the decisions from the 2026-04-13 bootstrap phase
 > of the project. It is preserved for context and traceability but is not
 > current operational guidance. For current architecture, see
 > [docs/architecture.md](./architecture.md).
