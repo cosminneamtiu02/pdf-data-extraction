@@ -24,6 +24,7 @@ from app.features.extraction.parsing.docling_config import DoclingConfig
 from app.features.extraction.parsing.docling_document_parser import (
     DoclingDocumentParser,
     _default_converter_factory,
+    _RealDoclingDocumentAdapter,
 )
 from app.features.extraction.parsing.document_parser import DocumentParser
 from app.features.extraction.parsing.parsed_document import ParsedDocument
@@ -570,10 +571,19 @@ def test_default_factory_off_mode_disables_ocr_and_skips_ocr_options(
     assert pipeline_options.ocr_options is None
 
 
-def test_default_factory_raises_runtime_error_when_docling_not_installed(
+def test_default_factory_raises_domain_error_when_docling_not_installed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Missing Docling must surface as a DomainError, not a generic RuntimeError.
+
+    Regression guard for issue #153: CLAUDE.md forbids `RuntimeError` inside the
+    extraction pipeline. The lazy-import fallback in `_default_converter_factory`
+    previously raised `RuntimeError`, which surfaced as an opaque 500 instead of
+    a structured `PdfParserUnavailableError` response.
+    """
     import importlib as _importlib
+
+    from app.exceptions import PdfParserUnavailableError
 
     real_import_module = _importlib.import_module
 
@@ -584,8 +594,47 @@ def test_default_factory_raises_runtime_error_when_docling_not_installed(
 
     monkeypatch.setattr(parser_mod.importlib, "import_module", failing_import)
 
-    with pytest.raises(RuntimeError, match="docling is not installed"):
+    with pytest.raises(PdfParserUnavailableError) as excinfo:
         _default_converter_factory(DoclingConfig(ocr="auto", table_mode="fast"))
+
+    assert excinfo.value.params is not None
+    assert excinfo.value.params.model_dump() == {"dependency": "docling"}
+    # The original ImportError must chain via `raise ... from exc` so operators
+    # still see the underlying cause in the traceback.
+    assert isinstance(excinfo.value.__cause__, ImportError)
+
+
+def test_default_pdf_preflight_raises_domain_error_when_pymupdf_not_installed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Missing PyMuPDF must surface as a DomainError, not a generic RuntimeError.
+
+    Regression guard for issue #153: `_default_pdf_preflight` previously raised
+    `RuntimeError` on missing pymupdf. Must now raise
+    `PdfParserUnavailableError` with the offending dependency name.
+    """
+    import importlib as _importlib
+
+    from app.exceptions import PdfParserUnavailableError
+    from app.features.extraction.parsing.docling_document_parser import (
+        _default_pdf_preflight,
+    )
+
+    real_import_module = _importlib.import_module
+
+    def failing_import(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "pymupdf":
+            raise ImportError(name)
+        return real_import_module(name, *args, **kwargs)
+
+    monkeypatch.setattr(parser_mod.importlib, "import_module", failing_import)
+
+    with pytest.raises(PdfParserUnavailableError) as excinfo:
+        _default_pdf_preflight(b"%PDF-fake")
+
+    assert excinfo.value.params is not None
+    assert excinfo.value.params.model_dump() == {"dependency": "pymupdf"}
+    assert isinstance(excinfo.value.__cause__, ImportError)
 
 
 # ---------------------------------------------------------------------------
@@ -643,3 +692,253 @@ def test_only_docling_document_parser_references_docling() -> None:
     assert matches == {expected}, (
         f"docling imports must be confined to {expected}, found: {sorted(matches)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Coordinate-origin normalization in _RealDoclingDocumentAdapter
+# (regression for GH issue #133)
+#
+# Docling's `CoordOrigin` defaults to TOPLEFT. The adapter must normalize any
+# TOPLEFT bbox to BOTTOMLEFT before yielding a `_FlatDoclingTextItem`, because
+# downstream `BoundingBox` enforces `y0 <= y1` in a BOTTOMLEFT convention. The
+# fakes below mirror the shape of Docling's real types (`prov.bbox.l/.t/.r/.b/
+# .coord_origin` with a `to_bottom_left_origin(page_height=...)` method) so the
+# adapter exercises the same branches it would against the live library.
+# ---------------------------------------------------------------------------
+
+
+class _FakeDoclingBBox:
+    """Mirror of Docling's BoundingBox for adapter-level tests.
+
+    Implements only the attributes the adapter reads (`l/t/r/b/coord_origin`)
+    and the `to_bottom_left_origin(page_height=...)` conversion whose semantics
+    the adapter must drive. `coord_origin` is a `str` (not an enum) because
+    Docling's own `CoordOrigin` subclasses `str, Enum` and the adapter checks
+    `str(coord_origin).endswith("TOPLEFT")` to match real enum string values
+    like `"CoordOrigin.TOPLEFT"` — so bare strings like `"TOPLEFT"` and
+    `"BOTTOMLEFT"` also satisfy the suffix check and work in these fixtures.
+    """
+
+    def __init__(
+        self,
+        *,
+        left: float,
+        top: float,
+        right: float,
+        bottom: float,
+        coord_origin: str,
+    ) -> None:
+        self.l = left
+        self.t = top
+        self.r = right
+        self.b = bottom
+        self.coord_origin = coord_origin
+
+    def to_bottom_left_origin(self, page_height: float) -> _FakeDoclingBBox:
+        if self.coord_origin == "BOTTOMLEFT":
+            return _FakeDoclingBBox(
+                left=self.l,
+                top=self.t,
+                right=self.r,
+                bottom=self.b,
+                coord_origin="BOTTOMLEFT",
+            )
+        return _FakeDoclingBBox(
+            left=self.l,
+            top=page_height - self.t,
+            right=self.r,
+            bottom=page_height - self.b,
+            coord_origin="BOTTOMLEFT",
+        )
+
+
+@dataclass
+class _FakeDoclingProv:
+    page_no: int
+    bbox: _FakeDoclingBBox
+
+
+@dataclass
+class _FakeDoclingTextNode:
+    text: str
+    prov: list[_FakeDoclingProv]
+
+
+@dataclass
+class _FakeDoclingPageSize:
+    height: float
+    width: float = 600.0
+
+
+@dataclass
+class _FakeDoclingPageItem:
+    size: _FakeDoclingPageSize
+
+
+@dataclass
+class _FakeRawDoclingDocument:
+    """Fake shape matching what `_RealDoclingDocumentAdapter` reads from a live
+    DoclingDocument: `.texts` (list of text nodes) and `.pages` (dict keyed by
+    page_no to a PageItem carrying `.size.height`)."""
+
+    texts: list[_FakeDoclingTextNode]
+    pages: dict[int, _FakeDoclingPageItem]
+
+
+def test_adapter_normalizes_top_left_origin_bbox_to_bottom_left() -> None:
+    """Issue #133: a TOPLEFT-origin prov bbox must emerge as BOTTOMLEFT coords.
+
+    Given a 1000-pt-tall page with a TOPLEFT bbox (t=100, b=300), the adapter
+    must y-flip against page height so the `_FlatDoclingTextItem` reports
+    `bbox_y0 < bbox_y1` (900, 700 is invalid — we want 700, 900 in the item).
+    """
+    raw_doc = _FakeRawDoclingDocument(
+        texts=[
+            _FakeDoclingTextNode(
+                text="hello",
+                prov=[
+                    _FakeDoclingProv(
+                        page_no=1,
+                        bbox=_FakeDoclingBBox(
+                            left=10.0,
+                            top=100.0,
+                            right=80.0,
+                            bottom=300.0,
+                            coord_origin="TOPLEFT",
+                        ),
+                    ),
+                ],
+            ),
+        ],
+        pages={1: _FakeDoclingPageItem(size=_FakeDoclingPageSize(height=1000.0))},
+    )
+    adapter = _RealDoclingDocumentAdapter(raw_doc)
+
+    items = list(adapter.iter_text_items())
+
+    assert len(items) == 1
+    only = items[0]
+    assert only.text == "hello"
+    assert only.page_number == 1
+    assert only.bbox_x0 == 10.0
+    assert only.bbox_x1 == 80.0
+    # y-flip: page_height - top = 900, page_height - bottom = 700.
+    # BOTTOMLEFT convention requires y0 (bottom) <= y1 (top), so 700 <= 900.
+    assert only.bbox_y0 == 700.0
+    assert only.bbox_y1 == 900.0
+    assert only.bbox_y0 < only.bbox_y1
+
+
+def test_adapter_passes_through_bottom_left_origin_bbox_unchanged() -> None:
+    """A bbox already in BOTTOMLEFT origin must not be y-flipped again."""
+    raw_doc = _FakeRawDoclingDocument(
+        texts=[
+            _FakeDoclingTextNode(
+                text="world",
+                prov=[
+                    _FakeDoclingProv(
+                        page_no=1,
+                        bbox=_FakeDoclingBBox(
+                            left=10.0,
+                            top=720.0,
+                            right=90.0,
+                            bottom=700.0,
+                            coord_origin="BOTTOMLEFT",
+                        ),
+                    ),
+                ],
+            ),
+        ],
+        pages={1: _FakeDoclingPageItem(size=_FakeDoclingPageSize(height=1000.0))},
+    )
+    adapter = _RealDoclingDocumentAdapter(raw_doc)
+
+    items = list(adapter.iter_text_items())
+
+    assert len(items) == 1
+    only = items[0]
+    assert only.bbox_x0 == 10.0
+    assert only.bbox_y0 == 700.0
+    assert only.bbox_x1 == 90.0
+    assert only.bbox_y1 == 720.0
+
+
+def test_adapter_normalization_yields_valid_bounding_box_invariant() -> None:
+    """End-to-end: a TOPLEFT prov bbox must not trigger the ValueError in
+    `BoundingBox.__post_init__` that prompted issue #133.
+
+    This is a regression guard against reintroducing the raw pass-through —
+    constructing `BoundingBox(x0=10, y0=900, x1=80, y1=700)` would raise, so
+    if the adapter ever forgets to normalize we find out at the outer level
+    where it actually hurts the pipeline.
+    """
+    raw_doc = _FakeRawDoclingDocument(
+        texts=[
+            _FakeDoclingTextNode(
+                text="top-left-page",
+                prov=[
+                    _FakeDoclingProv(
+                        page_no=1,
+                        bbox=_FakeDoclingBBox(
+                            left=10.0,
+                            top=50.0,
+                            right=80.0,
+                            bottom=200.0,
+                            coord_origin="TOPLEFT",
+                        ),
+                    ),
+                ],
+            ),
+        ],
+        pages={1: _FakeDoclingPageItem(size=_FakeDoclingPageSize(height=1000.0))},
+    )
+    adapter = _RealDoclingDocumentAdapter(raw_doc)
+
+    items = list(adapter.iter_text_items())
+
+    assert len(items) == 1
+    # Feeding the item's bbox coords into BoundingBox must not raise.
+    from app.features.extraction.parsing.bounding_box import BoundingBox
+
+    bbox = BoundingBox(
+        x0=items[0].bbox_x0,
+        y0=items[0].bbox_y0,
+        x1=items[0].bbox_x1,
+        y1=items[0].bbox_y1,
+    )
+    assert bbox.y0 <= bbox.y1
+    assert bbox.x0 <= bbox.x1
+
+
+def test_adapter_raises_key_error_when_prov_page_no_missing_from_pages() -> None:
+    """If a text item's prov references a page_no that isn't in `doc.pages`,
+    the adapter must surface the programmer/library-contract violation with a
+    KeyError whose message names the missing page. Silently falling through
+    `pages.get(...)` would yield `None` and blow up with a less actionable
+    AttributeError on `page.size.height`.
+    """
+    raw_doc = _FakeRawDoclingDocument(
+        texts=[
+            _FakeDoclingTextNode(
+                text="orphan-prov",
+                prov=[
+                    _FakeDoclingProv(
+                        page_no=7,
+                        bbox=_FakeDoclingBBox(
+                            left=10.0,
+                            top=100.0,
+                            right=80.0,
+                            bottom=300.0,
+                            coord_origin="TOPLEFT",
+                        ),
+                    ),
+                ],
+            ),
+        ],
+        pages={1: _FakeDoclingPageItem(size=_FakeDoclingPageSize(height=1000.0))},
+    )
+    adapter = _RealDoclingDocumentAdapter(raw_doc)
+
+    with pytest.raises(KeyError) as excinfo:
+        list(adapter.iter_text_items())
+    assert "7" in str(excinfo.value)

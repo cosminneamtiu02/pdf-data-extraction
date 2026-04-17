@@ -170,6 +170,72 @@ async def test_extract_attempts_field_is_one(patch_extract: Any) -> None:
     assert results[0].attempts == 1
 
 
+async def test_extract_propagates_validator_attempts_from_provider_to_raw_extractions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The engine must surface the validator's retry count on every
+    ``RawExtraction`` it produces, so downstream ``ExtractionMetadata``
+    sees the real ``attempts_per_field`` (issue #135). Before the fix,
+    ``_to_raw_extractions`` hardcoded ``attempts=1`` regardless of how
+    many retries ``StructuredOutputValidator`` actually performed.
+
+    We stub ``langextract.extract`` so the adapter's ``infer`` drives
+    ``provider.generate`` once per prompt — then the adapter records
+    the resulting ``GenerationResult.attempts`` and the engine attaches
+    that count to every declared field (both real and placeholder rows).
+    """
+
+    class _RetryingProvider:
+        """Simulates the validator path: 3 attempts taken on this prompt."""
+
+        async def generate(
+            self,
+            prompt: str,
+            output_schema: dict[str, Any],
+        ) -> GenerationResult:
+            _ = prompt
+            _ = output_schema
+            return GenerationResult(
+                data={"extractions": []},
+                attempts=3,
+                raw_output='{"extractions": []}',
+            )
+
+    # Stub langextract.extract so the real LangExtract resolver isn't invoked
+    # but the adapter.infer path IS — that's where the attempts count is
+    # captured. We still need to exercise `model.infer(...)` at least once
+    # so the adapter observes a GenerationResult.
+    def _fake_extract(**kwargs: Any) -> AnnotatedDocument:
+        model = kwargs["model"]
+        # Drive the adapter's infer path ONCE so the adapter records
+        # the provider's attempts count — mirroring how LangExtract itself
+        # calls `model.infer([prompt])` during normal extraction.
+        list(model.infer(["dummy-prompt"]))
+        # Then return an AnnotatedDocument with ONE real field plus the
+        # other two declared fields missing — so the engine emits two
+        # placeholder rows and one real row. Both kinds must carry the
+        # propagated attempts count.
+        return AnnotatedDocument(
+            extractions=[_extraction("name", "Alice", 0, 5)],
+            text=kwargs["text_or_documents"],
+        )
+
+    monkeypatch.setattr(engine_module.langextract, "extract", _fake_extract)
+
+    text = "Alice lives somewhere."
+    skill = _build_skill(("name", "age", "city"))
+
+    results = await ExtractionEngine().extract(text, skill, _RetryingProvider())
+
+    # Every RawExtraction — real value rows AND declared-but-missing
+    # placeholder rows — must carry the validator's attempts count (3).
+    assert [r.field_name for r in results] == ["name", "age", "city"]
+    assert [r.attempts for r in results] == [3, 3, 3], (
+        "validator retry count must propagate to every declared field, "
+        f"got {[r.attempts for r in results]}"
+    )
+
+
 async def test_extract_dedupes_duplicate_field_names_keeping_first(patch_extract: Any) -> None:
     text = "Alice in one place, and also Alicia in another place."
     skill = _build_skill(("name",))

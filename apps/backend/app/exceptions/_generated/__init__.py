@@ -7,6 +7,8 @@ from app.exceptions._generated.internal_error import InternalError
 from app.exceptions._generated.not_found_error import NotFoundError
 from app.exceptions._generated.pdf_invalid_error import PdfInvalidError
 from app.exceptions._generated.pdf_no_text_extractable_error import PdfNoTextExtractableError
+from app.exceptions._generated.pdf_parser_unavailable_error import PdfParserUnavailableError
+from app.exceptions._generated.pdf_parser_unavailable_params import PdfParserUnavailableParams
 from app.exceptions._generated.pdf_password_protected_error import PdfPasswordProtectedError
 from app.exceptions._generated.pdf_too_large_error import PdfTooLargeError
 from app.exceptions._generated.pdf_too_large_params import PdfTooLargeParams
@@ -28,6 +30,8 @@ __all__ = [
     "NotFoundError",
     "PdfInvalidError",
     "PdfNoTextExtractableError",
+    "PdfParserUnavailableError",
+    "PdfParserUnavailableParams",
     "PdfPasswordProtectedError",
     "PdfTooLargeError",
     "PdfTooLargeParams",
