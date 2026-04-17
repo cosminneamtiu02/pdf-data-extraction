@@ -29,6 +29,7 @@ from structlog.testing import capture_logs
 
 from app.core.config import Settings
 from app.exceptions import IntelligenceTimeoutError, IntelligenceUnavailableError
+from app.exceptions._generated import IntelligenceTimeoutParams
 from app.features.extraction.intelligence.correction_prompt_builder import (
     CorrectionPromptBuilder,
 )
@@ -251,8 +252,8 @@ async def test_generate_timeout_raises_intelligence_timeout() -> None:
     with capture_logs() as logs, pytest.raises(IntelligenceTimeoutError) as excinfo:
         await provider.generate("hi", _NAME_STRING_SCHEMA)
     assert isinstance(excinfo.value.__cause__, httpx.TimeoutException)
-    assert excinfo.value.params is not None
-    assert excinfo.value.params.budget_seconds == 7.5  # type: ignore[attr-defined]  # IntelligenceTimeoutParams.budget_seconds
+    assert isinstance(excinfo.value.params, IntelligenceTimeoutParams)
+    assert excinfo.value.params.budget_seconds == 7.5
     event = next(e for e in logs if e.get("event") == "intelligence_timeout")
     assert event["budget_seconds"] == 7.5
 
@@ -693,8 +694,8 @@ def test_infer_propagates_intelligence_timeout_error_on_timeout(
 
     with pytest.raises(IntelligenceTimeoutError) as excinfo:
         list(provider.infer(["p1"]))
-    assert excinfo.value.params is not None
-    assert excinfo.value.params.budget_seconds == 9.25  # type: ignore[attr-defined]  # IntelligenceTimeoutParams.budget_seconds
+    assert isinstance(excinfo.value.params, IntelligenceTimeoutParams)
+    assert excinfo.value.params.budget_seconds == 9.25
 
 
 def test_infer_uses_a_single_asyncio_run_for_the_whole_batch(

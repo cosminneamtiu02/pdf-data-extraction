@@ -127,7 +127,12 @@ class OllamaGemmaProvider(BaseLanguageModel):
         self._model = model_id or effective_settings.ollama_model
         self._generate_url = _build_generate_url(effective_settings.ollama_base_url)
         self._tags_url = build_tags_url(effective_settings.ollama_base_url)
-        self._timeout = httpx.Timeout(effective_settings.ollama_timeout_seconds)
+        # ``Settings`` enforces ``ollama_timeout_seconds > 0``; keep the float
+        # on the instance so the ``IntelligenceTimeoutError`` budget and the
+        # ``intelligence_timeout`` log event can reference an unambiguous source
+        # instead of reconstructing it from ``httpx.Timeout`` attributes.
+        self._timeout_seconds = effective_settings.ollama_timeout_seconds
+        self._timeout = httpx.Timeout(self._timeout_seconds)
         self._validator = effective_validator
         self.http_client = http_client or httpx.AsyncClient(timeout=self._timeout)
 
@@ -184,13 +189,12 @@ class OllamaGemmaProvider(BaseLanguageModel):
             # was bounded by (``ollama_timeout_seconds``) — distinct from the
             # end-to-end ``extraction_timeout_seconds`` surfaced by
             # ``ExtractionService``. See issue #137.
-            budget = self._timeout.read or self._timeout.connect or 0.0
             _logger.warning(
                 "intelligence_timeout",
-                budget_seconds=budget,
+                budget_seconds=self._timeout_seconds,
                 error=str(exc),
             )
-            raise IntelligenceTimeoutError(budget_seconds=budget) from exc
+            raise IntelligenceTimeoutError(budget_seconds=self._timeout_seconds) from exc
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
             cause = (
