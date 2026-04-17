@@ -49,6 +49,9 @@ from app.features.extraction.extraction.extraction_engine import ExtractionEngin
 from app.features.extraction.intelligence.correction_prompt_builder import (
     CorrectionPromptBuilder,
 )
+from app.features.extraction.intelligence.intelligence_provider import (
+    IntelligenceProvider,
+)
 from app.features.extraction.intelligence.ollama_gemma_provider import (
     OllamaGemmaProvider,
     build_tags_url,
@@ -62,6 +65,7 @@ from app.features.extraction.intelligence.structured_output_validator import (
 from app.features.extraction.parsing.docling_document_parser import (
     DoclingDocumentParser,
 )
+from app.features.extraction.parsing.document_parser import DocumentParser
 from app.features.extraction.service import ExtractionService
 from app.features.extraction.skills.skill_manifest import SkillManifest
 
@@ -144,12 +148,12 @@ def get_extraction_service(  # noqa: PLR0913 — each param is a DI-resolved pip
     request: Request,
     settings: Annotated[Settings, Depends(get_settings)],
     skill_manifest: Annotated[SkillManifest, Depends(get_skill_manifest)],
-    document_parser: Annotated[DoclingDocumentParser, Depends(get_document_parser)],
+    document_parser: Annotated[DocumentParser, Depends(get_document_parser)],
     text_concatenator: Annotated[TextConcatenator, Depends(get_text_concatenator)],
     extraction_engine: Annotated[ExtractionEngine, Depends(get_extraction_engine)],
     span_resolver: Annotated[SpanResolver, Depends(get_span_resolver)],
     pdf_annotator: Annotated[PdfAnnotator, Depends(get_pdf_annotator)],
-    intelligence_provider: Annotated[OllamaGemmaProvider, Depends(get_intelligence_provider)],
+    intelligence_provider: Annotated[IntelligenceProvider, Depends(get_intelligence_provider)],
 ) -> ExtractionService:
     """Return (and lazily cache) the extraction service bound to this app.
 
@@ -160,6 +164,15 @@ def get_extraction_service(  # noqa: PLR0913 — each param is a DI-resolved pip
     those overrides — that regression is pinned by
     ``tests/integration/features/extraction/test_extraction_deps_overrides.py``
     (issue #111).
+
+    The parameter annotations use the ``DocumentParser`` and
+    ``IntelligenceProvider`` Protocols rather than the concrete
+    ``DoclingDocumentParser`` / ``OllamaGemmaProvider`` classes. This
+    matches ``ExtractionService.__init__``'s Protocol-typed contract and
+    keeps the DI boundary honest: overrides installed via
+    ``dependency_overrides`` return Protocol-conforming stubs that are
+    not subclasses of the concrete types, and the narrower annotation
+    would misrepresent what actually flows through at request time.
 
     The service itself is still cached on ``app.state.extraction_service``
     under the module-level re-entrant lock so that a given app instance
