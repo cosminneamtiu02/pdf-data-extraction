@@ -55,6 +55,7 @@ from app.features.extraction.parsing.docling_document_parser import (
     DoclingDocumentParser,
 )
 from app.features.extraction.service import ExtractionService
+from app.features.extraction.skills import SkillManifest
 
 _dep_init_lock = threading.RLock()
 
@@ -174,6 +175,17 @@ def get_ollama_health_probe(request: Request) -> OllamaHealthProbe:
                 )
                 state.ollama_health_probe = probe
     return probe
+
+
+def get_skill_manifest(request: Request) -> SkillManifest:
+    """Return the SkillManifest `create_app` bound to this app.
+
+    Stored on `app.state.skill_manifest` by `create_app()` after
+    `SkillLoader.load` completes at import time. The manifest is frozen
+    for the lifetime of the process, so this is a plain attribute read
+    — no lock, no lazy construction.
+    """
+    return request.app.state.skill_manifest
 
 
 def get_probe_cache(request: Request) -> ProbeCache:

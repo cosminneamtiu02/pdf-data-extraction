@@ -83,3 +83,11 @@ def test_empty_manifest_lookup_raises() -> None:
 
     with pytest.raises(SkillNotFoundError):
         manifest.lookup("anything", "latest")
+
+
+def test_empty_manifest_is_empty_true() -> None:
+    assert SkillManifest({}).is_empty is True
+
+
+def test_populated_manifest_is_empty_false(manifest: SkillManifest) -> None:
+    assert manifest.is_empty is False

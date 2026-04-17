@@ -8,12 +8,26 @@ services:
       dockerfile: infra/docker/backend.Dockerfile
     ports:
       - "8000:8000"
+    # Operators MUST mount a real skills directory over the empty one
+    # shipped in the image (`apps/backend/skills/` in the build context
+    # contains only `.gitkeep`). Without this mount, `SkillManifest` is
+    # empty and `/ready` returns 503 `no_skills_loaded`, pulling the
+    # container out of load-balancer rotation. Uncomment the `volumes`
+    # block below and point the host path at your skills directory; the
+    # container path `/app/skills` matches `Settings.skills_dir`'s
+    # default.
+    # volumes:
+    #   - /absolute/path/to/your/skills:/app/skills:ro
     environment:
       # These override Settings defaults for production.
       # See apps/backend/app/core/config.py for all available settings.
       - APP_ENV=production
       - LOG_LEVEL=info
       - CORS_ORIGINS=${CORS_ORIGINS:-[]}
+      # Matches the default in `Settings`; set it explicitly so the
+      # env-var → container-path contract is obvious to operators who
+      # bind-mount to a different target path inside the container.
+      - SKILLS_DIR=/app/skills
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
     restart: always
     extra_hosts:

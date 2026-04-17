@@ -79,9 +79,16 @@ def test_degraded_ready_503_conforms_to_openapi_schema(tmp_path: Path) -> None:
     assert body["status"] == "not_ready"
     assert "reason" in body
     assert body["reason"] == "ollama_unreachable"
-    # Confirm the schema declares these exact literal types
+    # The ``status`` field is a single-value literal and serializes as a
+    # ``const``. The ``reason`` field is now a multi-value literal after
+    # issue #108 added ``no_skills_loaded``, so Pydantic emits an ``enum``
+    # rather than a ``const``. Assert both members are present so
+    # Schemathesis and downstream clients see the full contract.
     assert schema["properties"]["status"]["const"] == "not_ready"
-    assert schema["properties"]["reason"]["const"] == "ollama_unreachable"
+    assert set(schema["properties"]["reason"]["enum"]) == {
+        "ollama_unreachable",
+        "no_skills_loaded",
+    }
 
 
 def test_degraded_health_200_conforms_to_openapi_schema(tmp_path: Path) -> None:

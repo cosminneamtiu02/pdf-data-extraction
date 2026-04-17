@@ -8,6 +8,8 @@ ASGI round-trip.
 from __future__ import annotations
 
 from app.api.health_router import health, ready
+from app.features.extraction.skills import SkillManifest
+from tests.unit.features.extraction.skills.test_skill_manifest import _make_skill
 
 # ---------------------------------------------------------------------------
 # Fakes
@@ -22,6 +24,14 @@ class _FakeProbeCache:
 
     async def is_ready(self) -> bool:
         return self._ready
+
+
+def _non_empty_manifest() -> SkillManifest:
+    return SkillManifest({("invoice", 1): _make_skill("invoice", 1)})
+
+
+def _empty_manifest() -> SkillManifest:
+    return SkillManifest({})
 
 
 # ---------------------------------------------------------------------------
@@ -43,6 +53,7 @@ async def test_ready_returns_200_when_probe_cache_ready() -> None:
     cache = _FakeProbeCache(ready=True)
     response = await ready(
         probe_cache=cache,  # type: ignore[arg-type]  # test seam
+        skill_manifest=_non_empty_manifest(),
     )
     assert response.status_code == 200
     assert response.body == b'{"status":"ready"}'
@@ -52,7 +63,42 @@ async def test_ready_returns_503_when_probe_cache_not_ready() -> None:
     cache = _FakeProbeCache(ready=False)
     response = await ready(
         probe_cache=cache,  # type: ignore[arg-type]  # test seam
+        skill_manifest=_non_empty_manifest(),
     )
     assert response.status_code == 503
     assert b'"not_ready"' in response.body
     assert b'"ollama_unreachable"' in response.body
+
+
+async def test_ready_returns_503_when_skill_manifest_empty() -> None:
+    """Empty manifest → 503 with no_skills_loaded, even if Ollama is reachable.
+
+    The skill-manifest check runs before the probe-cache check because
+    skills are static operator config: if the manifest is empty, no
+    amount of Ollama reachability lets the service answer requests.
+    """
+    cache = _FakeProbeCache(ready=True)
+    response = await ready(
+        probe_cache=cache,  # type: ignore[arg-type]  # test seam
+        skill_manifest=_empty_manifest(),
+    )
+    assert response.status_code == 503
+    assert b'"not_ready"' in response.body
+    assert b'"no_skills_loaded"' in response.body
+
+
+async def test_ready_prefers_no_skills_loaded_over_ollama_unreachable() -> None:
+    """When both conditions are true, no_skills_loaded wins.
+
+    Returning ``ollama_unreachable`` while the skills dir is also empty
+    would hide the operator-config problem behind a runtime-health
+    problem, sending operators to debug the wrong layer.
+    """
+    cache = _FakeProbeCache(ready=False)
+    response = await ready(
+        probe_cache=cache,  # type: ignore[arg-type]  # test seam
+        skill_manifest=_empty_manifest(),
+    )
+    assert response.status_code == 503
+    assert b'"no_skills_loaded"' in response.body
+    assert b'"ollama_unreachable"' not in response.body
