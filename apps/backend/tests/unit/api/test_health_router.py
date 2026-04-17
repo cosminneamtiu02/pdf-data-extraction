@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from app.api.health_router import health, ready
 from app.features.extraction.skills import SkillManifest
-from tests.unit.features.extraction.skills.test_skill_manifest import _make_skill
+from tests.conftest import make_skill
 
 # ---------------------------------------------------------------------------
 # Fakes
@@ -27,7 +27,7 @@ class _FakeProbeCache:
 
 
 def _non_empty_manifest() -> SkillManifest:
-    return SkillManifest({("invoice", 1): _make_skill("invoice", 1)})
+    return SkillManifest({("invoice", 1): make_skill("invoice", 1)})
 
 
 def _empty_manifest() -> SkillManifest:

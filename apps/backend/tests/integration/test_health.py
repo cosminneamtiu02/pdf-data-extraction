@@ -21,8 +21,7 @@ from app.api.deps import get_probe_cache, get_skill_manifest
 from app.api.probe_cache import ProbeCache
 from app.features.extraction.skills import SkillManifest
 from app.main import app
-from tests.conftest import FakeProbe
-from tests.unit.features.extraction.skills.test_skill_manifest import _make_skill
+from tests.conftest import FakeProbe, make_skill
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -49,7 +48,7 @@ def _non_empty_manifest() -> SkillManifest:
     without this override every ``/ready`` request would return 503 with
     ``no_skills_loaded`` regardless of the probe state under test.
     """
-    return SkillManifest({("invoice", 1): _make_skill("invoice", 1)})
+    return SkillManifest({("invoice", 1): make_skill("invoice", 1)})
 
 
 # ---------------------------------------------------------------------------

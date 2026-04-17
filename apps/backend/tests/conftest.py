@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
+
+from app.features.extraction.skills import Skill, SkillDoclingConfig, SkillExample
 
 
 class FakeProbe:
@@ -25,3 +29,27 @@ class FakeProbe:
         result = self._results[self.call_count]
         self.call_count += 1
         return result
+
+
+def make_skill(name: str, version: int) -> Skill:
+    """Construct a minimal valid ``Skill`` for test fixtures.
+
+    Lives here (not in ``tests/unit/features/extraction/skills/...``) because
+    multiple test modules across unit and integration need it — keeping it
+    co-located with ``test_skill_manifest.py`` forced cross-test imports
+    that coupled unrelated files to that module's private helper.
+    """
+    output_schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {"number": {"type": "string"}},
+        "required": ["number"],
+    }
+    return Skill(
+        name=name,
+        version=version,
+        description=None,
+        prompt="Extract header fields.",
+        examples=(SkillExample(input="INV-1", output={"number": "INV-1"}),),
+        output_schema=output_schema,
+        docling_config=SkillDoclingConfig(),
+    )

@@ -37,6 +37,7 @@ from app.core.config import Settings
 from app.features.extraction.annotation.pdf_annotator import PdfAnnotator
 from app.features.extraction.coordinates.span_resolver import SpanResolver
 from app.features.extraction.coordinates.text_concatenator import TextConcatenator
+from app.features.extraction.deps import get_skill_manifest
 from app.features.extraction.extraction.extraction_engine import ExtractionEngine
 from app.features.extraction.intelligence.correction_prompt_builder import (
     CorrectionPromptBuilder,
@@ -55,7 +56,12 @@ from app.features.extraction.parsing.docling_document_parser import (
     DoclingDocumentParser,
 )
 from app.features.extraction.service import ExtractionService
-from app.features.extraction.skills import SkillManifest
+
+# Re-exported so ``app.api.health_router`` (and other shared call sites)
+# can depend on ``get_skill_manifest`` from ``app.api.deps`` — the
+# canonical shared-deps module — while keeping a single definition in
+# ``app.features.extraction.deps``. Two definitions would drift.
+__all__ = ["get_skill_manifest"]
 
 _dep_init_lock = threading.RLock()
 
@@ -175,17 +181,6 @@ def get_ollama_health_probe(request: Request) -> OllamaHealthProbe:
                 )
                 state.ollama_health_probe = probe
     return probe
-
-
-def get_skill_manifest(request: Request) -> SkillManifest:
-    """Return the SkillManifest `create_app` bound to this app.
-
-    Stored on `app.state.skill_manifest` by `create_app()` after
-    `SkillLoader.load` completes at import time. The manifest is frozen
-    for the lifetime of the process, so this is a plain attribute read
-    — no lock, no lazy construction.
-    """
-    return request.app.state.skill_manifest
 
 
 def get_probe_cache(request: Request) -> ProbeCache:
