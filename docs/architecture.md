@@ -47,8 +47,11 @@ apps/backend/app/
 ```
 
 The extraction feature is built out during feature-dev per the graph tree in
-[`docs/graphs/PDFX/`](graphs/PDFX/). Each Epic maps to one or more subpackages
-inside `app/features/extraction/`:
+[`docs/graphs/PDFX/`](graphs/PDFX/). Epics E002–E006 each map to one or more
+subpackages inside `app/features/extraction/`. Epic E007 is cross-cutting —
+its sub-features land in supporting locations (`app/api/*`, `app/core/*`,
+`apps/backend/architecture/`, `apps/backend/scripts/`) rather than inside the
+extraction feature. The table below reflects this:
 
 | Epic | Files / subpackages | Responsibility |
 |---|---|---|
