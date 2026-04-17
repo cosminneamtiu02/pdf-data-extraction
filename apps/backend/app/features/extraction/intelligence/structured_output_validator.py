@@ -114,14 +114,28 @@ class StructuredOutputValidator:
 
 
 def _clean(raw_text: str) -> str:
+    # Three sequential, independent passes. The opening-fence and trailing-fence
+    # passes are self-contained: one inspects the start of the string and the
+    # other inspects the end, so neither depends on whether the other matched.
+    # They are applied in this order simply as the cleanup flow.
     text = raw_text.strip()
+    text = _strip_opening_fence(text)
+    text = _strip_trailing_fence(text)
+    return text.strip()
+
+
+def _strip_opening_fence(text: str) -> str:
     for prefix in _FENCE_LANGUAGE_PREFIXES:
         if text.startswith(prefix):
-            text = text[len(prefix) :].lstrip("\n").lstrip()
-            if text.endswith("```"):
-                text = text[: -len("```")].rstrip()
-            break
-    return text.strip()
+            return text[len(prefix) :].lstrip("\n").lstrip()
+    return text
+
+
+def _strip_trailing_fence(text: str) -> str:
+    stripped = text.rstrip()
+    if stripped.endswith("```"):
+        return stripped[: -len("```")].rstrip()
+    return text
 
 
 def _try_parse(cleaned: str) -> tuple[dict[str, Any], None] | tuple[None, _FailurePair]:
