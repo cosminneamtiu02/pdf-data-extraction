@@ -47,7 +47,7 @@ from langextract.core.types import ScoredOutput
 from langextract.providers.router import register
 
 from app.core.config import Settings
-from app.exceptions import IntelligenceUnavailableError
+from app.exceptions import IntelligenceTimeoutError, IntelligenceUnavailableError
 from app.features.extraction.intelligence.correction_prompt_builder import (
     CorrectionPromptBuilder,
 )
@@ -127,7 +127,12 @@ class OllamaGemmaProvider(BaseLanguageModel):
         self._model = model_id or effective_settings.ollama_model
         self._generate_url = _build_generate_url(effective_settings.ollama_base_url)
         self._tags_url = build_tags_url(effective_settings.ollama_base_url)
-        self._timeout = httpx.Timeout(effective_settings.ollama_timeout_seconds)
+        # ``Settings`` enforces ``ollama_timeout_seconds > 0``; keep the float
+        # on the instance so the ``IntelligenceTimeoutError`` budget and the
+        # ``intelligence_timeout`` log event can reference an unambiguous source
+        # instead of reconstructing it from ``httpx.Timeout`` attributes.
+        self._timeout_seconds = effective_settings.ollama_timeout_seconds
+        self._timeout = httpx.Timeout(self._timeout_seconds)
         self._validator = effective_validator
         self.http_client = http_client or httpx.AsyncClient(timeout=self._timeout)
 
@@ -179,8 +184,17 @@ class OllamaGemmaProvider(BaseLanguageModel):
             _logger.warning("intelligence_unavailable", cause="connect_error", error=str(exc))
             raise IntelligenceUnavailableError from exc
         except httpx.TimeoutException as exc:
-            _logger.warning("intelligence_unavailable", cause="timeout", error=str(exc))
-            raise IntelligenceUnavailableError from exc
+            # Per-request deadline violation is a 504 timeout, not a 503
+            # availability failure. Reports the httpx-level budget the request
+            # was bounded by (``ollama_timeout_seconds``) — distinct from the
+            # end-to-end ``extraction_timeout_seconds`` surfaced by
+            # ``ExtractionService``. See issue #137.
+            _logger.warning(
+                "intelligence_timeout",
+                budget_seconds=self._timeout_seconds,
+                error=str(exc),
+            )
+            raise IntelligenceTimeoutError(budget_seconds=self._timeout_seconds) from exc
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
             cause = (
