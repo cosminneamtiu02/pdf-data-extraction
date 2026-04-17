@@ -47,7 +47,7 @@ from langextract.core.types import ScoredOutput
 from langextract.providers.router import register
 
 from app.core.config import Settings
-from app.exceptions import IntelligenceUnavailableError
+from app.exceptions import IntelligenceTimeoutError, IntelligenceUnavailableError
 from app.features.extraction.intelligence.correction_prompt_builder import (
     CorrectionPromptBuilder,
 )
@@ -179,8 +179,18 @@ class OllamaGemmaProvider(BaseLanguageModel):
             _logger.warning("intelligence_unavailable", cause="connect_error", error=str(exc))
             raise IntelligenceUnavailableError from exc
         except httpx.TimeoutException as exc:
-            _logger.warning("intelligence_unavailable", cause="timeout", error=str(exc))
-            raise IntelligenceUnavailableError from exc
+            # Per-request deadline violation is a 504 timeout, not a 503
+            # availability failure. Reports the httpx-level budget the request
+            # was bounded by (``ollama_timeout_seconds``) — distinct from the
+            # end-to-end ``extraction_timeout_seconds`` surfaced by
+            # ``ExtractionService``. See issue #137.
+            budget = self._timeout.read or self._timeout.connect or 0.0
+            _logger.warning(
+                "intelligence_timeout",
+                budget_seconds=budget,
+                error=str(exc),
+            )
+            raise IntelligenceTimeoutError(budget_seconds=budget) from exc
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
             cause = (
