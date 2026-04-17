@@ -12,6 +12,11 @@ services:
       - "8000:8000"
     volumes:
       - ../../apps/backend/app:/app/app  # Only mount source, not .venv
+      # Live-mount skill YAMLs so editing a skill does not require an image
+      # rebuild. Read-only because the container never writes to skills/.
+      # Container path matches `Settings.skills_dir`'s default (`/app/skills`
+      # under the Dockerfile's `WORKDIR /app`).
+      - ../../apps/backend/skills:/app/skills:ro
     environment:
       - APP_ENV=development
       - LOG_LEVEL=info
