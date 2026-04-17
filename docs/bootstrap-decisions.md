@@ -7,6 +7,11 @@ status: complete
 
 # Bootstrap Decisions — PDFX (2026-04-13)
 
+> **Document status: Historical** — this document captures the decisions from the 2026-04-13 bootstrap phase
+> of the project. It is preserved for context and traceability but is not
+> current operational guidance. For current architecture, see
+> [docs/architecture.md](./architecture.md).
+
 Record of the `project-bootstrap` skill run that stripped this repository
 from a full-stack monorepo template into a minimal shell for the PDF Data
 Extraction Microservice (`PDFX`). The strip was driven by the graph tree at
