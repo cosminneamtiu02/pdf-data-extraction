@@ -48,7 +48,10 @@ def get_extraction_engine(request: Request) -> ExtractionEngine:
         with _dep_init_lock:
             engine = getattr(state, "extraction_engine", None)
             if engine is None:
-                engine = ExtractionEngine()
+                # Pass settings so the engine can bound the per-prompt
+                # `future.result()` blocking call inside
+                # `_ValidatingLangExtractAdapter.infer` (issue #152).
+                engine = ExtractionEngine(settings=state.settings)
                 state.extraction_engine = engine
     return engine
 
