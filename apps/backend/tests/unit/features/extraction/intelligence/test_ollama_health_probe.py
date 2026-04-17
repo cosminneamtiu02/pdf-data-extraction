@@ -137,6 +137,13 @@ async def test_check_returns_false_when_expected_model_missing() -> None:
 
     events = [entry.get("event") for entry in logs]
     assert "ollama_model_not_found" in events
+    not_found_entry = next(
+        entry for entry in logs if entry.get("event") == "ollama_model_not_found"
+    )
+    assert not_found_entry["url"] == "http://host.docker.internal:11434/api/tags"
+    assert not_found_entry["status_code"] == 200
+    assert not_found_entry["expected_model"] == _EXPECTED_MODEL
+    assert not_found_entry["installed_models"] == ["llama3:8b", "mistral:7b"]
 
 
 async def test_check_returns_false_when_models_list_empty() -> None:

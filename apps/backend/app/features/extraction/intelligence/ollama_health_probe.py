@@ -80,6 +80,8 @@ class OllamaHealthProbe:
 
         _logger.warning(
             "ollama_model_not_found",
+            url=self._tags_url,
+            status_code=response.status_code,
             expected_model=self._expected_model,
             installed_models=installed,
         )
