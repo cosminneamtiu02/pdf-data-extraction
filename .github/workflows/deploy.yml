@@ -22,8 +22,5 @@ jobs:
 
       - name: Push to registry
         run: |
-          echo "TODO: Push image to container registry"
-
-      - name: Deploy
-        run: |
-          echo "TODO: Deploy to target environment"
+          echo "::error::Push to registry not yet implemented — see issue #121 for tracking."
+          exit 1
