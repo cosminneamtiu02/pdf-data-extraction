@@ -8,16 +8,18 @@ services:
       dockerfile: infra/docker/backend.Dockerfile
     ports:
       - "8000:8000"
-    # Operators MUST mount a real skills directory over the empty one
-    # shipped in the image (`apps/backend/skills/` in the build context
-    # contains only `.gitkeep`). Without this mount, `SkillManifest` is
-    # empty and `/ready` returns 503 `no_skills_loaded`, pulling the
-    # container out of load-balancer rotation. Uncomment the `volumes`
-    # block below and point the host path at your skills directory; the
-    # container path `/app/skills` matches `Settings.skills_dir`'s
-    # default.
-    # volumes:
-    #   - /absolute/path/to/your/skills:/app/skills:ro
+    volumes:
+      # Bind-mount operator-supplied skills over the empty `skills/`
+      # baked into the image (which contains only `.gitkeep`). Without
+      # skills loaded, `/ready` returns 503 `no_skills_loaded`, pulling
+      # the container out of load-balancer rotation. Override the host
+      # path via the `SKILLS_DIR_HOST` env var (or a `.env` file next to
+      # this compose file); the default `../../apps/backend/skills`
+      # points at the repo's own skills directory for local prod-parity
+      # testing. Read-only because the container never writes to
+      # `skills/`. Container path matches `Settings.skills_dir`'s
+      # default (`/app/skills`, mirrored in `SKILLS_DIR` below).
+      - ${SKILLS_DIR_HOST:-../../apps/backend/skills}:/app/skills:ro
     environment:
       # These override Settings defaults for production.
       # See apps/backend/app/core/config.py for all available settings.
@@ -29,6 +31,29 @@ services:
       # bind-mount to a different target path inside the container.
       - SKILLS_DIR=/app/skills
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
-    restart: always
+    # Cap restart attempts so a crash-loop (e.g. misconfigured skills
+    # directory, missing Ollama) surfaces as a stopped container instead
+    # of burning reboot cycles forever. `on-failure:5` stops retrying
+    # after five consecutive non-zero exits.
+    restart: on-failure:5
+    # Bounds container memory. NFR-008 sets service idle RSS ≤ 1.5GB; 2g
+    # gives headroom for Docling parsing + LangExtract orchestration
+    # bursts. Hitting this ceiling OOM-kills the container, which
+    # `restart: on-failure:5` will retry up to five times.
+    mem_limit: 2g
+    # `python:3.13-slim` ships no `curl` or `wget`, but Python is
+    # guaranteed. `urllib.request.urlopen` raises on non-2xx, so a zero
+    # exit code means `/ready` returned 200 (skills loaded, Ollama
+    # reachable). Mirrors the Dockerfile's HEALTHCHECK approach.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready')"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     extra_hosts:
       - "host.docker.internal:host-gateway"
