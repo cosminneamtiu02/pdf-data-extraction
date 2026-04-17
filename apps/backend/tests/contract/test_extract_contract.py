@@ -130,6 +130,11 @@ def test_openapi_declares_all_reachable_status_codes_and_media_types(tmp_path: P
     assert response.status_code == 200
 
     spec = response.json()
+    assert "paths" in spec, "OpenAPI spec is missing top-level 'paths'"
+    assert "/api/v1/extract" in spec["paths"], "OpenAPI spec is missing /api/v1/extract path"
+    assert "post" in spec["paths"]["/api/v1/extract"], (
+        "OpenAPI spec is missing POST operation for /api/v1/extract"
+    )
     post_op = spec["paths"]["/api/v1/extract"]["post"]
     responses = post_op.get("responses", {})
 

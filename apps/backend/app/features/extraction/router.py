@@ -172,7 +172,10 @@ def _serialize_result(result: ExtractionResult, output_mode: OutputMode) -> Resp
             "model": ErrorResponse,
         },
         502: {
-            "description": "Structured output extraction failed for every declared field",
+            "description": (
+                "Structured output extraction failed for every declared field, "
+                "or the skill declared zero fields and zero fields were extracted"
+            ),
             "model": ErrorResponse,
         },
         503: {
