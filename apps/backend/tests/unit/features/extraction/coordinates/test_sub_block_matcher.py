@@ -269,3 +269,23 @@ def test_mixed_drift_ligature_adjacent_to_two_spaces_returns_full_range() -> Non
     assert result is not None
     assert result.start == 0
     assert result.end == len(block_text)
+
+
+def test_combining_acute_matches_precomposed_e_acute_via_nfkc_step() -> None:
+    """Regression for #50: multi-codepoint composition (e + combining acute vs e-acute).
+
+    `"Cafe\\u0301 total"` contains `e` (U+0065) followed by a combining acute
+    accent (U+0301). The value `"Caf\\u00e9"` is the precomposed form. When the
+    NFKC step normalizes one character at a time the combining mark never merges
+    with its base, so the match fails. The fix normalizes whole substrings so
+    composition happens correctly.
+    """
+    matcher = SubBlockMatcher()
+    block_text = "Cafe\u0301 total"
+    value = "Caf\u00e9"
+
+    result = matcher.locate(block_text, value)
+
+    assert result is not None
+    assert result.start == 0
+    assert result.end == 5  # covers "Cafe\u0301" (5 code units in original)
