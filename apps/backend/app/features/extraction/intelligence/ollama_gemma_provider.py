@@ -134,14 +134,52 @@ class OllamaGemmaProvider(BaseLanguageModel):
         self._timeout_seconds = effective_settings.ollama_timeout_seconds
         self._timeout = httpx.Timeout(self._timeout_seconds)
         self._validator = effective_validator
-        self.http_client = http_client or httpx.AsyncClient(timeout=self._timeout)
+        # `http_client` is resolved lazily per running event loop (see
+        # `_get_http_client`). When a caller injects a client we store it on
+        # `_injected_http_client` and return it unchanged — the caller owns
+        # its loop affinity. Otherwise we build a fresh `AsyncClient` on first
+        # use and rebind if the running loop changes (issue #132).
+        self._injected_http_client = http_client
+        self._http_client: httpx.AsyncClient | None = None
+        self._http_client_loop: asyncio.AbstractEventLoop | None = None
+
+    def _get_http_client(self) -> httpx.AsyncClient:
+        """Return an `AsyncClient` bound to the currently-running event loop.
+
+        If the caller injected a client via the constructor, return it
+        unchanged — they own its loop affinity. Otherwise materialize a
+        default client lazily and rebind if a different loop is running
+        than the one the cached client was first used on. This fixes the
+        cross-loop regression in issue #132 where a single provider
+        instance used across `asyncio.run` scopes would raise
+        `RuntimeError: Event loop is closed` on the second call.
+        """
+        if self._injected_http_client is not None:
+            return self._injected_http_client
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+        if self._http_client is None or (
+            current_loop is not None and current_loop is not self._http_client_loop
+        ):
+            self._http_client = httpx.AsyncClient(timeout=self._timeout)
+            self._http_client_loop = current_loop
+        return self._http_client
+
+    @property
+    def http_client(self) -> httpx.AsyncClient:
+        """Public accessor preserved for test compatibility; delegates to
+        `_get_http_client` so reads always see the loop-appropriate client.
+        """
+        return self._get_http_client()
 
     async def generate(
         self,
         prompt: str,
         output_schema: dict[str, Any],
     ) -> GenerationResult:
-        return await self._validated_generate(prompt, output_schema, client=self.http_client)
+        return await self._validated_generate(prompt, output_schema, client=self._get_http_client())
 
     async def _validated_generate(
         self,
@@ -286,11 +324,18 @@ class OllamaGemmaProvider(BaseLanguageModel):
 
     async def health_check(self) -> bool:
         try:
-            response = await self.http_client.get(self._tags_url)
+            response = await self._get_http_client().get(self._tags_url)
             response.raise_for_status()
         except (httpx.RequestError, httpx.HTTPStatusError):
             return False
         return True
 
     async def aclose(self) -> None:
-        await self.http_client.aclose()
+        # Close whichever client is currently active on this loop. Clients
+        # that were bound to earlier (now-closed) loops are already unusable
+        # and do not need an explicit `aclose` — their transports were torn
+        # down when the loop exited.
+        if self._injected_http_client is not None:
+            await self._injected_http_client.aclose()
+        elif self._http_client is not None:
+            await self._http_client.aclose()
