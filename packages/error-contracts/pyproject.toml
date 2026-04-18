@@ -9,8 +9,35 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "pyright>=1.1.408",
     "pytest>=9.0.3",
 ]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+
+[tool.pyright]
+pythonVersion = "3.13"
+typeCheckingMode = "strict"
+include = ["scripts", "tests"]
+# Mirror [tool.pytest.ini_options] pythonpath so pyright resolves `scripts.*`
+# imports from tests. Pytest adds the package root to sys.path at runtime; this
+# gives pyright the same view statically. See issue #163.
+extraPaths = ["."]
+
+# Tests may pass arguments that exercise validation (intentionally malformed
+# structures). Relax the strict noise on the tests tree so the codegen script
+# itself carries the strictness burden. See issue #163.
+[[tool.pyright.executionEnvironments]]
+root = "tests"
+reportMissingParameterType = false
+reportMissingTypeArgument = false
+reportUnknownMemberType = false
+reportUnknownVariableType = false
+reportUnknownArgumentType = false
+reportUnknownLambdaType = false
+reportUnknownParameterType = false
+reportMissingTypeStubs = false
+reportUntypedFunctionDecorator = false
+reportPrivateUsage = false
+reportUnusedFunction = false
