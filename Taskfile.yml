@@ -19,10 +19,17 @@ tasks:
 
   # ── Check (Claude runs this before declaring done) ───────────
   check:
-    desc: Run ALL checks — lint, types, skills, tests, error contracts
+    desc: Run ALL checks — lint, types, architecture, skills, tests, error contracts
+    # Every required gate is enumerated here as a direct `task: <name>` edge
+    # (issue #215). Do NOT collapse a gate into another task's cmds list:
+    # reaching architecture/lint/etc. only via a sibling hides it from this
+    # list and lets a future refactor silently drop it from the canonical
+    # gate. A meta-test in apps/backend/tests/unit/architecture/test_taskfile_check_hygiene.py
+    # pins this invariant.
     cmds:
       - task: check:lint
       - task: check:types
+      - task: check:arch
       - task: skills:validate
       - task: check:test
       - task: check:errors
@@ -92,11 +99,10 @@ tasks:
 
   # ── Linting & Formatting ─────────────────────────────────────
   lint:
-    desc: Run ruff + import-linter (format checking lives in `format:check`)
+    desc: Run ruff (format checking lives in `format:check`; architecture in `check:arch`)
     dir: "{{.BACKEND_DIR}}"
     cmds:
       - uv run ruff check .
-      - task: check:arch
 
   format:
     desc: Run the formatter
