@@ -39,13 +39,28 @@ def silence_stdlib_logger(logger_name: str, level: int) -> None:
        module (the pattern the parser used to have at import time before
        issue #210).
 
+    Cap semantics: this never *reduces* an existing stricter explicit level.
+    If the logger has already been configured to a higher numeric level than
+    ``level`` (i.e. emits less, e.g. ``ERROR`` when ``level`` is ``WARNING``),
+    we leave it alone. We only raise the floor when the logger is at NOTSET
+    (the default for a fresh logger) or at a lower numeric level than the
+    requested cap. This guards against the silent-volume-increase failure
+    mode where a noisy third party was already aggressively suppressed by
+    something earlier in startup and our default cap would walk it back.
+
     Args:
         logger_name: The stdlib logger name to suppress
             (e.g. ``"docling"``, ``"httpx"``, ``"httpcore"``).
         level: The numeric level to cap the logger at
             (e.g. ``logging.WARNING``, ``logging.ERROR``).
     """
-    logging.getLogger(logger_name).setLevel(level)
+    logger = logging.getLogger(logger_name)
+    # `logger.level` is the explicitly-set level (NOTSET = 0 if unset). We
+    # use it (not `getEffectiveLevel`) so an unset child whose *effective*
+    # level is inherited from a parent still gets capped — the parent's
+    # level was meant for the parent's tree, not as a per-child override.
+    if logger.level < level:
+        logger.setLevel(level)
 
 
 def configure_logging(

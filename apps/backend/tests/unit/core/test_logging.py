@@ -88,6 +88,28 @@ def test_silence_stdlib_logger_accepts_arbitrary_level_and_name() -> None:
     assert logging.getLogger(logger_name).level == logging.ERROR
 
 
+def test_silence_stdlib_logger_does_not_reduce_a_stricter_existing_level() -> None:
+    """Cap semantics: never lower a logger that is already stricter than the cap.
+
+    Earlier the helper unconditionally called ``setLevel(level)``, which
+    would *reduce* an already-stricter level (e.g. ERROR -> WARNING) and
+    silently increase log volume. The new implementation only raises the
+    floor; it leaves stricter explicit levels untouched.
+    """
+    logger_name = "issue_210_silence_helper_fixture_gamma"
+    # Pre-configure the logger to ERROR, which is stricter (numerically
+    # higher) than the WARNING cap we are about to request.
+    logging.getLogger(logger_name).setLevel(logging.ERROR)
+
+    silence_stdlib_logger(logger_name, logging.WARNING)
+
+    # The helper must NOT have walked ERROR back down to WARNING.
+    assert logging.getLogger(logger_name).level == logging.ERROR, (
+        "silence_stdlib_logger reduced an existing stricter level "
+        "(ERROR -> WARNING). It must only raise the floor, never lower it."
+    )
+
+
 def test_configure_logging_silences_docling_via_helper() -> None:
     """Docling silencing must be driven from configure_logging, not from the parser module.
 
