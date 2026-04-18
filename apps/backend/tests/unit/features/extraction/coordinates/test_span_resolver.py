@@ -71,7 +71,7 @@ def _index(*entries: tuple[int, int, str]) -> OffsetIndex:
     )
 
 
-def test_single_block_sub_block_match_returns_whole_block_bbox() -> None:
+def test_single_block_offsets_hit_returns_whole_block_bbox() -> None:
     # Interim mitigation for issue #151: the resolver no longer interpolates
     # sub-block positions using character ratios (which drifts for proportional
     # fonts / CJK / emoji / diacritics). A single-block match now returns the
