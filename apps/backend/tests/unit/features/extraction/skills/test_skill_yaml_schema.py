@@ -311,6 +311,43 @@ def test_duplicate_output_schema_property_keys_raise_skill_validation_error(
     assert "'amount_due'" in reason
 
 
+def test_unhashable_mapping_key_raises_skill_validation_error(
+    tmp_path: Path,
+) -> None:
+    """A sequence used as a mapping key must surface as SkillValidationFailedError.
+
+    PyYAML's upstream ``SafeConstructor.construct_mapping`` explicitly
+    checks ``isinstance(key, Hashable)`` and raises
+    ``yaml.constructor.ConstructorError`` on failure. Without that guard
+    our ``if key in mapping`` would raise a bare ``TypeError`` that
+    bypasses the ``except yaml.YAMLError`` wrapping in
+    ``SkillYamlSchema.load_from_file``, surfacing as a raw traceback
+    instead of the curated ``SkillValidationFailedError`` envelope.
+    """
+    path = tmp_path / "1.yaml"
+    # ``? [a, b]`` is YAML's explicit-key syntax for a sequence-valued key.
+    # The constructed Python object is a list, which is unhashable.
+    path.write_text(
+        "name: invoice\n"
+        "version: 1\n"
+        "description: Invoice header extractor.\n"
+        'prompt: "Extract."\n'
+        'examples:\n  - input: "x"\n    output: {number: "1"}\n'
+        "output_schema:\n"
+        "  type: object\n"
+        "  properties:\n"
+        "    ? [a, b]\n"
+        "    : {type: string}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SkillValidationFailedError) as exc_info:
+        SkillYamlSchema.load_from_file(path)
+
+    reason = _reason(exc_info.value)
+    assert "unhashable" in reason.lower() or "not hashable" in reason.lower()
+
+
 def test_merge_key_still_applied_by_duplicate_key_detecting_loader(
     tmp_path: Path,
 ) -> None:

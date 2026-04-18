@@ -11,6 +11,7 @@ loader wires that check into the YAML reading path (issue #208).
 
 from __future__ import annotations
 
+from collections.abc import Hashable
 from typing import Any
 
 import yaml
@@ -44,6 +45,18 @@ def _construct_mapping_rejecting_duplicates(
     construct_object = loader.construct_object  # type: ignore[reportUnknownMemberType]
     for key_node, value_node in node.value:
         key: Any = construct_object(key_node, deep=deep)  # type: ignore[reportUnknownVariableType]
+        # Mirror PyYAML upstream: reject unhashable keys (e.g. a sequence
+        # used as a mapping key via ``? [a, b]`` syntax) with a curated
+        # ``ConstructorError`` rather than letting ``key in mapping`` raise
+        # a raw ``TypeError`` that bypasses the caller's
+        # ``except yaml.YAMLError`` envelope.
+        if not isinstance(key, Hashable):
+            raise yaml.constructor.ConstructorError(
+                context,
+                node.start_mark,
+                "found unhashable key",
+                key_node.start_mark,
+            )
         if key in mapping:
             problem = f"duplicate key {key!r}"
             raise yaml.constructor.ConstructorError(
