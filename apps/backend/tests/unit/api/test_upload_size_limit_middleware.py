@@ -22,6 +22,7 @@ Invariants under test:
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -158,10 +159,23 @@ async def test_rejects_when_content_length_missing_on_guarded_path() -> None:
 
     await app(scope, _receive, _send)
 
-    # Find the response.start message and confirm status=413.
+    # Pin the full envelope contract — status, content-type, error code,
+    # and the -1 unknown-size sentinel — so future middleware tweaks can't
+    # silently drift the API shape promised in the module docstring.
     starts = [m for m in sent_messages if m["type"] == "http.response.start"]
     assert len(starts) == 1
     assert starts[0]["status"] == 413
+    start_headers = dict(starts[0].get("headers") or [])
+    assert start_headers.get(b"content-type", b"").startswith(b"application/json")
+
+    bodies = [m for m in sent_messages if m["type"] == "http.response.body"]
+    assert bodies, "middleware must have emitted a response body"
+    raw_body = b"".join(bytes(m.get("body") or b"") for m in bodies)
+    payload = json.loads(raw_body.decode("utf-8"))
+    assert payload["error"]["code"] == "PDF_TOO_LARGE"
+    # Missing Content-Length → unknown body size → actual_bytes=-1 sentinel.
+    assert payload["error"]["params"]["actual_bytes"] == -1
+    assert payload["error"]["params"]["max_bytes"] == 1024
     assert app.state.handler_calls == 0
 
 
