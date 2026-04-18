@@ -1,7 +1,13 @@
 # ── Build stage ──────────────────────────────────────────────
-FROM python:3.13-slim AS builder
+# Sourced once as an `ARG` so the builder and runtime stages always point at
+# the identical digest. Updating the pin means editing one line.
+# python:3.13-slim (pinned 2026-04-17, https://hub.docker.com/_/python)
+ARG PYTHON_IMAGE=python:3.13-slim@sha256:d168b8d9eb761f4d3fe305ebd04aeb7e7f2de0297cec5fb2f8f6403244621664
 
-COPY --from=ghcr.io/astral-sh/uv:0.7.2 /uv /uvx /bin/
+FROM ${PYTHON_IMAGE} AS builder
+
+# ghcr.io/astral-sh/uv:0.7.2 (pinned 2026-04-17)
+COPY --from=ghcr.io/astral-sh/uv:0.7.2@sha256:3b898ca84fbe7628c5adcd836c1de78a0f1ded68344d019af8478d4358417399 /uv /uvx /bin/
 
 WORKDIR /app
 
@@ -25,7 +31,10 @@ COPY apps/backend/pyproject.toml ./
 RUN uv sync --frozen --no-dev
 
 # ── Runtime stage ────────────────────────────────────────────
-FROM python:3.13-slim
+# Reuses the top-level `ARG PYTHON_IMAGE` (declared before any `FROM`), which
+# per the Dockerfile ARG scoping rules is available for substitution in every
+# stage's `FROM` line — keeping builder and runtime pinned to the same digest.
+FROM ${PYTHON_IMAGE}
 
 # Run as non-root user
 RUN groupadd --gid 1000 appuser && \

@@ -71,3 +71,13 @@ updates:
       github-official-actions:
         patterns:
           - "actions/*"
+
+  # Backend Dockerfile base image is pinned by SHA digest (issue #156);
+  # Dependabot proposes digest bumps weekly so the pin stays current
+  # against upstream python:3.13-slim rebuilds instead of silently
+  # rotting into a stale SHA.
+  - package-ecosystem: "docker"
+    directory: "/infra/docker"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
