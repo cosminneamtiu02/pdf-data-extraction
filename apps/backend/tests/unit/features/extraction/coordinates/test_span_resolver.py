@@ -11,11 +11,27 @@ from structlog.testing import capture_logs
 from app.features.extraction.coordinates.offset_index import OffsetIndex
 from app.features.extraction.coordinates.offset_index_entry import OffsetIndexEntry
 from app.features.extraction.coordinates.span_resolver import SpanResolver
+from app.features.extraction.coordinates.sub_block_matcher import SubBlockMatcher
 from app.features.extraction.extraction.raw_extraction import RawExtraction
 from app.features.extraction.parsing.bounding_box import BoundingBox
 from app.features.extraction.parsing.parsed_document import ParsedDocument
 from app.features.extraction.parsing.text_block import TextBlock
 from app.features.extraction.schemas.field_status import FieldStatus
+
+
+class _ForbiddenMatcher(SubBlockMatcher):
+    """Stub that fails the enclosing test if locate() is invoked.
+
+    Lets tests prove the matcher is NOT consulted on the happy-path
+    (direct-offset hit) case, rather than inferring it from the absence
+    of a matcher_failed log event — which could also mean the matcher
+    was called and succeeded silently.
+    """
+
+    def locate(self, block_text: str, value: str) -> None:
+        msg = f"SubBlockMatcher.locate should not have been called (block_text={block_text!r}, value={value!r})"
+        raise AssertionError(msg)
+
 
 _DEFAULT_BBOX = (0.0, 0.0, 100.0, 20.0)
 
@@ -627,7 +643,11 @@ def test_repeated_value_in_block_matches_offset_range_without_matcher_invocation
     # at positions 2..4. The resolver must use the offset-reported range as
     # the authoritative match (avoiding the matcher fallback), and — per the
     # issue #151 interim mitigation — emit the whole-block bbox.
-    resolver = SpanResolver()
+    # Inject a spy matcher that raises if invoked. Proves the happy-path
+    # branch never consults the matcher — stronger than a log-absence
+    # assertion, which could pass even if the matcher was called and
+    # succeeded silently.
+    resolver = SpanResolver(matcher=_ForbiddenMatcher())
     block = _block(block_id="b0", text="A=42 B=42", bbox=(0, 0, 100, 20))
     doc = _doc(block)
     index = _index((0, 9, "b0"))
@@ -640,14 +660,11 @@ def test_repeated_value_in_block_matches_offset_range_without_matcher_invocation
         attempts=1,
     )
 
-    with capture_logs() as logs:
-        result = resolver.resolve([raw], index, doc, ["amount"])
+    result = resolver.resolve([raw], index, doc, ["amount"])
 
     ref = result[0].bbox_refs[0]
     assert (ref.x0, ref.x1) == (0.0, 100.0)
     assert (ref.y0, ref.y1) == (0.0, 20.0)
-    # Matcher was NOT consulted — offsets hit the value directly.
-    assert [e for e in logs if e.get("reason") == "matcher_failed"] == []
 
 
 def test_repeated_value_first_occurrence_also_resolves_without_matcher_invocation() -> None:

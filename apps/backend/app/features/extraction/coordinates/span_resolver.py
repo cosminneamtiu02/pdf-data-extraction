@@ -39,7 +39,9 @@ class SpanResolver:
                                           issue #151; future glyph-level
                                           geometry will re-enable tight
                                           bboxes.)
-    4. Single-block span, matcher miss  → same as 3 but whole-block bbox.
+    4. Single-block span, matcher miss  → logs the matcher failure; the
+                                          bbox output is the same whole-block
+                                          BoundingBoxRef as case 3.
     5. Multi-block / cross-page span    → one whole-block BoundingBoxRef per
                                           touched block, all with grounded=True.
     6. Offsets outside any block        → grounded=False with empty bbox_refs
