@@ -19,13 +19,13 @@ Invocation
 from __future__ import annotations
 
 import argparse
-import os
 import platform
 import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 try:
     import resource  # Unix only
@@ -34,6 +34,9 @@ except ModuleNotFoundError:
 
 import httpx
 import structlog
+from pydantic import ValidationError
+
+from app.core.benchmark_settings import BenchmarkSettings
 
 _logger = structlog.get_logger(__name__)
 
@@ -469,18 +472,56 @@ def run_benchmark(config: BenchConfig) -> BenchResults:
 # ---------------------------------------------------------------------------
 
 
-def _safe_int_env(key: str, default: str) -> int:
-    """Read *key* from env and convert to int, falling back to *default*."""
-    raw = os.environ.get(key, default)
-    try:
-        return int(raw)
-    except ValueError:
-        sys.stderr.write(f"Error: {key}={raw!r} is not a valid integer\n")
-        raise SystemExit(2) from None  # operator-facing message, not a domain error
+# Argparse-name -> BenchmarkSettings-field mapping for the CLI flags that are
+# backed by a ``BENCH_*`` env var. Flags not in this set (``--warmup`` /
+# ``--timeout``) are script-local and keep concrete argparse defaults.
+_BENCH_FIELD_BY_ARG: dict[str, str] = {
+    "url": "url",
+    "iterations": "iterations",
+    "fixtures_dir": "fixtures_dir",
+    "skill_name": "skill_name",
+    "skill_version": "skill_version",
+    "service_pid": "service_pid",
+}
+
+
+def _format_bench_error_source(loc: str, cli_overrides: dict[str, Any]) -> str:
+    """Return the operator-facing label for a ValidationError location.
+
+    When the field was set via an explicit CLI flag, reference the flag name
+    (``--iterations``). Otherwise reference the environment variable the user
+    would have set (``BENCH_ITERATIONS``). This keeps the error message
+    pointing at the input the operator actually supplied.
+    """
+    if loc in cli_overrides:
+        return f"--{loc.replace('_', '-')}"
+    return f"BENCH_{loc.upper()}"
 
 
 def parse_args(argv: list[str]) -> BenchConfig:
-    """Parse CLI arguments and return a ``BenchConfig``."""
+    """Parse CLI arguments and return a ``BenchConfig``.
+
+    Defaults come from :class:`app.core.benchmark_settings.BenchmarkSettings`,
+    so ``BENCH_*`` environment variables flow through pydantic-settings
+    rather than ``os.environ`` (CLAUDE.md forbidden pattern; issue #237).
+    Explicit CLI flags still win over env vars.
+
+    Implementation note: argv is parsed *first* with ``argparse.SUPPRESS`` as
+    the default for every ``BENCH_*``-backed flag, so only flags the operator
+    actually passed land on the argparse ``Namespace``. Those values are then
+    forwarded to ``BenchmarkSettings(**cli_overrides)`` as init kwargs.
+    pydantic-settings' documented source priority — init kwargs > env >
+    defaults — means a bad ``BENCH_*`` value is only consulted when the CLI
+    did not cover that field, so ``BENCH_ITERATIONS=banana --iterations 5``
+    succeeds with ``iterations=5`` (PR #246 round-2 feedback).
+
+    If a ``BENCH_*`` env value is syntactically invalid and the CLI does not
+    override it, ``BenchmarkSettings(**cli_overrides)`` raises
+    ``pydantic.ValidationError``; we translate that into an argparse-style
+    operator error — concise stderr message and ``SystemExit(2)`` — so the
+    script preserves the exit-code contract of the pre-refactor
+    ``_safe_int_env`` branch instead of crashing with a traceback.
+    """
     parser = argparse.ArgumentParser(
         prog="benchmark",
         description=(
@@ -490,7 +531,7 @@ def parse_args(argv: list[str]) -> BenchConfig:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
-            "Environment variables:\n"
+            "Environment variables (read via BenchmarkSettings):\n"
             "  BENCH_URL            Override --url (default: http://localhost:8000)\n"
             "  BENCH_ITERATIONS     Override --iterations (default: 10)\n"
             "  BENCH_FIXTURES_DIR   Override --fixtures-dir (default: fixtures/bench)\n"
@@ -499,33 +540,42 @@ def parse_args(argv: list[str]) -> BenchConfig:
             "  BENCH_SERVICE_PID    Override --service-pid (default: none)\n"
         ),
     )
+    # BenchmarkSettings-backed flags: SUPPRESS so only explicit CLI flags populate
+    # the Namespace, then forwarded as init kwargs to override env/defaults.
     parser.add_argument(
         "--url",
-        default=_env_or("BENCH_URL", "http://localhost:8000"),
+        default=argparse.SUPPRESS,
         help="Base URL of the running extraction service (default: http://localhost:8000)",
     )
     parser.add_argument(
         "--iterations",
         type=int,
-        default=_safe_int_env("BENCH_ITERATIONS", "10"),
+        default=argparse.SUPPRESS,
         help="Number of timed iterations per fixture per mode (default: 10)",
     )
     parser.add_argument(
         "--fixtures-dir",
         type=Path,
-        default=Path(_env_or("BENCH_FIXTURES_DIR", "fixtures/bench")),
+        default=argparse.SUPPRESS,
         help="Path to the benchmark fixture directory (default: fixtures/bench)",
     )
     parser.add_argument(
         "--skill-name",
-        default=_env_or("BENCH_SKILL_NAME", "invoice"),
+        default=argparse.SUPPRESS,
         help="Skill name to use for extraction requests (default: invoice)",
     )
     parser.add_argument(
         "--skill-version",
-        default=_env_or("BENCH_SKILL_VERSION", "1"),
+        default=argparse.SUPPRESS,
         help="Skill version to use for extraction requests (default: 1)",
     )
+    parser.add_argument(
+        "--service-pid",
+        type=int,
+        default=argparse.SUPPRESS,
+        help="PID of the running service process for RSS measurement (NFR-008)",
+    )
+    # Script-local flags: not env-backed, keep concrete argparse defaults.
     parser.add_argument(
         "--warmup",
         type=int,
@@ -538,17 +588,27 @@ def parse_args(argv: list[str]) -> BenchConfig:
         default=300.0,
         help="HTTP request timeout in seconds (default: 300)",
     )
-    parser.add_argument(
-        "--service-pid",
-        type=int,
-        default=_safe_int_env("BENCH_SERVICE_PID", "0") or None,
-        help="PID of the running service process for RSS measurement (NFR-008)",
-    )
 
     args = parser.parse_args(argv)
 
-    if args.iterations < 1:
-        parser.error("--iterations must be a positive integer")
+    # argparse returns per-flag values whose static type varies by the ``type=``
+    # callable (``int`` / ``float`` / ``Path`` / ``str``); ``Any`` lets pyright
+    # accept forwarding them as kwargs into ``BenchmarkSettings(**...)``, which
+    # then runs pydantic validation on each field regardless.
+    cli_overrides: dict[str, Any] = {
+        _BENCH_FIELD_BY_ARG[arg_name]: value
+        for arg_name, value in vars(args).items()
+        if arg_name in _BENCH_FIELD_BY_ARG
+    }
+
+    try:
+        settings = BenchmarkSettings(**cli_overrides)
+    except ValidationError as exc:
+        for error in exc.errors():
+            loc = ".".join(str(part) for part in error["loc"]) or "<root>"
+            source = _format_bench_error_source(loc, cli_overrides)
+            sys.stderr.write(f"Error: {source}: {error['msg']}\n")
+        raise SystemExit(2) from None  # operator-facing message, not a domain error
 
     if args.warmup < 0:
         parser.error("--warmup must be a non-negative integer")
@@ -556,25 +616,22 @@ def parse_args(argv: list[str]) -> BenchConfig:
     if args.timeout <= 0:
         parser.error("--timeout must be a positive number")
 
+    # Normalize service_pid=0 -> None. PID 0 is never a valid target process
+    # (POSIX reserves it for the current process group in signal semantics),
+    # and ``ps -p 0`` produces no output. Matches the pre-refactor
+    # ``_safe_int_env`` path which collapsed 0 via ``... or None``.
+    service_pid = settings.service_pid or None
+
     return BenchConfig(
-        url=args.url.rstrip("/"),
-        iterations=args.iterations,
-        fixtures_dir=args.fixtures_dir,
-        skill_name=args.skill_name,
-        skill_version=args.skill_version,
+        url=settings.url.rstrip("/"),
+        iterations=settings.iterations,
+        fixtures_dir=settings.fixtures_dir,
+        skill_name=settings.skill_name,
+        skill_version=settings.skill_version,
         warmup=args.warmup,
         timeout=args.timeout,
-        service_pid=args.service_pid,
+        service_pid=service_pid,
     )
-
-
-def _env_or(key: str, default: str) -> str:
-    """Read an env var via ``os.environ.get`` — benchmark scripts are
-    operator-facing tools that read their own env vars, not pydantic-settings
-    models.  The ``Settings`` class is for the FastAPI app process; this
-    script runs outside the app process.
-    """
-    return os.environ.get(key, default)
 
 
 def main(argv: list[str] | None = None) -> int:
