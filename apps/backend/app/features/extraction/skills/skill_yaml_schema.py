@@ -26,7 +26,7 @@ from typing import Any, Self
 import yaml
 from jsonschema import Draft7Validator
 from jsonschema.exceptions import SchemaError
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from app.exceptions import SkillValidationFailedError
 from app.features.extraction.skills._duplicate_key_safe_loader import (
@@ -149,6 +149,17 @@ class SkillYamlSchema(BaseModel):
                 file=file_str,
                 reason=str(inner_reason),
             ) from exc
+        except ValidationError as exc:
+            # Pydantic raises its own `ValidationError` for field-shape problems
+            # (missing fields, wrong types, failed constraints) BEFORE the
+            # `@model_validator(mode="after")` above ever runs. Without this
+            # branch that exception escapes `load_from_file` unwrapped, and
+            # `SkillLoader`'s broad `except Exception` surfaces it to operators
+            # as an unparseable raw-Pydantic dump. Wrap it here so every
+            # load-time failure reaches the boot-log in the same curated
+            # `file=<path> reason=<human-readable>` shape (issue #214).
+            reason = _format_pydantic_errors(exc)
+            raise SkillValidationFailedError(file=file_str, reason=reason) from exc
 
         if instance.version != filename_version:
             msg = (
@@ -158,6 +169,27 @@ class SkillYamlSchema(BaseModel):
             raise SkillValidationFailedError(file=file_str, reason=msg)
 
         return instance
+
+
+def _format_pydantic_errors(exc: ValidationError) -> str:
+    """Collapse a `pydantic.ValidationError` into one human-readable line.
+
+    Each inner error becomes ``<dotted.loc>: <msg>`` and the items are joined
+    with ``"; "`` so the whole blob is a single log-friendly line. We
+    deliberately DO NOT include the ``type=`` / ``input_value=`` /
+    ``For further information visit https://errors.pydantic.dev/...``
+    trailers that Pydantic's own ``__str__`` appends — those are useful for
+    library debugging but are noise in a curated operator-facing message,
+    and they were the exact signal of "this came from raw Pydantic" that
+    issue #214 called out.
+    """
+    parts: list[str] = []
+    for err in exc.errors():
+        loc_tuple = err.get("loc", ())
+        dotted_loc = ".".join(str(p) for p in loc_tuple) if loc_tuple else "<root>"
+        msg = err.get("msg", "")
+        parts.append(f"{dotted_loc}: {msg}")
+    return "; ".join(parts)
 
 
 def _is_empty_object_schema(schema: dict[str, Any]) -> bool:
