@@ -24,7 +24,13 @@ enforcement version. This document provides rationale.
   `app/features/extraction/skills/skill_loader.py` -> `tests/unit/features/extraction/skills/test_skill_loader.py`.
 - Backend integration: `tests/integration/` mirrors the source tree. In-process
   against the FastAPI ASGI app; no external services.
-- Backend contract: `tests/contract/test_schemathesis.py`.
+- Backend contract: `tests/contract/` — three files, one per contract
+  slice: `test_schemathesis.py` (schemathesis conformance across every
+  declared `/api/v1/extract` status code), `test_extract_contract.py`
+  (shape assertions for the OpenAPI spec and `ErrorResponse` envelope),
+  `test_degraded_contract.py` (degraded-mode `/health` + `/ready`
+  response shapes with a stubbed Ollama probe). See
+  [docs/testing.md](testing.md#3-contract-tests) for details.
 
 ## Pydantic Schemas
 
