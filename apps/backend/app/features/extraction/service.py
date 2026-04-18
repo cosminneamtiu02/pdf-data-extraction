@@ -138,10 +138,27 @@ class ExtractionService:
         skill_version: str,
         output_mode: OutputMode,
     ) -> ExtractionResult:
-        """Execute the pipeline under the end-to-end timeout budget."""
+        """Execute the pipeline under the end-to-end timeout budget.
+
+        ``asyncio.timeout`` is bound to ``budget_cm`` so we can distinguish
+        "the outer timeout expired" from "a downstream library raised a
+        built-in ``TimeoutError`` for unrelated reasons" (e.g. an internal
+        socket or sub-operation timeout that bubbles up before the pipeline
+        budget is exhausted). ``budget_cm.expired()`` is True **only** when
+        the raised ``TimeoutError`` was caused by this specific
+        ``asyncio.timeout(...)`` firing — so we only remap in that case.
+        Unrelated ``TimeoutError`` instances propagate as-is and the
+        middleware exception handler surfaces them via the default mapping
+        (rather than a misleading 504 with a fake ``budget_seconds``).
+        """
         t0 = time.monotonic()
+        # Bind the Timeout context manager to a local before entering ``async
+        # with`` so the ``except TimeoutError`` branch below can query
+        # ``budget_cm.expired()`` even though the exception unbinds the
+        # ``as`` target in the suite's local scope.
+        budget_cm = asyncio.timeout(self._timeout_seconds)
         try:
-            async with asyncio.timeout(self._timeout_seconds):
+            async with budget_cm:
                 # 1. Resolve skill
                 skill = self._skill_manifest.lookup(skill_name, skill_version)
 
@@ -205,6 +222,13 @@ class ExtractionService:
                     annotated_pdf_bytes=annotated_pdf,
                 )
         except TimeoutError:
+            # Only remap to IntelligenceTimeoutError when *this* timeout
+            # context caused the raise. Unrelated inner TimeoutErrors
+            # (e.g. a parser/annotator/library's own timeout) propagate
+            # as-is — remapping them would hide the real failing component
+            # and report a bogus ``budget_seconds`` the pipeline never hit.
+            if not budget_cm.expired():
+                raise
             raise IntelligenceTimeoutError(
                 budget_seconds=self._timeout_seconds,
             ) from None
