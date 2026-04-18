@@ -9,8 +9,10 @@ file (`intelligence/ollama_gemma_provider.py`, PDFX-E004-F002). The test
 walks the entire `app/features/extraction/` subtree and rejects any
 `import langextract` / `from langextract...` outside of those files.
 
-Once PDFX-E007-F004 adds import-linter contracts, this test becomes a
-defensive double-check.
+PDFX-E007-F004 landed the C5 import-linter contract covering the same
+allowlist (see `apps/backend/architecture/import-linter-contracts.ini`).
+This AST-scan test is now a redundant defense-in-depth check alongside
+the import-linter gate.
 """
 
 from __future__ import annotations
