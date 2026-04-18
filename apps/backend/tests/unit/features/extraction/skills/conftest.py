@@ -29,6 +29,7 @@ def write_skill_yaml(tmp_path: Path) -> SkillYamlFactory:
         body: dict[str, Any] = {
             "name": "invoice",
             "version": 1,
+            "description": "Invoice header extractor.",
             "prompt": "Extract invoice header fields.",
             "examples": [
                 {"input": "INV-1 total 10", "output": {"number": "INV-1"}},

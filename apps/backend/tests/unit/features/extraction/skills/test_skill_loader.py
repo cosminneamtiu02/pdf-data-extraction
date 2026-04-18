@@ -29,6 +29,7 @@ def _write_skill(base: Path, *, dir_name: str, **overrides: Any) -> Path:
     body: dict[str, Any] = {
         "name": name or dir_name,
         "version": version,
+        "description": overrides.pop("description", f"{dir_name} extractor."),
         "prompt": "Extract header fields.",
         "examples": [{"input": "INV-1", "output": {"number": "INV-1"}}],
         "output_schema": {
