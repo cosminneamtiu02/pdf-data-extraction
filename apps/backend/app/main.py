@@ -104,7 +104,34 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None]:
         # The probe_cache is also cleared because it holds a reference to the
         # probe's (now-closed) httpx client. Without clearing it, a reused
         # app instance would serve a stale cache backed by a closed client.
-        for attr in ("ollama_health_probe", "probe_cache", "intelligence_provider"):
+        #
+        # ``extraction_service`` and its collaborator caches
+        # (``structured_output_validator``, ``document_parser``,
+        # ``text_concatenator``, ``extraction_engine``, ``span_resolver``,
+        # ``pdf_annotator``) are also cleared. ``extraction_service`` holds
+        # the ``intelligence_provider`` internally; without invalidating it
+        # on shutdown, a re-entered lifespan would rebuild a fresh provider
+        # on ``app.state`` but ``get_extraction_service`` would still return
+        # the first lifespan's cached service, whose ``_intelligence_provider``
+        # points at the already-``aclose()``'d provider. The next extraction
+        # request then fails with a closed-httpx-client 500. The sibling
+        # component caches are invalidated for the same reason: the
+        # re-entered lifespan must build a fresh graph so every dependency
+        # reflects the current ``app.state.settings`` and current
+        # ``Depends()`` override map, not values captured at the first
+        # lifespan's first-resolve.
+        for attr in (
+            "ollama_health_probe",
+            "probe_cache",
+            "intelligence_provider",
+            "extraction_service",
+            "structured_output_validator",
+            "document_parser",
+            "text_concatenator",
+            "extraction_engine",
+            "span_resolver",
+            "pdf_annotator",
+        ):
             obj = getattr(app.state, attr, None)
             if obj is not None:
                 try:
