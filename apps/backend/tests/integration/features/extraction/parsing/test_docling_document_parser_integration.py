@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import contextlib
 import importlib.util
+import shutil
 from pathlib import Path
 
 import pytest
@@ -33,6 +34,13 @@ pytestmark = pytest.mark.slow
 
 _DOCLING_AVAILABLE = importlib.util.find_spec("docling") is not None
 _PYMUPDF_AVAILABLE = importlib.util.find_spec("pymupdf") is not None
+# Docling's `TesseractCliOcrOptions` path shells out to the `tesseract` binary
+# at OCR time (issue #106, ADR-013). When it is not on `PATH`, Docling raises
+# `RuntimeError: Tesseract is not available, aborting`. Skipping here matches
+# the existing pattern for other optional runtime prerequisites (`docling`,
+# `pymupdf`, fixture PDFs) so `task test:slow` on a dev machine without
+# `brew install tesseract` reports a clear skip reason instead of a failure.
+_TESSERACT_AVAILABLE = shutil.which("tesseract") is not None
 # parents: [0]=parsing [1]=extraction [2]=features [3]=integration [4]=tests
 # so parents[4] is apps/backend/tests, which is where fixtures live.
 _FIXTURES_DIR = Path(__file__).resolve().parents[4] / "fixtures" / "pdfs"
@@ -44,10 +52,17 @@ _SKIP_REASON_DOCLING = (
     "PDFX-E001-F002 pins docling as a runtime dependency."
 )
 _SKIP_REASON_FIXTURE = "PDF fixture not committed yet; add it to apps/backend/tests/fixtures/pdfs/"
+_SKIP_REASON_TESSERACT = (
+    "tesseract binary not on PATH; install it (`brew install tesseract` on "
+    "macOS, `apt-get install tesseract-ocr tesseract-ocr-eng` on Debian) to "
+    "run this slow test. The Docker runtime installs it automatically — see "
+    "infra/docker/backend.Dockerfile and docs/decisions.md ADR-013."
+)
 
 
 @pytest.mark.skipif(not _DOCLING_AVAILABLE, reason=_SKIP_REASON_DOCLING)
 @pytest.mark.skipif(not _NATIVE_FIXTURE.exists(), reason=_SKIP_REASON_FIXTURE)
+@pytest.mark.skipif(not _TESSERACT_AVAILABLE, reason=_SKIP_REASON_TESSERACT)
 @pytest.mark.asyncio
 async def test_real_docling_parses_native_two_page_fixture() -> None:
     from app.features.extraction.parsing.docling_config import DoclingConfig
@@ -66,6 +81,7 @@ async def test_real_docling_parses_native_two_page_fixture() -> None:
 
 @pytest.mark.skipif(not _DOCLING_AVAILABLE, reason=_SKIP_REASON_DOCLING)
 @pytest.mark.skipif(not _SCANNED_FIXTURE.exists(), reason=_SKIP_REASON_FIXTURE)
+@pytest.mark.skipif(not _TESSERACT_AVAILABLE, reason=_SKIP_REASON_TESSERACT)
 @pytest.mark.asyncio
 async def test_real_docling_ocrs_scanned_fixture() -> None:
     from app.features.extraction.parsing.docling_config import DoclingConfig
@@ -84,6 +100,7 @@ async def test_real_docling_ocrs_scanned_fixture() -> None:
 @pytest.mark.skipif(not _DOCLING_AVAILABLE, reason=_SKIP_REASON_DOCLING)
 @pytest.mark.skipif(not _PYMUPDF_AVAILABLE, reason="pymupdf not installed")
 @pytest.mark.skipif(not _NATIVE_FIXTURE.exists(), reason=_SKIP_REASON_FIXTURE)
+@pytest.mark.skipif(not _TESSERACT_AVAILABLE, reason=_SKIP_REASON_TESSERACT)
 @pytest.mark.asyncio
 async def test_real_docling_bboxes_agree_with_pymupdf_on_native_fixture() -> None:
     """Empirically verify that Docling's bbox output lands inside PyMuPDF page rects.
@@ -125,6 +142,7 @@ async def test_real_docling_bboxes_agree_with_pymupdf_on_native_fixture() -> Non
 
 @pytest.mark.skipif(not _DOCLING_AVAILABLE, reason=_SKIP_REASON_DOCLING)
 @pytest.mark.skipif(not _NATIVE_FIXTURE.exists(), reason=_SKIP_REASON_FIXTURE)
+@pytest.mark.skipif(not _TESSERACT_AVAILABLE, reason=_SKIP_REASON_TESSERACT)
 @pytest.mark.asyncio
 async def test_real_docling_parse_does_not_starve_event_loop() -> None:
     import asyncio
@@ -160,6 +178,7 @@ async def test_real_docling_parse_does_not_starve_event_loop() -> None:
 
 @pytest.mark.skipif(not _DOCLING_AVAILABLE, reason=_SKIP_REASON_DOCLING)
 @pytest.mark.skipif(not _NATIVE_FIXTURE.exists(), reason=_SKIP_REASON_FIXTURE)
+@pytest.mark.skipif(not _TESSERACT_AVAILABLE, reason=_SKIP_REASON_TESSERACT)
 @pytest.mark.asyncio
 async def test_real_docling_repeat_parse_is_equivalent() -> None:
     from app.features.extraction.parsing.docling_config import DoclingConfig

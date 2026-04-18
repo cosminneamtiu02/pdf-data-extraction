@@ -466,7 +466,7 @@ class _FakeTableStructureOptions:
         self.mode = mode
 
 
-class _FakeEasyOcrOptions:
+class _FakeTesseractCliOcrOptions:
     def __init__(self, *, force_full_page_ocr: bool) -> None:
         self.force_full_page_ocr = force_full_page_ocr
 
@@ -508,7 +508,7 @@ def _install_fake_docling_modules(monkeypatch: pytest.MonkeyPatch) -> None:
     pipeline_options_mod.PdfPipelineOptions = _FakePipelineOptions  # type: ignore[attr-defined]
     pipeline_options_mod.TableStructureOptions = _FakeTableStructureOptions  # type: ignore[attr-defined]
     pipeline_options_mod.TableFormerMode = _FakeTableFormerMode  # type: ignore[attr-defined]
-    pipeline_options_mod.EasyOcrOptions = _FakeEasyOcrOptions  # type: ignore[attr-defined]
+    pipeline_options_mod.TesseractCliOcrOptions = _FakeTesseractCliOcrOptions  # type: ignore[attr-defined]
 
     document_converter_mod = type(sys)("docling.document_converter")
     document_converter_mod.DocumentConverter = _FakeRealDocumentConverter  # type: ignore[attr-defined]
@@ -540,7 +540,7 @@ def test_default_factory_auto_mode_enables_ocr_without_forcing_full_page(
     pipeline_options = _extract_pipeline_options()
 
     assert pipeline_options.do_ocr is True
-    assert isinstance(pipeline_options.ocr_options, _FakeEasyOcrOptions)
+    assert isinstance(pipeline_options.ocr_options, _FakeTesseractCliOcrOptions)
     assert pipeline_options.ocr_options.force_full_page_ocr is False
     assert pipeline_options.table_structure_options.mode == _FakeTableFormerMode.FAST
 
@@ -554,7 +554,7 @@ def test_default_factory_force_mode_sets_force_full_page_ocr(
     pipeline_options = _extract_pipeline_options()
 
     assert pipeline_options.do_ocr is True
-    assert isinstance(pipeline_options.ocr_options, _FakeEasyOcrOptions)
+    assert isinstance(pipeline_options.ocr_options, _FakeTesseractCliOcrOptions)
     assert pipeline_options.ocr_options.force_full_page_ocr is True
     assert pipeline_options.table_structure_options.mode == _FakeTableFormerMode.ACCURATE
 
