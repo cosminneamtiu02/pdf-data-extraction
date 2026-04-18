@@ -10,7 +10,8 @@ two gaps:
    (`importlib.import_module("app.features.other")`) imports.
 
 2. **Dynamic import containment** - `importlib.import_module("docling")`,
-   `importlib.import_module("pymupdf")`, etc. bypass import-linter's
+   `importlib.import_module("pymupdf")`, and the equivalent `__import__`
+   builtin form (e.g. `__import__("docling")`) bypass import-linter's
    static graph. This test walks every .py file under `app/` and asserts
    that dynamic imports of contained third-party packages only appear in
    their designated files.
