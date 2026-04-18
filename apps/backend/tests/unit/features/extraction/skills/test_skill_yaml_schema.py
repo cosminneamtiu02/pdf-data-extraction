@@ -4,7 +4,6 @@ from pathlib import Path
 
 import pytest
 import yaml
-from pydantic import ValidationError
 
 from app.exceptions import SkillValidationFailedError
 from app.features.extraction.skills import SkillYamlSchema
@@ -42,16 +41,18 @@ def test_load_from_file_returns_populated_instance(
     assert schema.docling is None
 
 
-def test_missing_prompt_raises_pydantic_error(
+def test_missing_prompt_raises_skill_validation_error(
     write_skill_yaml: SkillYamlFactory,
 ) -> None:
+    """Missing-required-field Pydantic errors must be wrapped (issue #214)."""
     path = write_skill_yaml(prompt=REMOVE)
 
-    with pytest.raises(ValidationError) as exc_info:
+    with pytest.raises(SkillValidationFailedError) as exc_info:
         SkillYamlSchema.load_from_file(path)
 
-    errors = exc_info.value.errors()
-    assert any(err["loc"] == ("prompt",) and err["type"].startswith("missing") for err in errors)
+    reason = _reason(exc_info.value)
+    assert "prompt" in reason
+    assert "\n" not in reason
 
 
 def test_invalid_json_schema_raises_skill_validation_error(
@@ -146,59 +147,69 @@ def test_multiple_violations_in_single_example_all_aggregated(
     assert "'b' is a required property" in reason
 
 
-def test_empty_examples_list_raises_pydantic_error(
+def test_empty_examples_list_raises_skill_validation_error(
     write_skill_yaml: SkillYamlFactory,
 ) -> None:
+    """Empty examples list must be wrapped (issue #214)."""
     path = write_skill_yaml(examples=[])
 
-    with pytest.raises(ValidationError) as exc_info:
+    with pytest.raises(SkillValidationFailedError) as exc_info:
         SkillYamlSchema.load_from_file(path)
 
-    assert any(err["loc"] == ("examples",) for err in exc_info.value.errors())
+    reason = _reason(exc_info.value)
+    assert "examples" in reason
 
 
-def test_version_zero_raises_pydantic_error(
+def test_version_zero_raises_skill_validation_error(
     write_skill_yaml: SkillYamlFactory,
 ) -> None:
+    """A zero version must be wrapped (issue #214)."""
     path = write_skill_yaml(filename="0.yaml", version=0)
 
-    with pytest.raises(ValidationError) as exc_info:
+    with pytest.raises(SkillValidationFailedError) as exc_info:
         SkillYamlSchema.load_from_file(path)
 
-    assert any(err["loc"] == ("version",) for err in exc_info.value.errors())
+    reason = _reason(exc_info.value)
+    assert "version" in reason
 
 
-def test_empty_name_raises_pydantic_error(
+def test_empty_name_raises_skill_validation_error(
     write_skill_yaml: SkillYamlFactory,
 ) -> None:
+    """An empty name must be wrapped (issue #214)."""
     path = write_skill_yaml(name="")
 
-    with pytest.raises(ValidationError) as exc_info:
+    with pytest.raises(SkillValidationFailedError) as exc_info:
         SkillYamlSchema.load_from_file(path)
 
-    assert any(err["loc"] == ("name",) for err in exc_info.value.errors())
+    reason = _reason(exc_info.value)
+    assert "name" in reason
 
 
-def test_uppercase_name_raises_pydantic_error(
+def test_uppercase_name_raises_skill_validation_error(
     write_skill_yaml: SkillYamlFactory,
 ) -> None:
+    """A name with disallowed characters must be wrapped (issue #214)."""
     path = write_skill_yaml(name="Has-UPPERCASE")
 
-    with pytest.raises(ValidationError) as exc_info:
+    with pytest.raises(SkillValidationFailedError) as exc_info:
         SkillYamlSchema.load_from_file(path)
 
-    assert any(err["loc"] == ("name",) for err in exc_info.value.errors())
+    reason = _reason(exc_info.value)
+    assert "name" in reason
 
 
-def test_empty_prompt_raises_pydantic_error(
+def test_empty_prompt_raises_skill_validation_error(
     write_skill_yaml: SkillYamlFactory,
 ) -> None:
+    """An empty prompt must be wrapped (issue #214)."""
     path = write_skill_yaml(prompt="")
 
-    with pytest.raises(ValidationError) as exc_info:
+    with pytest.raises(SkillValidationFailedError) as exc_info:
         SkillYamlSchema.load_from_file(path)
 
-    assert any(err["loc"] == ("prompt",) for err in exc_info.value.errors())
+    reason = _reason(exc_info.value)
+    assert "prompt" in reason
 
 
 def test_non_integer_filename_stem_raises(
@@ -470,8 +481,14 @@ def test_docling_rejects_invalid_values_at_load_time(
     path = tmp_path / "1.yaml"
     path.write_text(yaml.safe_dump(body), encoding="utf-8")
 
-    with pytest.raises(ValidationError):
+    # Issue #214: Pydantic `ValidationError` must be wrapped as
+    # `SkillValidationFailedError` with a curated single-line reason so
+    # `SkillLoader`'s aggregate output stays uniform across failure paths.
+    with pytest.raises(SkillValidationFailedError) as exc_info:
         SkillYamlSchema.load_from_file(path)
+
+    reason = _reason(exc_info.value)
+    assert field in reason
 
 
 @pytest.mark.parametrize(
@@ -575,3 +592,67 @@ def test_output_schema_with_one_property_still_loads_successfully(
     schema = SkillYamlSchema.load_from_file(path)
 
     assert schema.output_schema["properties"] == {"only_field": {"type": "string"}}
+
+
+def test_pydantic_field_shape_error_wraps_to_skill_validation_failed_error(
+    write_skill_yaml: SkillYamlFactory,
+) -> None:
+    """Raw `pydantic.ValidationError` must not escape `load_from_file`.
+
+    Issue #214: when Pydantic rejects a field-shape violation before
+    `@model_validator(mode="after")` runs (e.g. a non-integer `version`),
+    the resulting `ValidationError` used to propagate unwrapped past
+    `load_from_file`. Downstream `SkillLoader` caught it under a broad
+    `except Exception` and rendered it as a verbose Pydantic dump instead of
+    the curated `file=<path> reason=<human-readable>` format every other
+    failure path produces.
+
+    This test locks in the wrap: the exception must be
+    `SkillValidationFailedError`, the `file` param must be the offending
+    file path, and the `reason` must be a single human-readable line that
+    names the offending field and the validation message without any raw
+    Pydantic pointer-URL noise.
+    """
+    path = write_skill_yaml(version="abc")
+
+    with pytest.raises(SkillValidationFailedError) as exc_info:
+        SkillYamlSchema.load_from_file(path)
+
+    assert exc_info.value.params is not None
+    dumped = exc_info.value.params.model_dump()
+    assert dumped["file"] == str(path)
+
+    reason = _reason(exc_info.value)
+    # Single human-readable line — no embedded newline breaks.
+    assert "\n" not in reason
+    # Names the offending field so operators know which key to fix.
+    assert "version" in reason
+    # Does NOT include the raw Pydantic traceback pointer noise.
+    # Pydantic v2 `ValidationError.__str__` ends each entry with a
+    # `[type=..., input_value=..., input_type=...]` trailer followed by
+    # `For further information visit https://errors.pydantic.dev/...` —
+    # that's exactly the unparseable dump the fix is meant to suppress.
+    assert "https://errors.pydantic.dev" not in reason
+    assert "For further information visit" not in reason
+
+
+def test_pydantic_validation_error_reason_is_deterministic_single_line(
+    write_skill_yaml: SkillYamlFactory,
+) -> None:
+    """Shape-level failure reasons must follow the `<field_path>: <msg>` format.
+
+    Locks the `reason` formatter so downstream log-parsers, if any, can rely
+    on the `; `-joined `loc: msg` layout rather than Pydantic's free-form
+    multi-line dump. Uses a nested field (`docling.ocr`) to prove the dotted
+    path comes through.
+    """
+    path = write_skill_yaml(docling={"ocr": "banana"})
+
+    with pytest.raises(SkillValidationFailedError) as exc_info:
+        SkillYamlSchema.load_from_file(path)
+
+    reason = _reason(exc_info.value)
+    assert "\n" not in reason
+    # Dotted path for nested field, colon separator, then the message.
+    assert "docling.ocr" in reason
+    assert ":" in reason
