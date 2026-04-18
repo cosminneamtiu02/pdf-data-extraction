@@ -57,6 +57,17 @@ permissions:
   contents: write
   pull-requests: write
 
+# Serialise runs on the same PR so two events firing close together
+# (e.g. a `synchronize` from the lockfile-sync workflow's push AND a
+# server-side `update-branch` call) cannot produce two competing
+# `gh pr merge --auto --squash` invocations. `cancel-in-progress` is
+# false so an in-flight auto-merge enablement completes rather than
+# being killed by a follow-up event on the same PR — mirrors the
+# serialisation used by `dependabot-lockfile-sync.yml`. Issue #209.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
 jobs:
   automerge:
     runs-on: ubuntu-latest
