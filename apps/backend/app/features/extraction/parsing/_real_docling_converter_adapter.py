@@ -1,7 +1,9 @@
 """Real-Docling converter adapter and its factory.
 
-This file is **the only place in the codebase permitted to import Docling**
-(import-linter contract C3). The adapter class ``RealDoclingConverterAdapter``
+This file is the parser layer's concrete Docling import/factory entry
+point, one of three files on import-linter contract C3's allow-list
+(alongside ``_real_docling_document_adapter.py`` and the parser coordinator
+``docling_document_parser.py``). The ``RealDoclingConverterAdapter`` class
 wraps Docling's concrete ``DocumentConverter`` and exposes the subset the
 parser consumes via the local ``DoclingConverterLike`` Protocol. The
 ``default_converter_factory`` function builds the adapter by lazy-importing

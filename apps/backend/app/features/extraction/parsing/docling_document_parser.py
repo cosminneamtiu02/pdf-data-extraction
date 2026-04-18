@@ -5,9 +5,11 @@ factory live in sibling files (``_real_docling_converter_adapter.py``,
 ``_real_docling_document_adapter.py``, ``_flat_docling_text_item.py``); the
 Protocols they implement live in ``_docling_*.py`` / ``pdf_preflight.py``.
 Splitting the file was driven by issue #159 (CLAUDE.md Sacred Rule #1 —
-one class per file) — import-linter contract C3 was widened from a single
-filename to the full ``features/extraction/parsing/`` package so the Docling
-containment boundary still holds across the new layout.
+one class per file) — import-linter contract C3 was expanded from a single
+file to a specific allow-list of three sibling Docling files so the
+Docling containment boundary still holds across the new layout. The three
+files are this one, ``_real_docling_converter_adapter.py``, and
+``_real_docling_document_adapter.py``.
 
 PyMuPDF (``fitz``) is still imported here because ``_default_pdf_preflight``
 uses it to validate PDF bytes + detect encryption *before* Docling runs.

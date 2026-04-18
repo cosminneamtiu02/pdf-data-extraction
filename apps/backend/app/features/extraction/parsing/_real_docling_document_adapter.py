@@ -1,8 +1,9 @@
 """Adapter from Docling's concrete ``DoclingDocument`` to the parser's Protocol.
 
-This file, together with ``_real_docling_converter_adapter.py``, is part of
-the Docling containment boundary (import-linter contract C3). Only these
-files — and nothing else in the service — touch Docling's types. They
+This file, together with ``_real_docling_converter_adapter.py`` and
+``docling_document_parser.py``, is part of the Docling containment
+boundary (import-linter contract C3). These three files — and nothing
+else in the service — are allowed to reference Docling's types. They
 present the local ``DoclingDocumentLike`` / ``DoclingConverterLike``
 Protocols to the rest of the parser so downstream code never learns
 anything about Docling's class hierarchy.

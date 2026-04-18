@@ -704,10 +704,12 @@ def test_only_docling_adapter_files_reference_docling() -> None:
         parsing_dir / "_real_docling_document_adapter.py",
     }
 
-    # Only keep expected entries that actually touch `docling` at import time.
-    # Files in the expected set that don't touch `docling` (e.g. the document
-    # adapter only receives `Any`-typed objects) are fine — we only assert
-    # no EXTRA files appear.
+    # Allow the expected files to reference `docling` but require that no
+    # other file does — this is a no-extras guarantee, not a filter. Expected
+    # files that don't touch `docling` (e.g. the document adapter only
+    # receives `Any`-typed objects, so its source has no `docling.*` string
+    # reachable by AST walk) are fine; the invariant is that `matches` has
+    # no file outside the expected allow-list.
     extra = matches - expected
     assert extra == set(), (
         f"docling imports must be confined to {sorted(expected)}, extra: {sorted(extra)}"
