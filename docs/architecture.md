@@ -92,9 +92,13 @@ directly — those imports are contained to specific implementation files via
 
 The full contract set lives in
 [`apps/backend/architecture/import-linter-contracts.ini`](../apps/backend/architecture/import-linter-contracts.ini)
-and is enforced by `task lint` (which includes `task check:arch`, and `task check`
-runs as part of every PR's gate). Every contract carries a `#` comment block
-explaining the rule it encodes and why.
+and is enforced by `task check:arch`, a direct dependency of `task check`
+(issue #215; CI in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)
+runs related validation steps via individual workflow checks — lint,
+format, pyright on `app/ scripts/`, architecture, and the test suite —
+which overlaps with but does not exhaustively mirror every `task check`
+gate. `task lint` itself is ruff-only). Every contract carries a `#`
+comment block explaining the rule it encodes and why.
 
 Two enforcement layers work together:
 
