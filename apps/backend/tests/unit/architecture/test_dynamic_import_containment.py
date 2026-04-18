@@ -30,7 +30,15 @@ _APP_ROOT: Final[Path] = BACKEND_DIR / "app"
 _EXTRACTION_ROOT: Final[Path] = _APP_ROOT / "features" / "extraction"
 
 _CONTAINED_PACKAGES: Final[dict[str, frozenset[str]]] = {
-    "docling": frozenset({"docling_document_parser.py"}),
+    # Docling containment expanded from a single file to the set of
+    # parsing/* files introduced by the issue #159 refactor.
+    "docling": frozenset(
+        {
+            "docling_document_parser.py",
+            "_real_docling_converter_adapter.py",
+            "_real_docling_document_adapter.py",
+        },
+    ),
     "pymupdf": frozenset({"pdf_annotator.py", "docling_document_parser.py"}),
     "fitz": frozenset({"pdf_annotator.py", "docling_document_parser.py"}),
     "langextract": frozenset({"extraction_engine.py", "ollama_gemma_provider.py"}),

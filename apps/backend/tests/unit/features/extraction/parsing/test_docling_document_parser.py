@@ -19,12 +19,19 @@ from typing import Any
 
 import pytest
 
+from app.features.extraction.parsing import (
+    _real_docling_converter_adapter as converter_adapter_mod,
+)
 from app.features.extraction.parsing import docling_document_parser as parser_mod
+from app.features.extraction.parsing._real_docling_converter_adapter import (
+    default_converter_factory,
+)
+from app.features.extraction.parsing._real_docling_document_adapter import (
+    RealDoclingDocumentAdapter,
+)
 from app.features.extraction.parsing.docling_config import DoclingConfig
 from app.features.extraction.parsing.docling_document_parser import (
     DoclingDocumentParser,
-    _default_converter_factory,
-    _RealDoclingDocumentAdapter,
 )
 from app.features.extraction.parsing.document_parser import DocumentParser
 from app.features.extraction.parsing.parsed_document import ParsedDocument
@@ -536,7 +543,7 @@ def test_default_factory_auto_mode_enables_ocr_without_forcing_full_page(
 ) -> None:
     _install_fake_docling_modules(monkeypatch)
 
-    _default_converter_factory(DoclingConfig(ocr="auto", table_mode="fast"))
+    default_converter_factory(DoclingConfig(ocr="auto", table_mode="fast"))
     pipeline_options = _extract_pipeline_options()
 
     assert pipeline_options.do_ocr is True
@@ -550,7 +557,7 @@ def test_default_factory_force_mode_sets_force_full_page_ocr(
 ) -> None:
     _install_fake_docling_modules(monkeypatch)
 
-    _default_converter_factory(DoclingConfig(ocr="force", table_mode="accurate"))
+    default_converter_factory(DoclingConfig(ocr="force", table_mode="accurate"))
     pipeline_options = _extract_pipeline_options()
 
     assert pipeline_options.do_ocr is True
@@ -564,7 +571,7 @@ def test_default_factory_off_mode_disables_ocr_and_skips_ocr_options(
 ) -> None:
     _install_fake_docling_modules(monkeypatch)
 
-    _default_converter_factory(DoclingConfig(ocr="off", table_mode="fast"))
+    default_converter_factory(DoclingConfig(ocr="off", table_mode="fast"))
     pipeline_options = _extract_pipeline_options()
 
     assert pipeline_options.do_ocr is False
@@ -577,7 +584,7 @@ def test_default_factory_raises_domain_error_when_docling_not_installed(
     """Missing Docling must surface as a DomainError, not a generic RuntimeError.
 
     Regression guard for issue #153: CLAUDE.md forbids `RuntimeError` inside the
-    extraction pipeline. The lazy-import fallback in `_default_converter_factory`
+    extraction pipeline. The lazy-import fallback in `default_converter_factory`
     previously raised `RuntimeError`, which surfaced as an opaque 500 instead of
     a structured `PdfParserUnavailableError` response.
     """
@@ -592,10 +599,10 @@ def test_default_factory_raises_domain_error_when_docling_not_installed(
             raise ImportError(name)
         return real_import_module(name, *args, **kwargs)
 
-    monkeypatch.setattr(parser_mod.importlib, "import_module", failing_import)
+    monkeypatch.setattr(converter_adapter_mod.importlib, "import_module", failing_import)
 
     with pytest.raises(PdfParserUnavailableError) as excinfo:
-        _default_converter_factory(DoclingConfig(ocr="auto", table_mode="fast"))
+        default_converter_factory(DoclingConfig(ocr="auto", table_mode="fast"))
 
     assert excinfo.value.params is not None
     assert excinfo.value.params.model_dump() == {"dependency": "docling"}
@@ -685,21 +692,34 @@ def _collect_files_referencing_docling() -> set[Path]:
     return matches
 
 
-def test_only_docling_document_parser_references_docling() -> None:
+def test_only_docling_adapter_files_reference_docling() -> None:
     matches = _collect_files_referencing_docling()
-    expected = _EXTRACTION_ROOT / "parsing" / "docling_document_parser.py"
+    # Issue #159 split the monolithic parser into multiple single-class files
+    # inside the parsing/ package. The Docling containment boundary is now the
+    # set of files below; any other file importing `docling` is a regression.
+    parsing_dir = _EXTRACTION_ROOT / "parsing"
+    expected = {
+        parsing_dir / "docling_document_parser.py",
+        parsing_dir / "_real_docling_converter_adapter.py",
+        parsing_dir / "_real_docling_document_adapter.py",
+    }
 
-    assert matches == {expected}, (
-        f"docling imports must be confined to {expected}, found: {sorted(matches)}"
+    # Only keep expected entries that actually touch `docling` at import time.
+    # Files in the expected set that don't touch `docling` (e.g. the document
+    # adapter only receives `Any`-typed objects) are fine — we only assert
+    # no EXTRA files appear.
+    extra = matches - expected
+    assert extra == set(), (
+        f"docling imports must be confined to {sorted(expected)}, extra: {sorted(extra)}"
     )
 
 
 # ---------------------------------------------------------------------------
-# Coordinate-origin normalization in _RealDoclingDocumentAdapter
+# Coordinate-origin normalization in RealDoclingDocumentAdapter
 # (regression for GH issue #133)
 #
 # Docling's `CoordOrigin` defaults to TOPLEFT. The adapter must normalize any
-# TOPLEFT bbox to BOTTOMLEFT before yielding a `_FlatDoclingTextItem`, because
+# TOPLEFT bbox to BOTTOMLEFT before yielding a `FlatDoclingTextItem`, because
 # downstream `BoundingBox` enforces `y0 <= y1` in a BOTTOMLEFT convention. The
 # fakes below mirror the shape of Docling's real types (`prov.bbox.l/.t/.r/.b/
 # .coord_origin` with a `to_bottom_left_origin(page_height=...)` method) so the
@@ -777,7 +797,7 @@ class _FakeDoclingPageItem:
 
 @dataclass
 class _FakeRawDoclingDocument:
-    """Fake shape matching what `_RealDoclingDocumentAdapter` reads from a live
+    """Fake shape matching what `RealDoclingDocumentAdapter` reads from a live
     DoclingDocument: `.texts` (list of text nodes in STORAGE order), `.pages`
     (dict keyed by page_no to a PageItem carrying `.size.height`), and
     `iterate_items()` which yields `(item, level)` tuples in READING order
@@ -803,7 +823,7 @@ def test_adapter_normalizes_top_left_origin_bbox_to_bottom_left() -> None:
     """Issue #133: a TOPLEFT-origin prov bbox must emerge as BOTTOMLEFT coords.
 
     Given a 1000-pt-tall page with a TOPLEFT bbox (t=100, b=300), the adapter
-    must y-flip against page height so the `_FlatDoclingTextItem` reports
+    must y-flip against page height so the `FlatDoclingTextItem` reports
     `bbox_y0 < bbox_y1` (900, 700 is invalid — we want 700, 900 in the item).
     """
     raw_doc = _FakeRawDoclingDocument(
@@ -826,7 +846,7 @@ def test_adapter_normalizes_top_left_origin_bbox_to_bottom_left() -> None:
         ],
         pages={1: _FakeDoclingPageItem(size=_FakeDoclingPageSize(height=1000.0))},
     )
-    adapter = _RealDoclingDocumentAdapter(raw_doc)
+    adapter = RealDoclingDocumentAdapter(raw_doc)
 
     items = list(adapter.iter_text_items())
 
@@ -865,7 +885,7 @@ def test_adapter_passes_through_bottom_left_origin_bbox_unchanged() -> None:
         ],
         pages={1: _FakeDoclingPageItem(size=_FakeDoclingPageSize(height=1000.0))},
     )
-    adapter = _RealDoclingDocumentAdapter(raw_doc)
+    adapter = RealDoclingDocumentAdapter(raw_doc)
 
     items = list(adapter.iter_text_items())
 
@@ -906,7 +926,7 @@ def test_adapter_normalization_yields_valid_bounding_box_invariant() -> None:
         ],
         pages={1: _FakeDoclingPageItem(size=_FakeDoclingPageSize(height=1000.0))},
     )
-    adapter = _RealDoclingDocumentAdapter(raw_doc)
+    adapter = RealDoclingDocumentAdapter(raw_doc)
 
     items = list(adapter.iter_text_items())
 
@@ -951,7 +971,7 @@ def test_adapter_raises_key_error_when_prov_page_no_missing_from_pages() -> None
         ],
         pages={1: _FakeDoclingPageItem(size=_FakeDoclingPageSize(height=1000.0))},
     )
-    adapter = _RealDoclingDocumentAdapter(raw_doc)
+    adapter = RealDoclingDocumentAdapter(raw_doc)
 
     with pytest.raises(KeyError) as excinfo:
         list(adapter.iter_text_items())
@@ -959,7 +979,7 @@ def test_adapter_raises_key_error_when_prov_page_no_missing_from_pages() -> None
 
 
 # ---------------------------------------------------------------------------
-# Reading-order traversal in _RealDoclingDocumentAdapter
+# Reading-order traversal in RealDoclingDocumentAdapter
 # (regression for GH issue #150)
 #
 # Docling's `document.texts` is an implementation-dependent STORAGE order that
@@ -1043,7 +1063,7 @@ def test_iter_text_items_returns_reading_order_for_multi_column_layout() -> None
         # `iterate_items()` carries READING order (interleaved across columns).
         iterate_order=[a_top, b_top, a_bottom, b_bottom],
     )
-    adapter = _RealDoclingDocumentAdapter(raw_doc)
+    adapter = RealDoclingDocumentAdapter(raw_doc)
 
     items = list(adapter.iter_text_items())
 
@@ -1081,7 +1101,7 @@ def test_iter_text_items_uses_iterate_items_and_ignores_texts_order() -> None:
         pages={1: _FakeDoclingPageItem(size=_FakeDoclingPageSize(height=1000.0))},
         iterate_order=[node_one, node_two],
     )
-    adapter = _RealDoclingDocumentAdapter(raw_doc)
+    adapter = RealDoclingDocumentAdapter(raw_doc)
 
     items = list(adapter.iter_text_items())
 
@@ -1116,7 +1136,7 @@ def test_iter_text_items_falls_back_to_texts_when_iterate_items_missing() -> Non
         texts=[node],
         pages={1: _FakeDoclingPageItem(size=_FakeDoclingPageSize(height=1000.0))},
     )
-    adapter = _RealDoclingDocumentAdapter(raw_doc)
+    adapter = RealDoclingDocumentAdapter(raw_doc)
 
     items = list(adapter.iter_text_items())
 
