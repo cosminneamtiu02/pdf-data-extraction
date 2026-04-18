@@ -692,3 +692,110 @@ def test_default_preflight_logs_structured_event_on_password_protected(
 
     password_events = [e for e in captured if e["event"] == "pdf_password_protected"]
     assert len(password_events) == 1
+
+
+# ---------------------------------------------------------------------------
+# PR #245 review: resolution of ``FileDataError`` attribute must not degrade
+# into ``RuntimeError`` when the attribute is missing or not an exception type.
+#
+# If a future PyMuPDF release renames ``FileDataError``, the preflight must
+# NOT fall back to wrapping every ``RuntimeError`` from ``pymupdf.open`` as
+# ``PdfInvalidError`` — that would silently reclassify genuine 500s as 400s,
+# violating the "no silent fallbacks" constraint.
+#
+# Only ``ValueError`` remains as the safe, narrow wrap in that degraded case.
+# ---------------------------------------------------------------------------
+
+
+def _build_fake_pymupdf_module_without_file_data_error() -> types.ModuleType:
+    """Build a fake pymupdf module that omits ``FileDataError`` entirely.
+
+    Simulates a hypothetical future PyMuPDF release that renames or removes
+    the ``FileDataError`` symbol.
+    """
+    mod = types.ModuleType("pymupdf")
+    default_doc = _FakeFitzDocument()
+
+    def _open_default(*, stream: bytes, filetype: str) -> _FakeFitzDocument:
+        del stream, filetype
+        return default_doc
+
+    mod.open = _open_default  # type: ignore[attr-defined]
+    return mod
+
+
+def test_default_preflight_does_not_wrap_runtime_error_when_file_data_error_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If ``pymupdf`` lacks ``FileDataError`` (API drift), a plain ``RuntimeError``
+    from ``pymupdf.open`` must propagate unchanged — NOT be wrapped as
+    ``PdfInvalidError``.
+
+    Regression guard for PR #245 review feedback: the previous resolver used
+    ``getattr(pymupdf, "FileDataError", RuntimeError)``, which meant a missing
+    attribute collapsed classification onto the base ``RuntimeError``, so any
+    runtime error from ``pymupdf.open`` (orphan state, transient crashes, …)
+    would be reclassified as a 400 ``PdfInvalidError``. That is a silent
+    fallback and violates the PDFX-E003-F004 "no silent fallbacks" constraint.
+    """
+    fake_mod = _build_fake_pymupdf_module_without_file_data_error()
+    _set_open_raises(fake_mod, RuntimeError("orphaned object"))
+    _install_fake_pymupdf(monkeypatch, fake_mod)
+
+    with pytest.raises(RuntimeError, match="orphaned object"):
+        _default_pdf_preflight(b"%PDF-fake")
+
+
+def test_default_preflight_still_wraps_value_error_when_file_data_error_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Even when ``FileDataError`` is missing, ``ValueError`` from ``pymupdf.open``
+    must still wrap as ``PdfInvalidError``.
+
+    ``ValueError`` is a narrow, historically-observed pymupdf raise for a
+    handful of bad-input shapes and is classified independent of the
+    ``FileDataError`` subtree. Losing the ``FileDataError`` attribute must not
+    accidentally change the ``ValueError`` branch.
+    """
+    fake_mod = _build_fake_pymupdf_module_without_file_data_error()
+    _set_open_raises(fake_mod, ValueError("bad stream"))
+    _install_fake_pymupdf(monkeypatch, fake_mod)
+
+    with pytest.raises(PdfInvalidError):
+        _default_pdf_preflight(b"?")
+
+
+def test_default_preflight_ignores_non_type_file_data_error_attribute(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If ``pymupdf.FileDataError`` exists but is NOT a ``BaseException`` subclass
+    (e.g. a stray non-exception symbol after a refactor), it must be ignored —
+    a plain ``RuntimeError`` must still propagate unchanged.
+    """
+    fake_mod = _build_fake_pymupdf_module_without_file_data_error()
+    fake_mod.FileDataError = "not an exception class"  # type: ignore[attr-defined]
+    _set_open_raises(fake_mod, RuntimeError("unexpected"))
+    _install_fake_pymupdf(monkeypatch, fake_mod)
+
+    with pytest.raises(RuntimeError, match="unexpected"):
+        _default_pdf_preflight(b"%PDF-fake")
+
+
+def test_default_preflight_ignores_non_exception_class_file_data_error_attribute(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pathological case: ``FileDataError`` is a ``type`` but not a
+    ``BaseException`` subclass. It must be ignored so plain ``RuntimeError``
+    does not get wrapped as 400.
+    """
+    fake_mod = _build_fake_pymupdf_module_without_file_data_error()
+
+    class _NotAnException:  # pragma: no cover - placeholder class
+        pass
+
+    fake_mod.FileDataError = _NotAnException  # type: ignore[attr-defined]
+    _set_open_raises(fake_mod, RuntimeError("unexpected"))
+    _install_fake_pymupdf(monkeypatch, fake_mod)
+
+    with pytest.raises(RuntimeError, match="unexpected"):
+        _default_pdf_preflight(b"%PDF-fake")
