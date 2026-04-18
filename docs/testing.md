@@ -34,7 +34,30 @@ Three levels, all mandatory for every feature. E2E is optional-slow.
   Heavy pipeline components (Docling, LangExtract, Ollama, PyMuPDF) are
   stubbed via `app.dependency_overrides` so contract tests remain fast
   and deterministic.
-- **Backend:** `tests/contract/test_schemathesis.py`.
+- **Backend:** `tests/contract/` contains three test files, each covering
+  a distinct slice of the contract:
+  - `test_schemathesis.py` — schemathesis conformance: loads the live
+    OpenAPI spec via `schemathesis.openapi.from_asgi("/openapi.json", app)`
+    and calls `schema["/api/v1/extract"]["POST"].validate_response(...)`
+    on a hand-rolled request per declared status code (200, 400, 404,
+    413, 422, 502, 503, 504). Targeted requests rather than
+    `@schema.parametrize` because schemathesis cannot synthesize valid
+    PDFs from `format: binary`.
+  - `test_extract_contract.py` — shape assertions for `/api/v1/extract`:
+    verifies the OpenAPI spec declares the expected form fields and
+    media types (`application/json`, `application/pdf`, `multipart/mixed`
+    for the 200 path) and asserts `ErrorResponse` envelope shape for the
+    413 (`PDF_TOO_LARGE`) and 504 (`INTELLIGENCE_TIMEOUT`) happy paths.
+  - `test_degraded_contract.py` — degraded-mode response shape
+    conformance: pins `app.state.ollama_health_probe` to a `FakeProbe`
+    so the startup probe fails deterministically, then asserts `/ready`
+    returns 503 with the `{status: "not_ready", reason: <enum>}` shape
+    declared in OpenAPI, and `/health` remains 200 (liveness is
+    unaffected by Ollama reachability).
+
+  Shared fixtures (valid skill YAML writer, `Settings` factory with
+  `app_env="development"` so `/openapi.json` is exposed, and the canned
+  `ExtractionResult`) live in `tests/contract/_helpers.py`.
 
 ### Optional — E2E (slow)
 
@@ -75,7 +98,11 @@ Three levels, all mandatory for every feature. E2E is optional-slow.
 
 - Backend unit: `tests/unit/<mirrors source tree>/test_<module>.py`
 - Backend integration: `tests/integration/<mirrors source tree>/test_<module>.py`
-- Backend contract: `tests/contract/test_schemathesis.py`
+- Backend contract: `tests/contract/` — flat directory, one file per
+  contract slice (`test_schemathesis.py`, `test_extract_contract.py`,
+  `test_degraded_contract.py`). See Section 3 above for the per-file
+  role split. New contract tests land in the file whose role they
+  match; add a new file if the slice is genuinely new.
 
 ## Pre-commit / Pre-push / CI
 
