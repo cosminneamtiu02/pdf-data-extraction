@@ -42,7 +42,13 @@ _CONTAINED_PACKAGES: Final[dict[str, frozenset[str]]] = {
     ),
     "pymupdf": frozenset({"pdf_annotator.py", "docling_document_parser.py"}),
     "fitz": frozenset({"pdf_annotator.py", "docling_document_parser.py"}),
-    "langextract": frozenset({"extraction_engine.py", "ollama_gemma_provider.py"}),
+    "langextract": frozenset(
+        {
+            "extraction_engine.py",
+            "_validating_langextract_adapter.py",
+            "ollama_gemma_provider.py",
+        },
+    ),
     "httpx": frozenset({"ollama_gemma_provider.py", "ollama_health_probe.py"}),
 }
 

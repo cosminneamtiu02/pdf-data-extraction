@@ -2,10 +2,12 @@
 
 This is the mechanical guarantee behind AC4 of PDFX-E004-F003: LangExtract
 imports are allowed only inside the extraction engine (`extraction/
-extraction_engine.py`) and the intelligence-layer plugin registration file
-(`intelligence/ollama_gemma_provider.py`, PDFX-E004-F002). The test walks
-the entire `app/features/extraction/` subtree and rejects any
-`import langextract` / `from langextract...` outside of those two files.
+extraction_engine.py`), the adjacent validating adapter
+(`extraction/_validating_langextract_adapter.py`, split out in issue #228
+to satisfy Sacred Rule #1), and the intelligence-layer plugin registration
+file (`intelligence/ollama_gemma_provider.py`, PDFX-E004-F002). The test
+walks the entire `app/features/extraction/` subtree and rejects any
+`import langextract` / `from langextract...` outside of those files.
 
 Once PDFX-E007-F004 adds import-linter contracts, this test becomes a
 defensive double-check.
@@ -18,12 +20,14 @@ from pathlib import Path
 
 _EXTRACTION_ROOT = Path(__file__).resolve().parents[5] / "app" / "features" / "extraction"
 
-# LangExtract imports are permitted only in the engine file itself, and in
-# the intelligence subpackage's plugin registration file (PDFX-E004-F002).
+# LangExtract imports are permitted only in the engine file itself, the
+# adjacent validating adapter module (issue #228 split), and in the
+# intelligence subpackage's plugin registration file (PDFX-E004-F002).
 # Every other file under `features/extraction/` must be langextract-free.
 _ALLOWED_FILES = frozenset(
     {
         Path("extraction") / "extraction_engine.py",
+        Path("extraction") / "_validating_langextract_adapter.py",
         Path("intelligence") / "ollama_gemma_provider.py",
     },
 )
