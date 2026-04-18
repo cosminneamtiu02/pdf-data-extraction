@@ -61,10 +61,26 @@ def _default_pdf_preflight(pdf_bytes: bytes) -> int:
     never trigger the ``fitz`` import path. This containment mirrors the
     Docling lazy-import strategy used by ``default_converter_factory``.
 
-    Raises ``PdfInvalidError`` on malformed bytes (narrowly catching PyMuPDF's
-    own ``FileDataError`` / ``EmptyFileError`` family so unrelated runtime
-    errors like ``MemoryError`` propagate as 500s — "no silent fallbacks" per
-    spec).
+    Raises ``PdfInvalidError`` on malformed bytes by catching PyMuPDF's own
+    published data-error hierarchy via ``isinstance`` (``FileDataError`` and
+    every subclass, including ``EmptyFileError`` in 1.27.x and any
+    sibling class added in later minors). If ``FileDataError`` is missing or
+    is not a ``BaseException`` subclass (API drift, rename, corrupted install),
+    it is simply omitted from the ``isinstance`` tuple — the classifier does
+    NOT fall back to the base ``RuntimeError``, because that would silently
+    reclassify every ``RuntimeError`` from ``pymupdf.open`` as 400. Unrelated
+    runtime errors (``MemoryError``, ``OSError``, plain ``RuntimeError``)
+    propagate as 500s — "no silent fallbacks" per spec.
+
+    Raises ``PdfPasswordProtectedError`` when the opened document's
+    ``needs_pass`` probe returns True. This is the officially documented
+    PyMuPDF detection path; it does not rely on exception-message string
+    matching and is robust to PyMuPDF message rewording across versions.
+
+    Issue #232 traded the previous ``type(exc).__name__ in {...}`` string
+    match for the ``isinstance`` check below. The old classifier broke
+    silently on PyMuPDF API drift: any subclass of ``FileDataError`` whose
+    name differed from the two literals fell through as an unclassified 500.
     """
     try:
         pymupdf: Any = importlib.import_module("pymupdf")
@@ -80,18 +96,38 @@ def _default_pdf_preflight(pdf_bytes: bytes) -> int:
         )
         raise PdfParserUnavailableError(dependency="pymupdf") from exc
 
-    # Narrow catch: only PyMuPDF's own data-error hierarchy maps to
-    # PdfInvalidError. Anything else (MemoryError, OSError, etc.) propagates
-    # as a 500 — "no silent fallbacks" per PDFX-E003-F004 technical constraint.
-    # Matching by class name (not by `isinstance` against a getattr result)
-    # keeps pyright strict happy while remaining robust to PyMuPDF API drift.
+    # Build the tuple of classes that map to ``PdfInvalidError``. PyMuPDF's
+    # published root of the malformed-data hierarchy is ``FileDataError``;
+    # ``EmptyFileError`` is a subclass of it as of PyMuPDF 1.27.x, so a single
+    # ``isinstance`` check covers the whole subtree.
+    #
+    # If the ``FileDataError`` attribute is missing OR is not a
+    # ``BaseException`` subclass (API drift, rename, or a corrupted install),
+    # we omit it from the tuple entirely rather than falling back to the base
+    # ``RuntimeError``. Falling back to ``RuntimeError`` would silently
+    # reclassify every ``RuntimeError`` ``pymupdf.open`` can raise (orphaned
+    # object state, transient backend crashes, …) as a 400 ``PdfInvalidError``
+    # — which violates the "no silent fallbacks" constraint per
+    # PDFX-E003-F004. In the degraded case, only ``ValueError`` remains as
+    # the narrow wrap.
+    #
+    # ``ValueError`` stays in the tuple unconditionally because ``pymupdf.open``
+    # has historically raised bare ``ValueError`` for a handful of bad-input
+    # shapes, and that branch is independent of the PyMuPDF-specific
+    # hierarchy.
+    file_data_error_attr: object = getattr(pymupdf, "FileDataError", None)
+    invalid_exception_classes: tuple[type[BaseException], ...] = (ValueError,)
+    if isinstance(file_data_error_attr, type) and issubclass(file_data_error_attr, BaseException):
+        invalid_exception_classes = (file_data_error_attr, ValueError)
+
     try:
         doc: Any = pymupdf.open(stream=pdf_bytes, filetype="pdf")
     except Exception as exc:
-        if type(exc).__name__ not in {"FileDataError", "EmptyFileError"} and not isinstance(
-            exc,
-            ValueError,
-        ):
+        # Narrow catch: only PyMuPDF's own data-error hierarchy (when the
+        # symbol resolves to an exception type) and plain ``ValueError`` map
+        # to ``PdfInvalidError``. Anything else (``MemoryError``, ``OSError``,
+        # arbitrary ``RuntimeError``) propagates as a 500.
+        if not isinstance(exc, invalid_exception_classes):
             raise
         _log.info("pdf_invalid", reason=type(exc).__name__)
         raise PdfInvalidError from exc
