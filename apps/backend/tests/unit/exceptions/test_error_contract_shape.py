@@ -31,6 +31,8 @@ EXPECTED_CODES = {
     "PDF_PARSER_UNAVAILABLE",
     # Admission control for the extraction pipeline (issue #109)
     "EXTRACTION_OVERLOADED",
+    # Pipeline-budget expiry — distinct from Ollama-internal timeout (issue #227)
+    "EXTRACTION_BUDGET_EXCEEDED",
 }
 
 PRUNED_CODES = {
@@ -80,6 +82,7 @@ def test_no_stale_generated_error_files() -> None:
         "pdf_too_large_error",
         "pdf_parser_unavailable_error",
         "extraction_overloaded_error",
+        "extraction_budget_exceeded_error",
     }
     stale = {"conflict_error", "rate_limited_error", "widget_not_found_error"}
     present_stems = {p.stem for p in GENERATED_DIR.glob("*_error.py")}
