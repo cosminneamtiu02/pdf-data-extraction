@@ -31,6 +31,7 @@ def _write_skill(
     body: dict[str, Any] = {
         "name": dir_name,
         "version": version,
+        "description": f"{dir_name} extractor.",
         "prompt": "Extract fields.",
         "examples": [{"input": "X-1", "output": {"number": "X-1"}}],
         "output_schema": {

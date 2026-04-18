@@ -29,6 +29,9 @@ from jsonschema.exceptions import SchemaError
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.exceptions import SkillValidationFailedError
+from app.features.extraction.skills._duplicate_key_safe_loader import (
+    DuplicateKeyDetectingSafeLoader,
+)
 from app.features.extraction.skills.deep_freeze import thaw
 from app.features.extraction.skills.skill_docling_config import SkillDoclingConfig
 from app.features.extraction.skills.skill_example import SkillExample
@@ -125,7 +128,11 @@ class SkillYamlSchema(BaseModel):
 
         raw_text = path.read_text(encoding="utf-8")
         try:
-            data = yaml.safe_load(raw_text)
+            # Use the duplicate-key-detecting loader so two mapping entries
+            # with the same key fail at parse time rather than silently
+            # collapsing last-wins — see ``_duplicate_key_safe_loader.py``
+            # and issue #208.
+            data = yaml.load(raw_text, Loader=DuplicateKeyDetectingSafeLoader)  # noqa: S506  # custom SafeLoader subclass, not yaml.Loader
         except yaml.YAMLError as exc:
             msg = f"skill YAML is not parseable: {exc}"
             raise SkillValidationFailedError(file=file_str, reason=msg) from exc
