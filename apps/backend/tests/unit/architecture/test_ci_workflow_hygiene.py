@@ -14,10 +14,9 @@ from typing import Any, Final
 
 import yaml
 
-from ._linter_subprocess import BACKEND_DIR
+from ._linter_subprocess import REPO_ROOT
 
-_REPO_ROOT: Final[Path] = BACKEND_DIR.parent.parent
-_CI_WORKFLOW: Final[Path] = _REPO_ROOT / ".github" / "workflows" / "ci.yml"
+_CI_WORKFLOW: Final[Path] = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 
 
 def _iter_steps(workflow: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
