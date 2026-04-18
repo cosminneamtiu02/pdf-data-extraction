@@ -24,7 +24,7 @@ tasks:
     # (issue #215). Do NOT collapse a gate into another task's cmds list:
     # reaching architecture/lint/etc. only via a sibling hides it from this
     # list and lets a future refactor silently drop it from the canonical
-    # gate. A meta-test in tests/unit/architecture/test_taskfile_check_hygiene.py
+    # gate. A meta-test in apps/backend/tests/unit/architecture/test_taskfile_check_hygiene.py
     # pins this invariant.
     cmds:
       - task: check:lint

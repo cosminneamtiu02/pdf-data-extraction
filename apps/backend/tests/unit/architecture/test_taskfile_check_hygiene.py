@@ -21,10 +21,10 @@ from typing import Any, Final, cast
 
 import yaml
 
-# `parents[5]` resolves to the repo root:
-# parents[0]=architecture → [1]=unit → [2]=tests → [3]=backend → [4]=apps → [5]=<repo>.
-_REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[5]
-_TASKFILE: Final[Path] = _REPO_ROOT / "Taskfile.yml"
+from ._linter_subprocess import REPO_ROOT
+
+_TASKFILE: Final[Path] = REPO_ROOT / "Taskfile.yml"
+
 
 _REQUIRED_DIRECT_GATES: Final[tuple[str, ...]] = (
     "check:lint",
