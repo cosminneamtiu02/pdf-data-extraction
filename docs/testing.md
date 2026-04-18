@@ -28,8 +28,12 @@ Three levels, all mandatory for every feature. E2E is optional-slow.
 
 ### 3. Contract Tests
 
-- **What:** Validates the generated OpenAPI spec shape. Schemathesis-based
-  assertions against `/api/v1/extract` land during feature-dev.
+- **What:** Validates the generated OpenAPI spec shape and exercises
+  `/api/v1/extract` with schemathesis-driven response validation across
+  every declared status code (200, 400, 404, 413, 422, 502, 503, 504).
+  Heavy pipeline components (Docling, LangExtract, Ollama, PyMuPDF) are
+  stubbed via `app.dependency_overrides` so contract tests remain fast
+  and deterministic.
 - **Backend:** `tests/contract/test_schemathesis.py`.
 
 ### Optional — E2E (slow)
