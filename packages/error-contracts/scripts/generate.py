@@ -229,9 +229,10 @@ def generate_python(errors_path: Path, output_dir: Path) -> list[Path]:
             ]
             init_signature = ", ".join(kw_args)
             params_construct = ", ".join(f"{name}={name}" for name in params)
-            # Check if the super().__init__ line would exceed 100 chars (ruff line-length)
+            # Check if the super().__init__ line would exceed the project
+            # line-length (matches ruff `line-length = 100` via _PY_LINE_LENGTH_LIMIT).
             super_line = f"        super().__init__(params={params_class_name}({params_construct}))"
-            if len(super_line) > 100:
+            if len(super_line) > _PY_LINE_LENGTH_LIMIT:
                 params_lines = ",\n                ".join(
                     f"{name}={name}" for name in params
                 )
