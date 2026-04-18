@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     # previously accepted any verb and any request header (including
     # ``Authorization``) regardless of how tightly operators scoped
     # ``cors_origins`` — see issue #211.
-    cors_methods: list[str] = ["GET", "POST"]
+    cors_methods: list[str] = ["GET", "HEAD", "POST"]
     cors_headers: list[str] = ["Authorization", "Content-Type", "X-Request-Id"]
 
     log_max_value_length: int = 500

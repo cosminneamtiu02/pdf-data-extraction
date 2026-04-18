@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.testclient import TestClient
 
 from app.api.access_log_middleware import AccessLogMiddleware
 from app.api.middleware import configure_middleware
@@ -159,6 +160,83 @@ def test_cors_methods_and_headers_are_narrowed_not_wildcarded() -> None:
     assert cors_mw.kwargs["allow_headers"] == ["Authorization", "Content-Type"], (
         "allow_headers must reflect the caller's list verbatim, "
         f"not a wildcard. Got: {cors_mw.kwargs['allow_headers']!r}"
+    )
+
+
+def test_cors_preflight_rejects_disallowed_method() -> None:
+    """A preflight for a verb NOT in ``cors_methods`` must not advertise it.
+
+    The unit-level check above (``test_cors_methods_and_headers_are_narrowed_not_wildcarded``)
+    verifies that ``configure_middleware`` forwards the caller's list into
+    ``CORSMiddleware.kwargs`` — it does not observe the behaviour of the
+    middleware itself. This test drives a real OPTIONS preflight through
+    Starlette's ``CORSMiddleware`` via ``TestClient`` and asserts that a
+    ``DELETE`` verb (absent from the allowlist) does NOT appear in
+    ``Access-Control-Allow-Methods``, so browsers will correctly block the
+    follow-up request. Together with the unit assertion, this closes the
+    plumbing-vs-behaviour gap the Copilot reviewer flagged on issue #211.
+    """
+    app = FastAPI()
+    configure_middleware(
+        app,
+        cors_origins=["http://localhost"],
+        max_upload_bytes=1024,
+        cors_methods=["GET", "POST"],
+        cors_headers=["Content-Type"],
+    )
+    client = TestClient(app)
+
+    response = client.options(
+        "/nowhere",
+        headers={
+            "Origin": "http://localhost",
+            "Access-Control-Request-Method": "DELETE",
+        },
+    )
+
+    # Starlette's CORSMiddleware either short-circuits with 400 or responds
+    # without an ``Access-Control-Allow-Methods`` header containing DELETE.
+    # Either shape is acceptable; what matters is that DELETE is not
+    # advertised as allowed.
+    allow_methods = response.headers.get("access-control-allow-methods", "")
+    assert "DELETE" not in allow_methods, (
+        "Preflight for a disallowed verb must not surface that verb in "
+        f"Access-Control-Allow-Methods. Got: {allow_methods!r}"
+    )
+
+
+def test_cors_preflight_allows_listed_method() -> None:
+    """A preflight for a verb IN ``cors_methods`` is accepted by the middleware.
+
+    Companion to ``test_cors_preflight_rejects_disallowed_method`` — without
+    this positive case, a regression that disabled CORS handling entirely
+    would satisfy the negative test trivially. The observable signal is
+    ``Access-Control-Allow-Origin`` echoing the request Origin, which
+    ``CORSMiddleware`` emits only when the preflight passes its verb + header
+    + origin check.
+    """
+    app = FastAPI()
+    configure_middleware(
+        app,
+        cors_origins=["http://localhost"],
+        max_upload_bytes=1024,
+        cors_methods=["GET", "POST"],
+        cors_headers=["Content-Type"],
+    )
+    client = TestClient(app)
+
+    response = client.options(
+        "/nowhere",
+        headers={
+            "Origin": "http://localhost",
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+
+    allow_origin = response.headers.get("access-control-allow-origin", "")
+    assert allow_origin == "http://localhost", (
+        "Preflight for an allowed verb must echo the request Origin in "
+        f"Access-Control-Allow-Origin. Got: {allow_origin!r}"
     )
 
 
