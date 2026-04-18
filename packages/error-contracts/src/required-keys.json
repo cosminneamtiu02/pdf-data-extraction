@@ -15,7 +15,8 @@
     "STRUCTURED_OUTPUT_FAILED",
     "INTELLIGENCE_TIMEOUT",
     "PDF_TOO_LARGE",
-    "PDF_PARSER_UNAVAILABLE"
+    "PDF_PARSER_UNAVAILABLE",
+    "EXTRACTION_OVERLOADED"
   ],
   "params_by_key": {
     "NOT_FOUND": [],
@@ -50,6 +51,9 @@
     ],
     "PDF_PARSER_UNAVAILABLE": [
       "dependency"
+    ],
+    "EXTRACTION_OVERLOADED": [
+      "max_concurrent"
     ]
   }
 }

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from app.exceptions.base import DomainError
 
+from app.exceptions._generated.extraction_overloaded_error import ExtractionOverloadedError
 from app.exceptions._generated.intelligence_timeout_error import IntelligenceTimeoutError
 from app.exceptions._generated.intelligence_unavailable_error import IntelligenceUnavailableError
 from app.exceptions._generated.internal_error import InternalError
@@ -37,4 +38,5 @@ ERROR_CLASSES: dict[str, type[DomainError]] = {
     "INTELLIGENCE_TIMEOUT": IntelligenceTimeoutError,
     "PDF_TOO_LARGE": PdfTooLargeError,
     "PDF_PARSER_UNAVAILABLE": PdfParserUnavailableError,
+    "EXTRACTION_OVERLOADED": ExtractionOverloadedError,
 }

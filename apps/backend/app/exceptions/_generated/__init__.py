@@ -1,5 +1,7 @@
 """Generated error classes. Do not edit."""
 
+from app.exceptions._generated.extraction_overloaded_error import ExtractionOverloadedError
+from app.exceptions._generated.extraction_overloaded_params import ExtractionOverloadedParams
 from app.exceptions._generated.intelligence_timeout_error import IntelligenceTimeoutError
 from app.exceptions._generated.intelligence_timeout_params import IntelligenceTimeoutParams
 from app.exceptions._generated.intelligence_unavailable_error import IntelligenceUnavailableError
@@ -23,6 +25,8 @@ from app.exceptions._generated.validation_failed_error import ValidationFailedEr
 from app.exceptions._generated.validation_failed_params import ValidationFailedParams
 
 __all__ = [
+    "ExtractionOverloadedError",
+    "ExtractionOverloadedParams",
     "IntelligenceTimeoutError",
     "IntelligenceTimeoutParams",
     "IntelligenceUnavailableError",

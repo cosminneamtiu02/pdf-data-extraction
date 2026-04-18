@@ -4,6 +4,7 @@ Import errors from this module, never from _generated/ directly.
 """
 
 from app.exceptions._generated import (
+    ExtractionOverloadedError,
     IntelligenceTimeoutError,
     IntelligenceUnavailableError,
     InternalError,
@@ -23,6 +24,7 @@ from app.exceptions.base import DomainError
 
 __all__ = [
     "DomainError",
+    "ExtractionOverloadedError",
     "IntelligenceTimeoutError",
     "IntelligenceUnavailableError",
     "InternalError",

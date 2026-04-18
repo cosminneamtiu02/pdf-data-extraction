@@ -138,3 +138,11 @@ class Settings(BaseSettings):
 
     # Extraction pipeline (PDFX-E006-F002)
     extraction_timeout_seconds: Annotated[float, Field(gt=0)] = 180.0
+
+    # Extraction admission control (issue #109)
+    # Hard cap on concurrent extraction pipelines running inside a single
+    # process. When the cap is reached, further requests are rejected
+    # immediately with EXTRACTION_OVERLOADED (HTTP 503) — they are not
+    # queued on a semaphore wait list. Queuing would pile up callers behind
+    # their own 504 timeout budget and defeat the backpressure contract.
+    max_concurrent_extractions: Annotated[int, Field(gt=0)] = 4
