@@ -316,6 +316,47 @@ def test_parse_args_invalid_bench_env_exits_two_with_stderr_message(
     assert "ValidationError" not in captured.err
 
 
+def test_parse_args_cli_iterations_overrides_invalid_bench_iterations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An explicit ``--iterations`` flag wins over a malformed ``BENCH_ITERATIONS``.
+
+    Regression guard for the PR #246 round-2 Copilot feedback: previously
+    ``BenchmarkSettings()`` was constructed *before* argv was parsed, so a bad
+    ``BENCH_*`` value aborted the script even if the operator had supplied a
+    valid overriding flag on the same command line. ``parse_args`` must parse
+    argv first, collect explicit CLI overrides, and pass them as init kwargs
+    to ``BenchmarkSettings(**cli_overrides)`` so the env source is only used
+    for fields the CLI did not cover — matching pydantic-settings' documented
+    priority ordering (CLI > init kwargs > env > defaults).
+    """
+    monkeypatch.setenv("BENCH_ITERATIONS", "banana")
+
+    config = parse_args(["--iterations", "5"])
+
+    assert config.iterations == 5
+
+
+def test_parse_args_service_pid_zero_normalizes_to_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``service_pid=0`` (from env or CLI) normalizes to ``None`` in BenchConfig.
+
+    PID ``0`` is never a valid target process (POSIX reserves it for the
+    current process group in ``kill(2)`` / signal semantics, and ``ps -p 0``
+    produces no output). The pre-refactor ``_safe_int_env`` path collapsed 0
+    to ``None`` via ``... or None``; this test pins that semantics through
+    the pydantic-settings replacement so an operator who sets
+    ``BENCH_SERVICE_PID=0`` or ``--service-pid 0`` does not carry a dangling
+    invalid PID through the config.
+    """
+    monkeypatch.setenv("BENCH_SERVICE_PID", "0")
+    assert parse_args([]).service_pid is None
+
+    monkeypatch.delenv("BENCH_SERVICE_PID", raising=False)
+    assert parse_args(["--service-pid", "0"]).service_pid is None
+
+
 # ---------------------------------------------------------------------------
 # Warm-up discard
 # ---------------------------------------------------------------------------
