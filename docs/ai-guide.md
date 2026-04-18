@@ -48,10 +48,13 @@ feature-dev lands the corresponding features.
 configured TTL, or 503 with `{"status":"not_ready","reason":"ollama_unreachable"}`
 otherwise.
 
-**Architecture enforcement.** `import-linter` is wired in `task lint` with one
-contract: `shared/` and `core/` cannot import from `features/`. The full
-extraction-feature layer DAG and third-party containment contracts are added by
-PDFX-E007-F004 during feature-dev.
+**Architecture enforcement.** `import-linter` is wired as `task check:arch`, a
+direct dependency of `task check` (issue #215; `task lint` is ruff-only). The
+bootstrap shell originally shipped with one contract — `shared/` and `core/`
+cannot import from `features/`. Feature-dev's PDFX-E007-F004 milestone
+subsequently wired the full extraction-feature layer DAG and third-party
+containment contracts; the contract set (C1–C6) now lives in
+[`apps/backend/architecture/import-linter-contracts.ini`](../apps/backend/architecture/import-linter-contracts.ini).
 
 ## What Is NOT Built — To Be Added by feature-dev
 
