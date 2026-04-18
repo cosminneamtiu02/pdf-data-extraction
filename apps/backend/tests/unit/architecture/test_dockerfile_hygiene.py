@@ -6,12 +6,16 @@ Catches drift of hardening invariants the repo has agreed to across PRs
 so a future copy-paste does not silently regress the posture.
 
 Issue #213: without an `init`-style process at PID 1 (tini / dumb-init),
-signals sent to the container (`docker stop` → SIGTERM) are handled only
-by uvicorn itself. Sub-processes that Docling / PyMuPDF / OCR tooling
-spawn during extraction may not be reaped or forwarded signals, leaving
-zombies behind and slowing graceful shutdown. The fix is to install
-`tini` in the runtime stage and set it as the `ENTRYPOINT` so it becomes
-PID 1 and forwards signals to uvicorn while reaping zombies.
+the bare `uvicorn` runs as PID 1 — the kernel installs no default signal
+handlers for PID 1, so `docker stop` SIGTERM can be silently dropped
+unless uvicorn explicitly handles it. Additionally, any sub-process
+spawned by Docling / PyMuPDF / OCR tooling whose parent dies before
+reaping it is re-parented to PID 1; uvicorn does not reap, so zombies
+accumulate. The fix is to install `tini` in the runtime stage and set it
+as the `ENTRYPOINT` so it becomes PID 1: it forwards SIGTERM / SIGINT to
+its direct child (uvicorn) and reaps adopted orphan processes. tini does
+NOT propagate signals to grandchildren — that remains uvicorn's
+responsibility via its own worker-shutdown path.
 
 Issue #139 / #192 added the apt-get layer hygiene convention: every
 `apt-get install` in the runtime stage must pair with
@@ -66,11 +70,11 @@ def _collapse_backslash_continuations(text: str) -> str:
 def test_runtime_stage_installs_tini_with_no_install_recommends() -> None:
     """Runtime stage must install `tini` via apt with `--no-install-recommends`.
 
-    tini is the PID 1 init wrapper: it reaps orphaned zombie processes and
-    forwards signals to its single child (uvicorn). Without it, a `docker
-    stop` leaves Docling / PyMuPDF / OCR sub-processes zombied and
-    potentially unkilled. `--no-install-recommends` keeps the package cost
-    to just tini itself (see #192 image-size budget).
+    tini is the PID 1 init wrapper: it reaps adopted orphan processes and
+    forwards signals to its direct child (uvicorn). Without it, a `docker
+    stop` may leave orphan Docling / PyMuPDF / OCR sub-processes that no one
+    reaps (uvicorn does not reap as PID 1). `--no-install-recommends` keeps
+    the package cost to just tini itself (see #192 image-size budget).
     """
     runtime = _collapse_backslash_continuations(_runtime_stage_text(_read_dockerfile()))
     assert re.search(
@@ -104,21 +108,24 @@ def test_runtime_stage_entrypoint_is_tini_exec_wrapper() -> None:
 
 
 def test_runtime_stage_cmd_preserved_for_uvicorn() -> None:
-    """Runtime stage's CMD must still start uvicorn on 0.0.0.0:8000.
+    """Runtime stage's CMD must remain the exact uvicorn argv on 0.0.0.0:8000.
 
     tini is added as an ENTRYPOINT wrapper; the existing CMD (the uvicorn
-    argv) must be preserved so compose / k8s overrides still work and the
-    healthcheck on :8000 still answers.
+    argv) must be preserved verbatim so compose / k8s overrides still work
+    and the healthcheck on :8000 still answers. The regex enforces the
+    exact array — no extra elements, no reordering — so a future PR cannot
+    silently insert `--workers 4` or similar without an explicit test
+    update.
     """
     runtime = _runtime_stage_text(_read_dockerfile())
     assert re.search(
-        r'(?m)^CMD\s*\[\s*"uvicorn"\s*,\s*"app\.main:app"[^\]]*"--host"\s*,\s*"0\.0\.0\.0"'
-        r'[^\]]*"--port"\s*,\s*"8000"',
+        r'(?m)^CMD\s*\[\s*"uvicorn"\s*,\s*"app\.main:app"\s*,\s*"--host"\s*,'
+        r'\s*"0\.0\.0\.0"\s*,\s*"--port"\s*,\s*"8000"\s*\]\s*$',
         runtime,
     ), (
-        'runtime CMD must remain `["uvicorn", "app.main:app", "--host", '
-        '"0.0.0.0", "--port", "8000"]` (exec form). Issue #213 adds tini only as '
-        "ENTRYPOINT — CMD must not change."
+        'runtime CMD must remain exactly `["uvicorn", "app.main:app", "--host", '
+        '"0.0.0.0", "--port", "8000"]` (exec form, no extra args). Issue #213 '
+        "adds tini only as ENTRYPOINT — CMD must not change."
     )
 
 

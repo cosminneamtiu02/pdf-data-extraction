@@ -48,12 +48,24 @@ FROM ${PYTHON_IMAGE}
 # language data; add more `tesseract-ocr-<lang>` packages here if the service
 # ever needs to OCR non-English PDFs, and set `TESSDATA_PREFIX` accordingly.
 #
-# `tini` is the PID 1 init wrapper (issue #213). Without it, signals sent to
-# the container (e.g. `docker stop` → SIGTERM) are handled only by uvicorn —
-# sub-processes that Docling / PyMuPDF / OCR tooling spawn during extraction
-# would not receive the signal nor be reaped as zombies. tini is a tiny
-# (~10 KB) binary; apt's Debian-stable package is kept to just the binary via
-# `--no-install-recommends`, respecting the #139 / #192 image-size budget.
+# `tini` is the PID 1 init wrapper (issue #213). It does two things the
+# bare `uvicorn` PID 1 cannot:
+#   1. Forwards `docker stop` SIGTERM / SIGINT to its direct child (uvicorn).
+#      A bare PID 1 has no default signal handlers in the kernel and can
+#      silently drop signals unless the program installs handlers itself.
+#      tini does NOT forward signals to grandchildren — sub-processes that
+#      Docling / PyMuPDF / OCR tooling spawn during extraction are signaled
+#      only via uvicorn's own worker-shutdown path, not by tini directly.
+#      (Tini's `-g` flag would forward to the entire process group, but we
+#      deliberately do not enable it: graceful shutdown should let in-flight
+#      OCR/Docling subprocesses finish or time out via uvicorn's teardown,
+#      not be killed mid-run.)
+#   2. Reaps adopted orphan processes. Any sub-process whose parent dies
+#      before reaping it is re-parented to PID 1; uvicorn does not reap, so
+#      without tini those zombies accumulate.
+# tini is a tiny (~10 KB) binary; apt's Debian-stable package is kept to
+# just the binary via `--no-install-recommends`, respecting the
+# #139 / #192 image-size budget.
 RUN apt-get update \
     && apt-get install --no-install-recommends -y \
         tesseract-ocr \
@@ -85,8 +97,10 @@ HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
 # Exec-form ENTRYPOINT so Docker does not wrap it in /bin/sh (which would
 # insert a shell as PID 1 and defeat the point of tini). The `--` sentinel
 # tells tini to treat the remaining CMD argv literally, even if a CMD
-# element starts with a dash. tini forwards SIGTERM / SIGINT to uvicorn and
-# reaps orphaned zombie processes (issue #213). CMD is preserved as-is so
-# compose / k8s overrides of the uvicorn argv keep working.
+# element starts with a dash. tini forwards SIGTERM / SIGINT to its direct
+# child (uvicorn) and reaps orphan processes adopted by PID 1 (issue #213);
+# see the runtime-stage comment block above for why we do NOT enable tini's
+# `-g` process-group forwarding. CMD is preserved as-is so compose / k8s
+# overrides of the uvicorn argv keep working.
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
