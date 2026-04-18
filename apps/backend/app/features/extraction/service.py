@@ -39,8 +39,8 @@ import time
 from typing import TYPE_CHECKING
 
 from app.exceptions import (
+    ExtractionBudgetExceededError,
     ExtractionOverloadedError,
-    IntelligenceTimeoutError,
     StructuredOutputFailedError,
 )
 from app.features.extraction.extraction.extraction_engine import declared_field_names
@@ -111,7 +111,11 @@ class ExtractionService:
             ExtractionOverloadedError: the service is already at its
                 configured concurrency cap; the request is rejected
                 immediately without queuing.
-            IntelligenceTimeoutError: pipeline exceeded the timeout budget.
+            ExtractionBudgetExceededError: the end-to-end pipeline did not
+                complete within ``settings.extraction_timeout_seconds``
+                (issue #227). Distinct from ``IntelligenceTimeoutError``,
+                which is scoped to the Ollama request itself and is raised
+                from the intelligence provider, not from here.
             StructuredOutputFailedError: every declared field failed extraction,
                 or the skill declared zero fields.
             SkillNotFoundError: requested skill is not in the manifest.
@@ -247,13 +251,25 @@ class ExtractionService:
                     annotated_pdf_bytes=annotated_pdf,
                 )
         except TimeoutError:
-            # Only remap to IntelligenceTimeoutError when *this* timeout
-            # context caused the raise. Unrelated inner TimeoutErrors
-            # (e.g. a parser/annotator/library's own timeout) propagate
-            # as-is — remapping them would hide the real failing component
-            # and report a bogus ``budget_seconds`` the pipeline never hit.
+            # Only remap when *this* timeout context caused the raise.
+            # Unrelated inner TimeoutErrors (e.g. a parser/annotator/library's
+            # own timeout) propagate as-is — remapping them would hide the
+            # real failing component and report a bogus ``budget_seconds``
+            # the pipeline never hit.
+            #
+            # Issue #227: the pipeline-level budget covers Docling parse +
+            # Ollama generation + span resolution + PyMuPDF annotation. Its
+            # expiry is categorically different from an Ollama-internal
+            # timeout (``IntelligenceTimeoutError``/``INTELLIGENCE_TIMEOUT``),
+            # which is raised from the intelligence provider when a single
+            # Ollama request exceeds its own per-request deadline. Mixing
+            # the two codes drifts alerting — a slow Docling parse on a
+            # large PDF would otherwise page on-call for a non-existent
+            # Ollama outage. We therefore raise the dedicated
+            # ``ExtractionBudgetExceededError`` (``EXTRACTION_BUDGET_EXCEEDED``,
+            # HTTP 504) with the pipeline budget attached.
             if not budget_cm.expired():
                 raise
-            raise IntelligenceTimeoutError(
+            raise ExtractionBudgetExceededError(
                 budget_seconds=self._timeout_seconds,
             ) from None

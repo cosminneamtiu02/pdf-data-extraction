@@ -15,6 +15,7 @@ import pytest
 
 from app.core.config import Settings
 from app.exceptions import (
+    ExtractionBudgetExceededError,
     ExtractionOverloadedError,
     IntelligenceTimeoutError,
     PdfInvalidError,
@@ -326,14 +327,21 @@ async def test_extraction_service_both_calls_annotator_and_returns_response() ->
     assert annotator.calls == ["annotate"]
 
 
-async def test_extraction_service_timeout_raises_intelligence_timeout_error() -> None:
-    """AC4: Engine sleeps 200ms, timeout=0.1 → IntelligenceTimeoutError."""
+async def test_extraction_service_timeout_raises_extraction_budget_exceeded_error() -> None:
+    """AC4 (issue #227): Engine sleeps 200ms, timeout=0.1 → ExtractionBudgetExceededError.
+
+    The outer pipeline budget covers Docling parse + Ollama + span resolve +
+    PyMuPDF annotation. Budget exhaustion is a pipeline-level event and must
+    surface as ``ExtractionBudgetExceededError`` (``EXTRACTION_BUDGET_EXCEEDED``),
+    NOT ``IntelligenceTimeoutError`` (``INTELLIGENCE_TIMEOUT``) — that code is
+    reserved for Ollama-internal timeouts raised from the intelligence provider.
+    """
     engine = _FakeEngine(sleep_seconds=0.2)
     settings = _build_settings(extraction_timeout_seconds=0.1)
     service = _build_service(engine=engine, settings=settings)
 
     t0 = time.monotonic()
-    with pytest.raises(IntelligenceTimeoutError):
+    with pytest.raises(ExtractionBudgetExceededError) as excinfo:
         await service.extract(
             _PDF_BYTES,
             "invoice",
@@ -344,14 +352,17 @@ async def test_extraction_service_timeout_raises_intelligence_timeout_error() ->
     # Generous bound to avoid CI flakiness; the important assertion is that
     # the timeout interrupted the sleep (elapsed << 0.2s sleep duration).
     assert elapsed < 0.5, f"Timeout took {elapsed:.3f}s, expected well under sleep duration"
+    # Pipeline-level budget must not alias to the Ollama-timeout code.
+    assert not isinstance(excinfo.value, IntelligenceTimeoutError)
 
 
-async def test_extraction_service_parser_timeout_raises_intelligence_timeout_error() -> None:
-    """Timeout wraps entire pipeline, not just the engine."""
+async def test_extraction_service_parser_timeout_raises_extraction_budget_exceeded_error() -> None:
+    """Issue #227: timeout wraps entire pipeline — a slow parser also surfaces the
+    pipeline-budget error, not the Ollama-scoped ``IntelligenceTimeoutError``."""
     settings = _build_settings(extraction_timeout_seconds=0.1)
     service = _build_service(parser=_SlowParser(), settings=settings)
 
-    with pytest.raises(IntelligenceTimeoutError):
+    with pytest.raises(ExtractionBudgetExceededError):
         await service.extract(
             _PDF_BYTES,
             "invoice",
@@ -611,8 +622,10 @@ async def test_extraction_service_timeout_with_blocking_thread_raises() -> None:
 
     The real ExtractionEngine runs LangExtract in asyncio.to_thread. The
     timeout wrapper cancels the cooperative await; the background thread
-    keeps running but the service raises IntelligenceTimeoutError. This
-    test verifies the service's behavior matches the best-effort contract.
+    keeps running but the service raises ``ExtractionBudgetExceededError``
+    (issue #227) — the pipeline-level budget, not the Ollama-scoped
+    ``INTELLIGENCE_TIMEOUT`` code. This test verifies the service's behavior
+    matches the best-effort contract.
     """
 
     class _BlockingThreadEngine:
@@ -633,7 +646,7 @@ async def test_extraction_service_timeout_with_blocking_thread_raises() -> None:
     settings = _build_settings(extraction_timeout_seconds=0.1)
     service = _build_service(engine=_BlockingThreadEngine(), settings=settings)
 
-    with pytest.raises(IntelligenceTimeoutError):
+    with pytest.raises(ExtractionBudgetExceededError):
         await service.extract(
             _PDF_BYTES,
             "invoice",
@@ -921,21 +934,21 @@ class _InnerTimeoutParser:
     Models a downstream library (e.g. a socket-layer, sub-operation, or
     third-party helper) raising the Python 3.11+ unified ``TimeoutError``
     WITHOUT the outer ``asyncio.timeout(...)`` budget being exhausted.
-    The service must not remap this to ``IntelligenceTimeoutError`` —
-    that error code is specifically reserved for budget-exhaustion (504).
+    The service must not remap this to the pipeline-budget error —
+    that code is specifically reserved for budget-exhaustion (issue #227).
     """
 
     async def parse(self, _pdf_bytes: bytes, _docling_config: Any) -> ParsedDocument:
         raise TimeoutError(_INNER_TIMEOUT_MSG)
 
 
-async def test_timeout_error_from_parser_does_not_map_to_intelligence_timeout() -> None:
-    """Regression: inner TimeoutError must NOT be remapped to IntelligenceTimeoutError.
+async def test_timeout_error_from_parser_does_not_map_to_extraction_budget_exceeded() -> None:
+    """Regression: inner TimeoutError must NOT be remapped to the pipeline-budget error.
 
     Before the fix, the bare ``except TimeoutError`` around the pipeline
     caught any built-in ``TimeoutError`` — including ones raised by a
     parser or annotator before the ``asyncio.timeout`` budget expired —
-    and remapped them to ``IntelligenceTimeoutError`` with the full
+    and remapped them to a pipeline-level timeout with the full
     ``extraction_timeout_seconds`` as the reported budget. That hides
     the real failing component and surfaces a misleading 504.
     """
@@ -948,27 +961,59 @@ async def test_timeout_error_from_parser_does_not_map_to_intelligence_timeout() 
     with pytest.raises(TimeoutError) as excinfo:
         await service.extract(_PDF_BYTES, "invoice", "1", OutputMode.JSON_ONLY)
 
-    # The raised error is the original inner TimeoutError, not an
-    # IntelligenceTimeoutError. ``IntelligenceTimeoutError`` is a
-    # DomainError; the bare built-in ``TimeoutError`` has no ``params``.
+    # The raised error is the original inner TimeoutError, not a remapped
+    # DomainError. Neither the pipeline-budget mapping (issue #227) nor the
+    # Ollama-scoped mapping should fire for this case.
+    assert not isinstance(excinfo.value, ExtractionBudgetExceededError)
     assert not isinstance(excinfo.value, IntelligenceTimeoutError)
     assert str(excinfo.value) == _INNER_TIMEOUT_MSG
 
 
 async def test_extraction_service_timeout_budget_seconds_matches_configured() -> None:
-    """Legitimate budget exhaustion still reports configured budget_seconds.
+    """Legitimate budget exhaustion reports the configured budget_seconds.
 
-    Complements the regression test above: confirms the happy-path mapping
-    survives — when the outer ``asyncio.timeout`` genuinely expires, we DO
-    raise ``IntelligenceTimeoutError`` and its ``params.budget_seconds``
-    matches the configured ``extraction_timeout_seconds``.
+    Issue #227: the pipeline-budget mapping surfaces ``ExtractionBudgetExceededError``
+    (code ``EXTRACTION_BUDGET_EXCEEDED``), and its ``params.budget_seconds``
+    matches the configured ``extraction_timeout_seconds``. ``INTELLIGENCE_TIMEOUT``
+    is specifically scoped to Ollama-internal timeouts and is not used here.
     """
     engine = _FakeEngine(sleep_seconds=0.5)
     settings = _build_settings(extraction_timeout_seconds=0.05)
     service = _build_service(engine=engine, settings=settings)
 
-    with pytest.raises(IntelligenceTimeoutError) as excinfo:
+    with pytest.raises(ExtractionBudgetExceededError) as excinfo:
         await service.extract(_PDF_BYTES, "invoice", "1", OutputMode.JSON_ONLY)
 
     assert excinfo.value.params is not None
     assert excinfo.value.params.model_dump() == {"budget_seconds": 0.05}
+
+
+async def test_ollama_internal_timeout_is_not_remapped_to_extraction_budget_error() -> None:
+    """Issue #227: an Ollama-internal ``IntelligenceTimeoutError`` raised from
+    inside the pipeline (e.g. by the provider or engine when a single Ollama
+    request exceeds its own deadline) must propagate as ``IntelligenceTimeoutError``
+    — it must not be remapped to ``ExtractionBudgetExceededError``. The two
+    codes mean different things (LLM slow vs. whole pipeline slow) and alerting
+    rules differ.
+    """
+
+    class _OllamaTimeoutEngine:
+        async def extract(
+            self,
+            _text: str,
+            _skill: Any,
+            _provider: Any,
+        ) -> list[RawExtraction]:
+            raise IntelligenceTimeoutError(budget_seconds=30.0)
+
+    # Generous outer budget — the pipeline budget is nowhere near exhausted,
+    # so the inner IntelligenceTimeoutError must survive unmodified.
+    settings = _build_settings(extraction_timeout_seconds=60.0)
+    service = _build_service(engine=_OllamaTimeoutEngine(), settings=settings)
+
+    with pytest.raises(IntelligenceTimeoutError) as excinfo:
+        await service.extract(_PDF_BYTES, "invoice", "1", OutputMode.JSON_ONLY)
+
+    assert not isinstance(excinfo.value, ExtractionBudgetExceededError)
+    assert excinfo.value.params is not None
+    assert excinfo.value.params.model_dump() == {"budget_seconds": 30.0}
