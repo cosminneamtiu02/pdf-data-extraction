@@ -717,9 +717,10 @@ class _LyingLockedSemaphore:
     observe if a sibling coroutine snuck past the check during an
     inserted ``await`` between ``if sem.locked(): raise`` and
     ``async with sem: ...``. The underlying acquire/release counter is
-    a real ``asyncio.Semaphore``, so any code relying on ``locked()``
-    alone to gate admission will over-admit or queue, whereas code
-    using a non-blocking acquire as the atomic gate will not.
+    a real ``asyncio.Semaphore``, so the permit cap is still enforced;
+    code relying on ``locked()`` alone as a fail-fast gate may queue
+    instead of rejecting immediately, whereas code using a non-blocking
+    acquire as the atomic gate will not.
     """
 
     def __init__(self, value: int) -> None:
@@ -744,10 +745,13 @@ class _LyingLockedSemaphore:
 class _GatedInFlightEngine:
     """Engine that blocks on a gate event while tracking concurrent callers.
 
-    ``max_in_flight`` is the load-bearing observable: under the old
-    check-then-acquire pattern multiple callers can reach ``extract``
-    concurrently, pushing ``max_in_flight`` above the cap; under an
-    atomic try-acquire pattern the cap is held.
+    In this test, ``max_in_flight`` records how many callers actually
+    make it into ``extract`` at once, while the key admission observable
+    is whether an over-cap caller fails fast or instead blocks/queues on
+    the semaphore. Under the old check-then-acquire pattern, a stale
+    ``locked()`` result can let an over-cap caller slip past the check
+    and wait for a permit; under an atomic try-acquire pattern, that
+    caller is rejected before entering the pipeline.
     """
 
     def __init__(self, gate: asyncio.Event) -> None:
@@ -798,15 +802,17 @@ async def test_extraction_service_admission_is_atomic_not_check_then_acquire() -
     sits between the two operations on a single-loop scheduler. Any
     future refactor inserting an ``await`` there — a metrics call, a
     structured log, an eager validation step — silently opens a TOCTOU
-    window where N concurrent coroutines all observe ``locked() == False``
-    and all acquire a permit, exceeding ``max_concurrent_extractions``.
+    window where N concurrent coroutines can all observe
+    ``locked() == False`` and proceed past the overload check, after
+    which over-cap callers block in the real semaphore acquire instead
+    of failing fast with ``ExtractionOverloadedError``.
 
     This test directly probes the admission path by substituting the
     service's semaphore for a wrapper that lies via ``locked()``. Under
     check-then-acquire, the lie lets both overflow callers past the gate
-    and they block on the real ``async with`` acquire — violating both
-    the cap and the fail-fast contract. Under atomic try-acquire,
-    ``locked()`` is never consulted, so the lie has no effect.
+    and they block on the real ``async with`` acquire — violating the
+    fail-fast contract. Under atomic try-acquire, ``locked()`` is never
+    consulted, so the lie has no effect.
     """
     gate = asyncio.Event()
     engine = _GatedInFlightEngine(gate)
@@ -827,12 +833,13 @@ async def test_extraction_service_admission_is_atomic_not_check_then_acquire() -
     # Two over-cap attempts. Collect outcomes without branching.
     outcomes = [await _attempt_admission(service) for _ in range(2)]
 
-    # Cap invariant: the engine must never see more than one in-flight.
+    # Cap invariant (belt-and-braces): the engine must never see more
+    # than one in-flight pipeline. ``asyncio.Semaphore`` already enforces
+    # this regardless of admission strategy, but we assert it to catch
+    # any future refactor that accidentally loosens the cap.
     assert engine.max_in_flight == 1, (
         f"Admission cap violated: {engine.max_in_flight} concurrent pipelines "
-        "observed against max_concurrent_extractions=1. Check-then-acquire "
-        "admits extra callers whenever ``locked()`` returns a stale answer — "
-        "which is exactly what the feared ``await``-insertion refactor causes."
+        "observed against max_concurrent_extractions=1."
     )
     # Fail-fast invariant: over-cap callers raise ExtractionOverloadedError,
     # not a wall-clock TimeoutError from queueing on the semaphore.

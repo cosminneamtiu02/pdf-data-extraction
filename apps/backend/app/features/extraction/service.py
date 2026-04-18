@@ -21,13 +21,15 @@ up on CPU and Ollama, a per-service ``asyncio.Semaphore`` caps the
 number of concurrent pipelines at ``Settings.max_concurrent_extractions``
 (issue #109). Over-cap requests are rejected immediately with
 ``ExtractionOverloadedError`` (HTTP 503). ``extract()`` uses a
-non-blocking ``acquire`` (via ``asyncio.timeout(0)``) so the admission
-check and the permit take-up are a single atomic operation — one
-fails and raises, the other acquires and proceeds, and there is no
-check-then-acquire window for a concurrent coroutine to slip through
-(issue #230). Admitted callers hold the permit for the duration of
-the pipeline and release it in a ``finally`` so it is returned on
-both success and error paths.
+non-blocking ``acquire`` (via ``asyncio.timeout(0)``) so admission
+and permit acquisition happen in one step: either the acquire
+succeeds immediately and the request proceeds, or it times out and
+raises. This avoids a stale pre-check such as ``locked()`` saying
+"capacity is available" and then blocking/queueing on ``acquire()``
+instead of failing fast with ``ExtractionOverloadedError`` (issue
+#230). Admitted callers hold the permit for the duration of the
+pipeline and release it in a ``finally`` so it is returned on both
+success and error paths.
 """
 
 from __future__ import annotations
@@ -120,13 +122,15 @@ class ExtractionService:
         # is available, ``acquire`` completes synchronously (no yield) and
         # the permit is taken; if none is available, ``acquire`` would
         # suspend to wait, at which point the zero-budget deadline fires
-        # and ``TimeoutError`` is raised. The admission check and the
-        # take-up are a single operation, so there is no interleaving
-        # window for a concurrent coroutine to slip between a "not full"
-        # observation and the actual acquire — the prior
-        # ``if locked(): raise; async with ...`` pattern was correct only
-        # as long as no ``await`` sat between the two statements, an
-        # invariant no lint catches.
+        # and ``TimeoutError`` is raised. The "is capacity available?"
+        # decision and the permit take-up are therefore a single
+        # operation. That preserves fail-fast admission: a caller either
+        # acquires immediately or is rejected immediately. By contrast,
+        # the older ``if locked(): raise; async with ...`` pattern relied
+        # on the ``locked()`` pre-check staying current until the acquire;
+        # if an ``await`` ever slipped between those steps, the pre-check
+        # could become stale and a request meant to fail fast could end up
+        # waiting on the semaphore instead (queued / delayed rejection).
         #
         # ``asyncio.wait_for(acquire(), timeout=0)`` would NOT work here:
         # ``wait_for`` cancels the coroutine before giving it a chance to
