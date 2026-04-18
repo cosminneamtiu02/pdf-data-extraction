@@ -57,10 +57,23 @@ def test_dependabot_pr_workflow_declares_concurrency_block(workflow_name: str) -
     )
 
     group = concurrency_block.get("group", "")
-    assert "github.event.pull_request.number" in group, (
-        f"{workflow_name}'s concurrency group must include "
-        "`github.event.pull_request.number` so runs are serialised per PR, "
-        f"got: {group!r}"
+    # Assert the FULL ``${{ ... }}`` interpolation, not just a substring.
+    # A bare ``group: github.event.pull_request.number`` without the
+    # ``${{ }}`` wrapping is a literal string that would serialise ALL PRs
+    # into one shared group rather than per-PR — the substring match would
+    # let that through. Require the interpolation syntax AND
+    # ``${{ github.workflow }}`` so cross-workflow collisions cannot share
+    # the same group either.
+    assert "${{ github.event.pull_request.number }}" in group, (
+        f"{workflow_name}'s concurrency group must interpolate "
+        "`${{ github.event.pull_request.number }}` (the full GitHub "
+        "Actions expression, including `${{ }}`) so runs are serialised "
+        f"per PR and not as a shared literal. Got: {group!r}"
+    )
+    assert "${{ github.workflow }}" in group, (
+        f"{workflow_name}'s concurrency group must also interpolate "
+        "`${{ github.workflow }}` so different workflows on the same PR "
+        f"use distinct groups and do not cross-collide. Got: {group!r}"
     )
 
     cancel_in_progress = concurrency_block.get("cancel-in-progress")
