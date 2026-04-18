@@ -14,7 +14,9 @@ WORKDIR /app
 # Copy dependency files first for better layer caching
 COPY apps/backend/pyproject.toml apps/backend/uv.lock ./
 
-# Install dependencies (without the project itself)
+# Install dependencies (without the project itself). For the torch CPU-wheel
+# routing rationale, see the [tool.uv.index] + [tool.uv.sources] block in
+# apps/backend/pyproject.toml (also issue #139).
 RUN uv sync --frozen --no-dev --no-install-project
 
 # Copy application source and the skill manifest directory. `skills/` is

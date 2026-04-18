@@ -28,10 +28,36 @@ dependencies = [
     "docling>=2.88.0,<3.0.0",
     "langextract>=1.2.1,<2.0.0",
     "pymupdf>=1.27.2.2,<2.0.0",
+    # torch / torchvision are transitive via docling but we declare them as
+    # direct dependencies here so the [tool.uv.sources] override below takes
+    # effect (uv's sources table only rewrites direct dependencies, not
+    # transitives). The extraction pipeline runs Docling + OCR on CPU; we
+    # don't need the CUDA-bundled wheels. Bounded to a major range so future
+    # `uv lock` runs don't silently cross a torch/torchvision major without a
+    # conscious bump — matches the `<N.0.0` style used by sibling direct deps
+    # above and stays within docling's own `torch<3.0.0, torchvision<1` cap.
+    # See issue #139.
+    "torch>=2.11,<3",
+    "torchvision>=0.26,<1",
 ]
 
 [project.entry-points."langextract.providers"]
 ollama_gemma = "app.features.extraction.intelligence.ollama_gemma_provider:OllamaGemmaProvider"
+
+# Pin torch / torchvision to PyTorch's CPU-only wheel index on Linux so the
+# Docker image does not transitively pull ~4 GB of CUDA runtime wheels
+# (nvidia-*, triton, cuda-toolkit). The extraction pipeline (Docling + OCR)
+# runs on CPU; GPU support is not wired into the service. macOS (arm64) keeps
+# using the default PyPI wheels because download.pytorch.org/whl/cpu does not
+# publish mac wheels. See issue #139.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+torchvision = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
 
 [dependency-groups]
 dev = [

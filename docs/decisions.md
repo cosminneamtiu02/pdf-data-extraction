@@ -148,6 +148,24 @@ project actually does.
 - Copying the template to a new repo and stripping there. Rejected because the
   project started with an existing git history we wanted to preserve.
 
+## ADR-012: Torch Pinned to PyTorch CPU Index on Linux (2026-04-17)
+
+**Status:** Accepted
+**Date:** 2026-04-17
+
+`apps/backend/pyproject.toml` routes `torch` and `torchvision` through
+`https://download.pytorch.org/whl/cpu` on Linux via `[tool.uv.sources]` with a
+`sys_platform == 'linux'` marker. The extraction pipeline (Docling + OCR) runs
+on CPU; GPU support is not wired into the service. Without this override, the
+Linux-resolved `uv.lock` pulls ~4 GB of transitive `nvidia-*` / `triton` CUDA
+wheels that ship uselessly inside the production Docker image. macOS keeps the
+default PyPI wheels because the CPU index does not publish mac builds. The
+invariant — no CUDA/NVIDIA packages in `uv.lock`, torch sourced from the CPU
+index — is pinned by
+[`apps/backend/tests/unit/architecture/test_lockfile_no_cuda.py`](../apps/backend/tests/unit/architecture/test_lockfile_no_cuda.py),
+so a future `uv lock` regen or docling metadata change that reintroduces them
+trips CI rather than bloating the image silently. See issue #139.
+
 ## Superseded ADRs
 
 - **ADR-002 (offset pagination)** — superseded. There are no paginated
