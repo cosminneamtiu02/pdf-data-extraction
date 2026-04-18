@@ -19,7 +19,6 @@ Invocation
 from __future__ import annotations
 
 import argparse
-import os
 import platform
 import subprocess
 import sys
@@ -34,6 +33,8 @@ except ModuleNotFoundError:
 
 import httpx
 import structlog
+
+from app.core.benchmark_settings import BenchmarkSettings
 
 _logger = structlog.get_logger(__name__)
 
@@ -469,18 +470,16 @@ def run_benchmark(config: BenchConfig) -> BenchResults:
 # ---------------------------------------------------------------------------
 
 
-def _safe_int_env(key: str, default: str) -> int:
-    """Read *key* from env and convert to int, falling back to *default*."""
-    raw = os.environ.get(key, default)
-    try:
-        return int(raw)
-    except ValueError:
-        sys.stderr.write(f"Error: {key}={raw!r} is not a valid integer\n")
-        raise SystemExit(2) from None  # operator-facing message, not a domain error
-
-
 def parse_args(argv: list[str]) -> BenchConfig:
-    """Parse CLI arguments and return a ``BenchConfig``."""
+    """Parse CLI arguments and return a ``BenchConfig``.
+
+    Defaults come from :class:`app.core.benchmark_settings.BenchmarkSettings`,
+    so ``BENCH_*`` environment variables flow through pydantic-settings
+    rather than ``os.environ`` (CLAUDE.md forbidden pattern; issue #237).
+    Explicit CLI flags still win over env vars.
+    """
+    env_defaults = BenchmarkSettings()
+
     parser = argparse.ArgumentParser(
         prog="benchmark",
         description=(
@@ -490,7 +489,7 @@ def parse_args(argv: list[str]) -> BenchConfig:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
-            "Environment variables:\n"
+            "Environment variables (read via BenchmarkSettings):\n"
             "  BENCH_URL            Override --url (default: http://localhost:8000)\n"
             "  BENCH_ITERATIONS     Override --iterations (default: 10)\n"
             "  BENCH_FIXTURES_DIR   Override --fixtures-dir (default: fixtures/bench)\n"
@@ -501,29 +500,29 @@ def parse_args(argv: list[str]) -> BenchConfig:
     )
     parser.add_argument(
         "--url",
-        default=_env_or("BENCH_URL", "http://localhost:8000"),
+        default=env_defaults.url,
         help="Base URL of the running extraction service (default: http://localhost:8000)",
     )
     parser.add_argument(
         "--iterations",
         type=int,
-        default=_safe_int_env("BENCH_ITERATIONS", "10"),
+        default=env_defaults.iterations,
         help="Number of timed iterations per fixture per mode (default: 10)",
     )
     parser.add_argument(
         "--fixtures-dir",
         type=Path,
-        default=Path(_env_or("BENCH_FIXTURES_DIR", "fixtures/bench")),
+        default=env_defaults.fixtures_dir,
         help="Path to the benchmark fixture directory (default: fixtures/bench)",
     )
     parser.add_argument(
         "--skill-name",
-        default=_env_or("BENCH_SKILL_NAME", "invoice"),
+        default=env_defaults.skill_name,
         help="Skill name to use for extraction requests (default: invoice)",
     )
     parser.add_argument(
         "--skill-version",
-        default=_env_or("BENCH_SKILL_VERSION", "1"),
+        default=env_defaults.skill_version,
         help="Skill version to use for extraction requests (default: 1)",
     )
     parser.add_argument(
@@ -541,7 +540,7 @@ def parse_args(argv: list[str]) -> BenchConfig:
     parser.add_argument(
         "--service-pid",
         type=int,
-        default=_safe_int_env("BENCH_SERVICE_PID", "0") or None,
+        default=env_defaults.service_pid,
         help="PID of the running service process for RSS measurement (NFR-008)",
     )
 
@@ -566,15 +565,6 @@ def parse_args(argv: list[str]) -> BenchConfig:
         timeout=args.timeout,
         service_pid=args.service_pid,
     )
-
-
-def _env_or(key: str, default: str) -> str:
-    """Read an env var via ``os.environ.get`` — benchmark scripts are
-    operator-facing tools that read their own env vars, not pydantic-settings
-    models.  The ``Settings`` class is for the FastAPI app process; this
-    script runs outside the app process.
-    """
-    return os.environ.get(key, default)
 
 
 def main(argv: list[str] | None = None) -> int:

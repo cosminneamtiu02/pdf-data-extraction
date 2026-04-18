@@ -252,6 +252,44 @@ def test_parse_args_iterations_zero_exits_nonzero() -> None:
     assert exc_info.value.code != 0
 
 
+def test_parse_args_reads_bench_env_vars_via_pydantic_settings(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """BENCH_* env vars flow through BenchmarkSettings into parse_args defaults.
+
+    Regression guard for issue #237: the script previously read env vars via
+    ``os.environ.get`` (CLAUDE.md-forbidden). After the refactor they flow
+    through :class:`app.core.benchmark_settings.BenchmarkSettings`, so this
+    test pins the wiring by exercising every BENCH_* variable at once.
+    """
+    fixtures_dir = tmp_path / "bench-pdfs"
+    monkeypatch.setenv("BENCH_URL", "http://example:9090")
+    monkeypatch.setenv("BENCH_ITERATIONS", "3")
+    monkeypatch.setenv("BENCH_FIXTURES_DIR", str(fixtures_dir))
+    monkeypatch.setenv("BENCH_SKILL_NAME", "receipt")
+    monkeypatch.setenv("BENCH_SKILL_VERSION", "2")
+    monkeypatch.setenv("BENCH_SERVICE_PID", "1234")
+
+    config = parse_args([])
+
+    assert config.url == "http://example:9090"
+    assert config.iterations == 3
+    assert config.fixtures_dir == fixtures_dir
+    assert config.skill_name == "receipt"
+    assert config.skill_version == "2"
+    assert config.service_pid == 1234
+
+
+def test_parse_args_empty_bench_service_pid_is_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Empty ``BENCH_SERVICE_PID`` (as passed by Taskfile) parses as ``None``."""
+    monkeypatch.setenv("BENCH_SERVICE_PID", "")
+    config = parse_args([])
+    assert config.service_pid is None
+
+
 # ---------------------------------------------------------------------------
 # Warm-up discard
 # ---------------------------------------------------------------------------
