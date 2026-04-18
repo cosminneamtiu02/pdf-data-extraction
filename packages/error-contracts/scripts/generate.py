@@ -30,6 +30,22 @@ PARAM_TYPE_TO_TS: dict[str, str] = {
     "number": "number",
     "boolean": "boolean",
 }
+# Matches the `line-length = 100` setting in apps/backend/pyproject.toml so
+# generated imports are pre-formatted consistently with ruff format --check.
+_PY_LINE_LENGTH_LIMIT = 100
+
+
+def _py_import_line(module: str, name: str) -> str:
+    """Format a `from <module> import <name>` line, wrapping if > line-length.
+
+    Ruff format will wrap a long single-name import into a parenthesised form;
+    we pre-emit the wrapped shape when the flat form would exceed the project
+    line-length so the generator's output is idempotent with ruff format.
+    """
+    flat = f"from {module} import {name}"
+    if len(flat) <= _PY_LINE_LENGTH_LIMIT:
+        return flat
+    return f"from {module} import (\n    {name},\n)"
 
 
 def _code_to_class_name(code: str) -> str:
@@ -169,7 +185,12 @@ def generate_python(errors_path: Path, output_dir: Path) -> list[Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     generated_files: list[Path] = []
 
-    init_imports: list[str] = []
+    # Each entry is (module_path, exported_name); the final __init__ and
+    # _registry emitters derive both the `from X import Y` line (wrapped when
+    # it would exceed the project line-length) and the `__all__` / filter key
+    # from this tuple — we can't re-parse a wrapped import line to recover
+    # the exported name.
+    init_imports: list[tuple[str, str]] = []
     registry_entries: list[str] = []
 
     for code, spec in errors.items():
@@ -199,7 +220,7 @@ def generate_python(errors_path: Path, output_dir: Path) -> list[Path]:
             )
             generated_files.append(params_file)
             init_imports.append(
-                f"from app.exceptions._generated.{params_file_stem} import {params_class_name}"
+                (f"app.exceptions._generated.{params_file_stem}", params_class_name)
             )
 
             kw_args = [
@@ -223,10 +244,13 @@ def generate_python(errors_path: Path, output_dir: Path) -> list[Path]:
                 )
             else:
                 super_block = super_line + "\n"
+            params_import_line = _py_import_line(
+                f"app.exceptions._generated.{params_file_stem}", params_class_name
+            )
             error_content = (
                 f'"""Generated from errors.yaml. Do not edit."""\n\n'
                 f"from typing import ClassVar\n\n"
-                f"from app.exceptions._generated.{params_file_stem} import {params_class_name}\n"
+                f"{params_import_line}\n"
                 f"from app.exceptions.base import DomainError\n\n\n"
                 f"class {error_class_name}(DomainError):\n"
                 f'    """Error: {code}."""\n\n'
@@ -250,29 +274,32 @@ def generate_python(errors_path: Path, output_dir: Path) -> list[Path]:
         error_file.write_text(error_content)
         generated_files.append(error_file)
         init_imports.append(
-            f"from app.exceptions._generated.{error_file_stem} import {error_class_name}"
+            (f"app.exceptions._generated.{error_file_stem}", error_class_name)
         )
         registry_entries.append(f'    "{code}": {error_class_name},')
 
-    # Generate __init__.py (sorted imports for deterministic output)
-    sorted_imports = sorted(init_imports)
+    # Generate __init__.py (sorted imports for deterministic output). Sort by
+    # the exported name so the output order is stable regardless of module
+    # path length.
+    sorted_imports = sorted(init_imports, key=lambda entry: entry[1])
     init_file = output_dir / "__init__.py"
     init_content = (
         '"""Generated error classes. Do not edit."""\n\n'
-        + "\n".join(sorted_imports)
+        + "\n".join(_py_import_line(module, name) for module, name in sorted_imports)
         + "\n\n__all__ = [\n"
-        + "\n".join(f'    "{imp.split()[-1]}",' for imp in sorted_imports)
+        + "\n".join(f'    "{name}",' for _module, name in sorted_imports)
         + "\n]\n"
     )
     init_file.write_text(init_content)
     generated_files.append(init_file)
 
-    # Generate _registry.py (sorted imports for deterministic output)
+    # Generate _registry.py (sorted imports for deterministic output). Filter
+    # to error classes only (not Params classes) by exported-name suffix.
     registry_file = output_dir / "_registry.py"
     error_imports = sorted(
-        imp
-        for imp in init_imports
-        if "Error" in imp.split()[-1] and "Params" not in imp.split()[-1]
+        (module, name)
+        for module, name in init_imports
+        if "Error" in name and "Params" not in name
     )
     registry_content = (
         '"""Generated error registry. Do not edit."""\n\n'
@@ -280,7 +307,7 @@ def generate_python(errors_path: Path, output_dir: Path) -> list[Path]:
         "from typing import TYPE_CHECKING\n\n"
         "if TYPE_CHECKING:\n"
         "    from app.exceptions.base import DomainError\n\n"
-        + "\n".join(error_imports)
+        + "\n".join(_py_import_line(module, name) for module, name in error_imports)
         + "\n\n"
         + "ERROR_CLASSES: dict[str, type[DomainError]] = {\n"
         + "\n".join(registry_entries)
