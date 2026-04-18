@@ -1,6 +1,7 @@
 """Unit tests for the structlog configuration in app.core.logging."""
 
 import io
+import json
 import logging
 
 import structlog
@@ -133,7 +134,12 @@ def test_configure_logging_is_idempotent_across_two_calls_with_different_setting
     # handler, honours the second call's JSON renderer and denylist.
     buf = io.StringIO()
     root = logging.getLogger()
-    assert root.handlers, "configure_logging must leave exactly one handler on root"
+    # Exactly one handler — configure_logging clears previous handlers and
+    # installs a single StreamHandler. Indexing with [0] only makes sense
+    # when we know there is nothing else.
+    assert len(root.handlers) == 1, (
+        f"configure_logging must leave exactly one handler on root, found {len(root.handlers)}"
+    )
     prod_handler = root.handlers[0]
     assert isinstance(prod_handler, logging.StreamHandler)
     original_stream = prod_handler.stream
@@ -148,12 +154,12 @@ def test_configure_logging_is_idempotent_across_two_calls_with_different_setting
     finally:
         prod_handler.setStream(original_stream)
     captured = buf.getvalue().strip()
-    # JSON renderer emits a single-line JSON object starting with '{'.
-    assert captured.startswith("{"), (
-        f"expected JSON output after json_output=True reconfigure, got: {captured!r}"
-    )
-    assert '"event": "fresh_event"' in captured
+    # Parse as JSON rather than string-matching so this test survives
+    # whitespace / key-ordering changes in the structlog renderer and also
+    # guarantees the output is valid JSON after json_output=True.
+    event = json.loads(captured)
+    assert event["event"] == "fresh_event"
     # first_only_key is no longer in the denylist → surfaces verbatim.
-    assert "VISIBLE_AFTER_RECONFIG" in captured
+    assert event.get("first_only_key") == "VISIBLE_AFTER_RECONFIG"
     # second_only_key is now in the denylist → stripped by LogRedactionFilter.
-    assert "HIDDEN_AFTER_RECONFIG" not in captured
+    assert "second_only_key" not in event

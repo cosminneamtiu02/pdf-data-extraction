@@ -26,18 +26,18 @@ def configure_logging(
         max_value_length: Maximum length of any string value in an event dict;
             longer values are truncated.
     """
-    # Reset structlog's global ``_CONFIG`` to builtin defaults before we
-    # configure afresh. Without this, a prior ``configure_logging`` call's
-    # ``cache_logger_on_first_use=True`` leaves ``is_configured()`` True and
-    # leaves stale list references in ``_CONFIG.default_processors`` that
-    # already-resolved consumers may still hold. Production calls
-    # ``configure_logging`` exactly once at app start, so the reset is a
-    # no-op there — but tests that exercise multiple ``create_app`` calls
-    # (each with their own ``Settings``) depend on the second call's
-    # ``redacted_keys`` / ``log_level`` / ``json_output`` actually winning.
-    # The stdlib root logger's handlers are already cleared explicitly below
-    # (``root_logger.handlers.clear()``) so no additional stdlib-side reset
-    # is needed. Issue #216.
+    # Reset structlog's global configuration to a clean baseline before we
+    # apply the new settings. Without this, a prior ``configure_logging``
+    # call leaves ``structlog.is_configured()`` True with ``cache_logger_on_first_use``
+    # still caching processor-list references; a subsequent call then fails
+    # to propagate the new ``redacted_keys`` / ``log_level`` / ``json_output``
+    # to any consumer that already resolved a bound logger. Production calls
+    # ``configure_logging`` exactly once at app start, so this is a no-op
+    # there — but tests that exercise multiple ``create_app`` calls (each
+    # with their own ``Settings``) depend on the latest call's values
+    # actually winning. The stdlib root logger's handlers are cleared
+    # explicitly further down (``root_logger.handlers.clear()``), so no
+    # additional stdlib-side reset is needed here. Issue #216.
     structlog.reset_defaults()
 
     redaction_filter = LogRedactionFilter(
