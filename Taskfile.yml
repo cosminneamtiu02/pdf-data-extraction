@@ -36,7 +36,8 @@ tasks:
   check:types:
     desc: Run the type checker
     cmds:
-      - cd {{.BACKEND_DIR}} && uv run pyright app/ scripts/
+      - cd {{.BACKEND_DIR}} && uv run pyright app/ scripts/ tests/
+      - cd packages/error-contracts && uv run pyright
 
   check:arch:
     desc: Run import-linter architecture checks

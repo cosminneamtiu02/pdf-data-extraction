@@ -165,3 +165,152 @@ def test_codegen_rejects_invalid_param_type(tmp_path: Path, output_dir: Path):
 
     with pytest.raises(ValueError, match="[Tt]ype"):
         load_and_validate(path)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "",
+        "   \n  \n",
+        "- 1\n- 2\n",
+        "just a string\n",
+    ],
+    ids=["empty", "whitespace", "list", "scalar"],
+)
+def test_codegen_rejects_non_mapping_yaml(tmp_path: Path, content: str):
+    """Codegen must raise ValueError (not AttributeError) when the YAML
+    top-level is not a mapping.
+
+    yaml.safe_load returns None for empty/whitespace-only input, a list for
+    sequences, and a str for bare scalars; calling .get on any of those would
+    otherwise crash with AttributeError deep inside the generator.
+    """
+    path = tmp_path / "errors.yaml"
+    path.write_text(content)
+
+    from scripts.generate import load_and_validate
+
+    with pytest.raises(ValueError, match="[Mm]apping"):
+        load_and_validate(path)
+
+
+def test_codegen_rejects_non_mapping_spec(tmp_path: Path):
+    """Each error's spec must be a mapping; a scalar or list value must
+    surface a clear ValueError instead of the `AttributeError` that bare
+    `spec.get(...)` would raise.
+    """
+    path = tmp_path / "errors.yaml"
+    path.write_text(
+        'version: 1\nerrors:\n  FOO: "just-a-string-spec"\n',
+    )
+
+    from scripts.generate import load_and_validate
+
+    with pytest.raises(ValueError, match="spec.*must be a mapping"):
+        load_and_validate(path)
+
+
+def test_codegen_rejects_non_mapping_params(tmp_path: Path):
+    """`params` must be a mapping; a scalar or list must surface a clear
+    ValueError instead of AttributeError from `.items()`.
+    """
+    path = tmp_path / "errors.yaml"
+    path.write_text(
+        "version: 1\n"
+        "errors:\n"
+        "  FOO:\n"
+        "    http_status: 400\n"
+        "    description: bad params shape\n"
+        '    params: "not-a-dict"\n',
+    )
+
+    from scripts.generate import load_and_validate
+
+    with pytest.raises(ValueError, match="params.*must be a mapping"):
+        load_and_validate(path)
+
+
+def test_codegen_rejects_non_string_error_code(tmp_path: Path):
+    """YAML keys that parse as non-strings (e.g. integers, bools) must
+    raise a clear ValueError before the regex match attempt.
+    """
+    path = tmp_path / "errors.yaml"
+    # `42:` parses as an integer key in YAML; the rejection must come from
+    # the type check, not a TypeError inside `re.match`.
+    path.write_text(
+        "version: 1\n"
+        "errors:\n"
+        "  42:\n"
+        "    http_status: 400\n"
+        "    description: integer key\n"
+        "    params: {}\n",
+    )
+
+    from scripts.generate import load_and_validate
+
+    with pytest.raises(ValueError, match="code.*must be a string"):
+        load_and_validate(path)
+
+
+def test_codegen_rejects_missing_errors_key(tmp_path: Path):
+    """An `errors.yaml` without a top-level `errors:` key must surface a
+    clear ValueError from `load_and_validate`, not a downstream KeyError
+    when `generate_python`/`generate_typescript` index `data["errors"]`.
+    """
+    path = tmp_path / "errors.yaml"
+    path.write_text("version: 1\n")
+
+    from scripts.generate import load_and_validate
+
+    with pytest.raises(ValueError, match="'errors' key"):
+        load_and_validate(path)
+
+
+@pytest.mark.parametrize(
+    "param_name",
+    ["max-length", "has space", "1starts_with_digit", "has.dot"],
+    ids=["dash", "space", "leading-digit", "dot"],
+)
+def test_codegen_rejects_non_identifier_param_name(tmp_path: Path, param_name: str):
+    """`param_name` must be a valid Python/TypeScript identifier so the
+    generated `__init__` kwargs and TS interface fields compile. YAML keys
+    like `max-length`, leading digits, or dots would pass shape validation
+    but emit syntactically invalid code — the guard stops that at YAML
+    load time with a clear ValueError pointing at the offending key.
+    """
+    path = tmp_path / "errors.yaml"
+    path.write_text(
+        "version: 1\n"
+        "errors:\n"
+        "  FOO:\n"
+        "    http_status: 400\n"
+        "    description: bad param identifier\n"
+        f'    params: {{"{param_name}": "string"}}\n',
+    )
+
+    from scripts.generate import load_and_validate
+
+    with pytest.raises(ValueError, match="param name"):
+        load_and_validate(path)
+
+
+def test_codegen_rejects_non_string_param_name(tmp_path: Path):
+    """A non-string `param_name` (e.g., YAML integer key `1:`) must also
+    be rejected with a clear ValueError, not a TypeError deeper in code
+    generation.
+    """
+    path = tmp_path / "errors.yaml"
+    path.write_text(
+        "version: 1\n"
+        "errors:\n"
+        "  FOO:\n"
+        "    http_status: 400\n"
+        "    description: integer param key\n"
+        "    params:\n"
+        "      1: string\n",
+    )
+
+    from scripts.generate import load_and_validate
+
+    with pytest.raises(ValueError, match="param name"):
+        load_and_validate(path)
