@@ -36,7 +36,11 @@ _BACKEND_DOCKERFILE: Final[Path] = REPO_ROOT / "infra" / "docker" / "backend.Doc
 
 
 def _read_dockerfile() -> str:
-    return _BACKEND_DOCKERFILE.read_text()
+    # Explicit encoding="utf-8" guards against platforms whose default text
+    # encoding is not UTF-8 (e.g., Windows cp1252): the Dockerfile contains
+    # box-drawing glyphs and em-dashes in its section banners, which would
+    # raise UnicodeDecodeError under a non-UTF-8 default.
+    return _BACKEND_DOCKERFILE.read_text(encoding="utf-8")
 
 
 def _runtime_stage_text(dockerfile: str) -> str:
