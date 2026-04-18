@@ -778,11 +778,25 @@ class _FakeDoclingPageItem:
 @dataclass
 class _FakeRawDoclingDocument:
     """Fake shape matching what `_RealDoclingDocumentAdapter` reads from a live
-    DoclingDocument: `.texts` (list of text nodes) and `.pages` (dict keyed by
-    page_no to a PageItem carrying `.size.height`)."""
+    DoclingDocument: `.texts` (list of text nodes in STORAGE order), `.pages`
+    (dict keyed by page_no to a PageItem carrying `.size.height`), and
+    `iterate_items()` which yields `(item, level)` tuples in READING order
+    (top-to-bottom, left-to-right, across page breaks) — see Docling 2.88's
+    `DoclingDocument.iterate_items` API.
+
+    The default `iterate_items` implementation simply yields the `.texts` in
+    order (identity between storage and reading order). Tests that need to
+    exercise the reading-order path set `iterate_order` explicitly to a
+    permutation of `.texts` that differs from storage order.
+    """
 
     texts: list[_FakeDoclingTextNode]
     pages: dict[int, _FakeDoclingPageItem]
+    iterate_order: list[_FakeDoclingTextNode] | None = None
+
+    def iterate_items(self) -> list[tuple[_FakeDoclingTextNode, int]]:
+        order = self.iterate_order if self.iterate_order is not None else self.texts
+        return [(node, 0) for node in order]
 
 
 def test_adapter_normalizes_top_left_origin_bbox_to_bottom_left() -> None:
@@ -942,3 +956,168 @@ def test_adapter_raises_key_error_when_prov_page_no_missing_from_pages() -> None
     with pytest.raises(KeyError) as excinfo:
         list(adapter.iter_text_items())
     assert "7" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# Reading-order traversal in _RealDoclingDocumentAdapter
+# (regression for GH issue #150)
+#
+# Docling's `document.texts` is an implementation-dependent STORAGE order that
+# does not match the visual READING order on multi-column / table-heavy
+# layouts. If the adapter iterates `.texts` directly, LangExtract receives a
+# concatenated text where columns interleave incorrectly and the span resolver
+# reports spurious `hallucinated_offsets` for values that are in fact present.
+#
+# The adapter must delegate to `DoclingDocument.iterate_items()`, the public
+# API that walks the document hierarchy in reading order (top-to-bottom,
+# left-to-right per page, respecting column / table structure).
+# ---------------------------------------------------------------------------
+
+
+def _bbox_bottom_left(*, left: float, bottom: float, right: float, top: float) -> _FakeDoclingBBox:
+    """Helper: build a BOTTOMLEFT-origin fake bbox with `y0 = bottom <= y1 = top`."""
+    return _FakeDoclingBBox(
+        left=left,
+        top=top,
+        right=right,
+        bottom=bottom,
+        coord_origin="BOTTOMLEFT",
+    )
+
+
+def test_iter_text_items_returns_reading_order_for_multi_column_layout() -> None:
+    """Issue #150: multi-column pages must emerge in reading order, not storage order.
+
+    Simulate a two-column page where Docling's `.texts` storage lists all of
+    column A first ("A-top", "A-bottom"), then all of column B ("B-top",
+    "B-bottom"). The visual reading order (which `iterate_items()` is
+    contracted to produce) interleaves them: A-top, B-top, A-bottom,
+    B-bottom. The adapter must yield the items in that reading order.
+
+    Before the fix, the adapter walked `.texts` and produced storage order
+    (A-top, A-bottom, B-top, B-bottom), which downstream `TextConcatenator`
+    concatenates into a text blob where LangExtract cannot match cross-
+    column values.
+    """
+    page = _FakeDoclingPageItem(size=_FakeDoclingPageSize(height=1000.0, width=600.0))
+    a_top = _FakeDoclingTextNode(
+        text="A-top",
+        prov=[
+            _FakeDoclingProv(
+                page_no=1,
+                bbox=_bbox_bottom_left(left=50.0, bottom=900.0, right=250.0, top=950.0),
+            ),
+        ],
+    )
+    a_bottom = _FakeDoclingTextNode(
+        text="A-bottom",
+        prov=[
+            _FakeDoclingProv(
+                page_no=1,
+                bbox=_bbox_bottom_left(left=50.0, bottom=500.0, right=250.0, top=550.0),
+            ),
+        ],
+    )
+    b_top = _FakeDoclingTextNode(
+        text="B-top",
+        prov=[
+            _FakeDoclingProv(
+                page_no=1,
+                bbox=_bbox_bottom_left(left=350.0, bottom=900.0, right=550.0, top=950.0),
+            ),
+        ],
+    )
+    b_bottom = _FakeDoclingTextNode(
+        text="B-bottom",
+        prov=[
+            _FakeDoclingProv(
+                page_no=1,
+                bbox=_bbox_bottom_left(left=350.0, bottom=500.0, right=550.0, top=550.0),
+            ),
+        ],
+    )
+    raw_doc = _FakeRawDoclingDocument(
+        # `.texts` carries STORAGE order (column A first, then column B).
+        texts=[a_top, a_bottom, b_top, b_bottom],
+        pages={1: page},
+        # `iterate_items()` carries READING order (interleaved across columns).
+        iterate_order=[a_top, b_top, a_bottom, b_bottom],
+    )
+    adapter = _RealDoclingDocumentAdapter(raw_doc)
+
+    items = list(adapter.iter_text_items())
+
+    assert [item.text for item in items] == ["A-top", "B-top", "A-bottom", "B-bottom"]
+
+
+def test_iter_text_items_uses_iterate_items_and_ignores_texts_order() -> None:
+    """Adapter contract: if `iterate_items()` is present, `.texts` is unused for ordering.
+
+    This pins the implementation to the reading-order API. Placing `.texts`
+    in a deliberately different order from `iterate_items()` ensures a
+    regression that reverts to the old `.texts` walk fails this test.
+    """
+    node_one = _FakeDoclingTextNode(
+        text="first-in-reading-order",
+        prov=[
+            _FakeDoclingProv(
+                page_no=1,
+                bbox=_bbox_bottom_left(left=10.0, bottom=800.0, right=100.0, top=820.0),
+            ),
+        ],
+    )
+    node_two = _FakeDoclingTextNode(
+        text="second-in-reading-order",
+        prov=[
+            _FakeDoclingProv(
+                page_no=1,
+                bbox=_bbox_bottom_left(left=10.0, bottom=700.0, right=100.0, top=720.0),
+            ),
+        ],
+    )
+    raw_doc = _FakeRawDoclingDocument(
+        # Reverse storage order — if the adapter reads this, the assertion fails.
+        texts=[node_two, node_one],
+        pages={1: _FakeDoclingPageItem(size=_FakeDoclingPageSize(height=1000.0))},
+        iterate_order=[node_one, node_two],
+    )
+    adapter = _RealDoclingDocumentAdapter(raw_doc)
+
+    items = list(adapter.iter_text_items())
+
+    assert [item.text for item in items] == [
+        "first-in-reading-order",
+        "second-in-reading-order",
+    ]
+
+
+def test_iter_text_items_falls_back_to_texts_when_iterate_items_missing() -> None:
+    """Graceful fallback: if a DoclingDocument lacks `iterate_items` (older
+    Docling build or a test double without the method), the adapter must
+    still produce something rather than crash. Storage order is the only
+    available signal in that case, so it is acceptable as a fallback.
+    """
+
+    @dataclass
+    class _LegacyDoclingDocument:
+        texts: list[_FakeDoclingTextNode]
+        pages: dict[int, _FakeDoclingPageItem]
+
+    node = _FakeDoclingTextNode(
+        text="legacy",
+        prov=[
+            _FakeDoclingProv(
+                page_no=1,
+                bbox=_bbox_bottom_left(left=10.0, bottom=700.0, right=100.0, top=720.0),
+            ),
+        ],
+    )
+    raw_doc = _LegacyDoclingDocument(
+        texts=[node],
+        pages={1: _FakeDoclingPageItem(size=_FakeDoclingPageSize(height=1000.0))},
+    )
+    adapter = _RealDoclingDocumentAdapter(raw_doc)
+
+    items = list(adapter.iter_text_items())
+
+    assert [item.text for item in items] == ["legacy"]
