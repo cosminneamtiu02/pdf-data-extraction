@@ -36,6 +36,7 @@ handler's chunked-read guard still caps the damage.
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
+from uuid import uuid4
 
 import structlog
 from starlette.responses import JSONResponse
@@ -49,10 +50,12 @@ if TYPE_CHECKING:
 
 _logger = structlog.get_logger(__name__)
 
-# Sentinel used when Content-Length is missing or malformed. Chosen as a very
-# large int so the rejection-reporting path has a numeric value to include
-# in ``params.actual_bytes`` without leaking anything about the underlying
-# body (we have not read the body).
+# Sentinel used when Content-Length is missing, malformed, or ambiguous
+# (e.g. chunked transfer-encoding or duplicate Content-Length headers). The
+# negative value communicates "unknown body size" to the rejection-reporting
+# path so ``params.actual_bytes`` stays numeric without implying we read or
+# measured the body. Clients should treat ``-1`` as "unknown", not as a real
+# byte count.
 _UNKNOWN_CONTENT_LENGTH = -1
 
 
@@ -97,6 +100,16 @@ class UploadSizeLimitMiddleware:
             await self._app(scope, receive, send)
             return
 
+        # Chunked requests advertise body size indirectly through
+        # Transfer-Encoding rather than Content-Length. Even if Content-Length
+        # is also present, RFC 9110 §8.6 says Transfer-Encoding wins — so a
+        # caller who sends both headers could bypass a pure CL-based guard.
+        # Fail closed on either: chunked transfer-encoding OR duplicate
+        # Content-Length headers get rejected with the unknown sentinel.
+        if _has_chunked_transfer_encoding(scope):
+            await self._reject(scope, send, actual_bytes=_UNKNOWN_CONTENT_LENGTH)
+            return
+
         content_length = _parse_content_length(scope)
         if content_length is None:
             await self._reject(scope, send, actual_bytes=_UNKNOWN_CONTENT_LENGTH)
@@ -129,14 +142,12 @@ class UploadSizeLimitMiddleware:
         ``PdfTooLargeError`` raised from the handler, so callers see an
         identical response regardless of which layer rejected them.
 
-        When ``RequestIdMiddleware`` has already run (i.e. it is registered
-        outside this one in ``configure_middleware``), ``scope["state"]``
-        carries the generated 32-char hex request id and we reuse it so the
-        ``X-Request-Id`` header and the ``error.request_id`` field stay
-        consistent. When it has not run (e.g. in unit tests that mount this
-        middleware directly on a bare FastAPI app without RequestId), we
-        omit the header and set the body field to ``None`` — the caller
-        still gets a well-formed envelope, just without the correlation id.
+        ``_get_request_id`` guarantees a 32-char hex string — either the
+        one set by ``RequestIdMiddleware`` (when it ran upstream) or a
+        fresh ``uuid4().hex`` fallback when this middleware is mounted
+        directly (e.g. unit tests). Either way the envelope and
+        ``X-Request-Id`` header always carry a valid correlation id,
+        matching the fallback in ``app.api.errors._get_request_id``.
         """
         err = PdfTooLargeError(max_bytes=self._max_bytes, actual_bytes=actual_bytes)
         request_id = _get_request_id(scope)
@@ -158,14 +169,10 @@ class UploadSizeLimitMiddleware:
             },
         }
 
-        headers: dict[str, str] = {}
-        if request_id is not None:
-            headers["X-Request-Id"] = request_id
-
         response = JSONResponse(
             status_code=err.http_status,
             content=content,
-            headers=headers,
+            headers={"X-Request-Id": request_id},
         )
         # JSONResponse is itself an ASGI app; calling it with a no-op
         # receive is safe because it never reads the request body.
@@ -173,54 +180,81 @@ class UploadSizeLimitMiddleware:
 
 
 async def _empty_receive() -> Message:
-    """No-op ``receive`` for the early-response path.
+    """Terminal ``receive`` callable for the early-response path.
 
-    ``Response.__call__`` does not consume the request body, but the ASGI
-    signature requires a callable; this never-returning stub satisfies the
-    type without ever being awaited in practice.
+    ``Response.__call__`` does not normally consume the request body here,
+    but the ASGI signature still requires a ``receive`` callable. Return a
+    terminal empty ``http.request`` message rather than ``http.disconnect``
+    so any consumer reading the body sees "no more data" instead of an
+    unexpected disconnect, which some frameworks treat as a client abort.
     """
-    return {"type": "http.disconnect"}
+    return {"type": "http.request", "body": b"", "more_body": False}
 
 
-def _parse_content_length(scope: Scope) -> int | None:
-    """Return the integer ``Content-Length`` header, or None if missing/malformed.
+def _has_chunked_transfer_encoding(scope: Scope) -> bool:
+    """Return True iff any ``Transfer-Encoding`` header contains ``chunked``.
 
-    ASGI spec: ``scope["headers"]`` is a list of ``(bytes, bytes)`` pairs
-    with lowercase header names. Returning ``None`` for both the missing
-    and malformed cases lets the caller apply a single fail-closed policy.
-    Negative values are also treated as missing — a negative Content-Length
-    is not meaningful and should not be admitted.
+    Per RFC 9110 §8.6, ``Transfer-Encoding`` takes precedence over
+    ``Content-Length`` when both are present: a request can set
+    ``Content-Length: 100`` plus ``Transfer-Encoding: chunked`` and the
+    server MUST use chunked framing, meaning the CL value is not a
+    trustworthy size bound. Reject the request outright so the guard
+    cannot be bypassed by header combination.
     """
     raw_headers: list[tuple[bytes, bytes]] = scope.get("headers", [])
     for name, value in raw_headers:
-        if name == b"content-length":
-            try:
-                parsed = int(value.decode("latin-1"))
-            except (ValueError, UnicodeDecodeError):
-                return None
-            if parsed < 0:
-                return None
-            return parsed
-    return None
+        if name != b"transfer-encoding":
+            continue
+        # Transfer-Encoding is a comma-separated list of codings; ``chunked``
+        # may appear alongside ``gzip`` etc. A case-insensitive substring
+        # match on ``chunked`` is the safe conservative check.
+        if b"chunked" in value.lower():
+            return True
+    return False
 
 
-def _get_request_id(scope: Scope) -> str | None:
-    """Return the 32-char hex request id set by ``RequestIdMiddleware``, or None.
+def _parse_content_length(scope: Scope) -> int | None:
+    """Return the integer ``Content-Length`` header, or None on any ambiguity.
 
-    ``RequestIdMiddleware`` assigns ``request.state.request_id``, which
-    Starlette backs with ``scope["state"]``. When this middleware runs
-    outside a stack that includes ``RequestIdMiddleware`` (e.g. a direct
-    unit-test mount), ``scope["state"]`` is absent and we return ``None``
-    — the error envelope then reports ``request_id: null``.
+    Returns ``None`` when:
+    - the header is absent;
+    - the value is malformed (non-numeric, negative);
+    - multiple ``Content-Length`` headers are present (RFC 9110 requires
+      the server to reject ambiguous framing; returning None here makes the
+      caller's fail-closed policy apply).
+
+    ASGI spec: ``scope["headers"]`` is a list of ``(bytes, bytes)`` pairs
+    with lowercase header names.
+    """
+    raw_headers: list[tuple[bytes, bytes]] = scope.get("headers", [])
+    cl_values: list[bytes] = [value for name, value in raw_headers if name == b"content-length"]
+    if len(cl_values) != 1:
+        return None
+    try:
+        parsed = int(cl_values[0].decode("latin-1"))
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if parsed < 0:
+        return None
+    return parsed
+
+
+def _get_request_id(scope: Scope) -> str:
+    """Return the 32-char hex request id set by ``RequestIdMiddleware``.
+
+    Falls back to a fresh ``uuid4().hex`` when the middleware is absent so
+    the ``X-Request-Id`` header and the ``error.request_id`` field always
+    carry a valid 32-char hex string — matching the fallback in
+    ``app.api.errors._get_request_id`` so every rejection layer produces the
+    same envelope / header contract.
     """
     # ``scope["state"]`` is ``dict[str, Any]`` in the ASGI spec, but pyright
     # strict narrows it to ``dict[Unknown, Unknown]`` after isinstance, so we
     # re-type explicitly with ``cast`` before indexing.
     state_obj = scope.get("state")
-    if not isinstance(state_obj, dict):
-        return None
-    state = cast("dict[str, object]", state_obj)
-    request_id = state.get("request_id")
-    if isinstance(request_id, str):
-        return request_id
-    return None
+    if isinstance(state_obj, dict):
+        state = cast("dict[str, object]", state_obj)
+        request_id = state.get("request_id")
+        if isinstance(request_id, str):
+            return request_id
+    return uuid4().hex
