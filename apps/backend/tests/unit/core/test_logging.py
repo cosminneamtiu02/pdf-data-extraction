@@ -1,5 +1,6 @@
 """Unit tests for the structlog configuration in app.core.logging."""
 
+import io
 import logging
 
 import structlog
@@ -61,3 +62,98 @@ def test_format_exc_info_runs_before_redaction_filter() -> None:
     fmt_idx = next(i for i, p in enumerate(processors) if p is structlog.processors.format_exc_info)
     redact_idx = next(i for i, p in enumerate(processors) if isinstance(p, LogRedactionFilter))
     assert fmt_idx < redact_idx
+
+
+def test_configure_logging_is_idempotent_across_two_calls_with_different_settings() -> None:
+    """Issue #216: calling configure_logging twice in the same process (as
+    happens when two tests each call create_app with different Settings) must
+    leave a freshly-obtained logger honouring the second call's
+    ``redacted_keys`` / ``log_level`` / ``json_output``, not the first.
+
+    ``structlog.reset_defaults()`` at the top of configure_logging makes the
+    second call equivalent to a clean-process first call: ``_CONFIG`` is
+    rebuilt from scratch (``is_configured`` flipped False, processor-list
+    reference reset to a fresh builtin copy, ``cache_logger_on_first_use``
+    reset to the builtin default before being turned back on by the inline
+    ``structlog.configure(...)``). This guarantees a single source of truth
+    — the latest call's config — for every fresh ``structlog.get_logger``
+    fetched after the call returns.
+
+    Caveat: a proxy whose ``.info()`` was already invoked during the first
+    call keeps a cached bound logger that captured the first call's
+    processor-list reference by closure. ``reset_defaults()`` does not walk
+    and un-cache those proxies (structlog has no API for it). The contract
+    this test enforces is the fresh-fetch contract only — consumers who
+    reuse proxy instances across configure calls own that lifecycle.
+    """
+    # First configure: denylist "first_only_key", console output.
+    configure_logging(
+        log_level="info",
+        json_output=False,
+        redacted_keys=["first_only_key"],
+        max_value_length=500,
+    )
+    first_filter = next(
+        p for p in structlog.get_config()["processors"] if isinstance(p, LogRedactionFilter)
+    )
+    assert "first_only_key" in first_filter._redacted_keys  # noqa: SLF001 — filter internals are the contract under test
+    assert structlog.is_configured() is True
+
+    # Exercise the first config end-to-end so cached-proxy state is realistic
+    # (mimics a running test that emitted logs before a subsequent
+    # create_app call reconfigures with different Settings).
+    structlog.get_logger("tests.idempotency.warmup").info(
+        "warmup_event",
+        first_only_key="A",
+        second_only_key="B",
+    )
+
+    # Second configure: flip to JSON with a different denylist and log_level.
+    configure_logging(
+        log_level="warning",
+        json_output=True,
+        redacted_keys=["second_only_key"],
+        max_value_length=500,
+    )
+
+    # Contract 1: ``_CONFIG.default_processors`` reflects the second call's
+    # filter on a fresh list instance (not aliased with the first call's).
+    second_filter = next(
+        p for p in structlog.get_config()["processors"] if isinstance(p, LogRedactionFilter)
+    )
+    assert second_filter is not first_filter
+    assert "second_only_key" in second_filter._redacted_keys  # noqa: SLF001 — filter internals are the contract under test
+    assert "first_only_key" not in second_filter._redacted_keys  # noqa: SLF001
+    assert structlog.is_configured() is True
+
+    # Contract 2: root log_level mirrors the second call.
+    assert logging.getLogger().level == logging.WARNING
+
+    # Contract 3: a freshly-obtained logger, emitting through the production
+    # handler, honours the second call's JSON renderer and denylist.
+    buf = io.StringIO()
+    root = logging.getLogger()
+    assert root.handlers, "configure_logging must leave exactly one handler on root"
+    prod_handler = root.handlers[0]
+    assert isinstance(prod_handler, logging.StreamHandler)
+    original_stream = prod_handler.stream
+    prod_handler.setStream(buf)
+    try:
+        fresh_logger = structlog.get_logger("tests.idempotency.fresh")
+        fresh_logger.warning(
+            "fresh_event",
+            first_only_key="VISIBLE_AFTER_RECONFIG",
+            second_only_key="HIDDEN_AFTER_RECONFIG",
+        )
+    finally:
+        prod_handler.setStream(original_stream)
+    captured = buf.getvalue().strip()
+    # JSON renderer emits a single-line JSON object starting with '{'.
+    assert captured.startswith("{"), (
+        f"expected JSON output after json_output=True reconfigure, got: {captured!r}"
+    )
+    assert '"event": "fresh_event"' in captured
+    # first_only_key is no longer in the denylist → surfaces verbatim.
+    assert "VISIBLE_AFTER_RECONFIG" in captured
+    # second_only_key is now in the denylist → stripped by LogRedactionFilter.
+    assert "HIDDEN_AFTER_RECONFIG" not in captured
