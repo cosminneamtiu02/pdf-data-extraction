@@ -6,8 +6,6 @@ declared field names, and returns one `ExtractedField` per declared field in
 declared order — enforcing the "every field always present" API invariant.
 """
 
-import math
-
 from structlog.testing import capture_logs
 
 from app.features.extraction.coordinates.offset_index import OffsetIndex
@@ -49,7 +47,13 @@ def _index(*entries: tuple[int, int, str]) -> OffsetIndex:
     )
 
 
-def test_single_block_sub_block_match_returns_tight_bbox() -> None:
+def test_single_block_sub_block_match_returns_whole_block_bbox() -> None:
+    # Interim mitigation for issue #151: the resolver no longer interpolates
+    # sub-block positions using character ratios (which drifts for proportional
+    # fonts / CJK / emoji / diacritics). A single-block match now returns the
+    # whole-block bbox, trading sub-block precision for correctness. When
+    # per-glyph geometry is plumbed through TextBlock, tight sub-block bboxes
+    # can be reintroduced.
     resolver = SpanResolver()
     block = _block(
         block_id="b0",
@@ -78,12 +82,40 @@ def test_single_block_sub_block_match_returns_tight_bbox() -> None:
     assert field.grounded is True
     assert len(field.bbox_refs) == 1
     ref = field.bbox_refs[0]
-    assert ref.page == 1
-    # Horizontal ratio: 7/20 .. 16/20 over x range 10..210 (width 200).
-    assert math.isclose(ref.x0, 10.0 + (7 / 20) * 200.0)
-    assert math.isclose(ref.x1, 10.0 + (16 / 20) * 200.0)
-    assert ref.y0 == 100.0
-    assert ref.y1 == 120.0
+    assert (ref.page, ref.x0, ref.y0, ref.x1, ref.y1) == (1, 10.0, 100.0, 210.0, 120.0)
+
+
+def test_tight_sub_block_bbox_falls_back_to_whole_block_when_glyph_geometry_unavailable() -> None:
+    # Issue #151: without per-glyph geometry we cannot position a sub-block
+    # rectangle over the actual glyphs. For text that mixes narrow and wide
+    # glyphs ("il111 MMMW" — narrow chars followed by wide ones under any
+    # proportional font), character-ratio interpolation would drift the
+    # highlight away from the real position. We return the whole-block bbox
+    # instead — correctness over sub-block precision.
+    resolver = SpanResolver()
+    block = _block(
+        block_id="b0",
+        text="il111 MMMW",
+        bbox=(0.0, 0.0, 100.0, 20.0),
+    )
+    doc = _doc(block)
+    index = _index((0, 10, "b0"))
+    raw = RawExtraction(
+        field_name="word",
+        value="MMMW",
+        char_offset_start=6,
+        char_offset_end=10,
+        grounded=True,
+        attempts=1,
+    )
+
+    result = resolver.resolve([raw], index, doc, ["word"])
+
+    ref = result[0].bbox_refs[0]
+    # Whole-block bbox, NOT the drifty character-ratio interpolation
+    # (which would have produced x0=60, x1=100 — clearly missing the "MMMW"
+    # glyphs since they occupy the right-hand ~70% of the visual box).
+    assert (ref.x0, ref.y0, ref.x1, ref.y1) == (0.0, 0.0, 100.0, 20.0)
 
 
 def test_single_block_matcher_miss_falls_back_to_whole_block_bbox() -> None:
@@ -589,11 +621,12 @@ def test_sub_block_bbox_preserves_full_block_vertical_extent() -> None:
     assert ref.y1 == 70.0
 
 
-def test_repeated_value_in_block_uses_offset_reported_occurrence() -> None:
+def test_repeated_value_in_block_matches_offset_range_without_matcher_invocation() -> None:
     # "A=42 B=42" — LangExtract reports offsets for the second "42" (positions
     # 7..9 in the block). SubBlockMatcher.locate would return the FIRST "42"
-    # at positions 2..4. The resolver must use the offset-based range to
-    # highlight the correct (second) occurrence.
+    # at positions 2..4. The resolver must use the offset-reported range as
+    # the authoritative match (avoiding the matcher fallback), and — per the
+    # issue #151 interim mitigation — emit the whole-block bbox.
     resolver = SpanResolver()
     block = _block(block_id="b0", text="A=42 B=42", bbox=(0, 0, 100, 20))
     doc = _doc(block)
@@ -607,16 +640,17 @@ def test_repeated_value_in_block_uses_offset_reported_occurrence() -> None:
         attempts=1,
     )
 
-    result = resolver.resolve([raw], index, doc, ["amount"])
+    with capture_logs() as logs:
+        result = resolver.resolve([raw], index, doc, ["amount"])
 
     ref = result[0].bbox_refs[0]
-    # The second "42" occupies chars 7..9 out of 9 chars total, so the
-    # horizontal bbox should span ratio 7/9..9/9 of the block width 100.
-    assert math.isclose(ref.x0, 7 / 9 * 100.0)
-    assert math.isclose(ref.x1, 100.0)
+    assert (ref.x0, ref.x1) == (0.0, 100.0)
+    assert (ref.y0, ref.y1) == (0.0, 20.0)
+    # Matcher was NOT consulted — offsets hit the value directly.
+    assert [e for e in logs if e.get("reason") == "matcher_failed"] == []
 
 
-def test_repeated_value_first_occurrence_uses_offset_reported_range() -> None:
+def test_repeated_value_first_occurrence_also_resolves_without_matcher_invocation() -> None:
     # Same block "A=42 B=42" but offsets point to the first "42" (2..4).
     resolver = SpanResolver()
     block = _block(block_id="b0", text="A=42 B=42", bbox=(0, 0, 90, 20))
@@ -634,9 +668,9 @@ def test_repeated_value_first_occurrence_uses_offset_reported_range() -> None:
     result = resolver.resolve([raw], index, doc, ["amount"])
 
     ref = result[0].bbox_refs[0]
-    # First "42": chars 2..4, ratio 2/9..4/9 of width 90.
-    assert math.isclose(ref.x0, 2 / 9 * 90.0)
-    assert math.isclose(ref.x1, 4 / 9 * 90.0)
+    # Whole-block bbox (issue #151 interim mitigation).
+    assert (ref.x0, ref.x1) == (0.0, 90.0)
+    assert (ref.y0, ref.y1) == (0.0, 20.0)
 
 
 def test_multi_block_span_skips_zero_width_empty_blocks() -> None:
