@@ -19,14 +19,20 @@ from pathlib import Path
 
 _LOCKFILE_PATH = Path(__file__).resolve().parents[3] / "uv.lock"
 
-# Any package name prefix we forbid from the Linux-resolved lockfile. The list
-# is the 18 CUDA/NVIDIA packages that vanished after the pytorch-cpu index
-# override, plus `triton` (torch's CUDA-only JIT compiler).
+# Package name prefixes we forbid from the lockfile. The entries are the 18
+# CUDA/NVIDIA packages that vanished after the pytorch-cpu index override; all
+# share a stable family prefix (`nvidia-` / `cuda-`) so prefix-matching is
+# accurate for future siblings.
 _FORBIDDEN_PREFIXES: tuple[str, ...] = (
     "nvidia-",
     "cuda-",
-    "triton",
 )
+
+# Package names that are forbidden only as an exact match. `triton` is torch's
+# CUDA-only JIT compiler and must not land in the lockfile, but unrelated
+# packages like `tritonclient` legitimately begin with the same substring —
+# prefix-matching would false-positive on them.
+_FORBIDDEN_EXACT: frozenset[str] = frozenset({"triton"})
 
 
 def _package_names_in_lockfile() -> list[str]:
@@ -45,7 +51,10 @@ def _package_names_in_lockfile() -> list[str]:
 def test_uv_lock_has_no_cuda_or_nvidia_packages() -> None:
     names = _package_names_in_lockfile()
     offenders = sorted(
-        name for name in names if any(name.startswith(prefix) for prefix in _FORBIDDEN_PREFIXES)
+        name
+        for name in names
+        if any(name.startswith(prefix) for prefix in _FORBIDDEN_PREFIXES)
+        or name in _FORBIDDEN_EXACT
     )
     assert not offenders, (
         f"uv.lock re-introduced CUDA/NVIDIA packages (issue #139 regression): "
