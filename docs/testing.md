@@ -39,15 +39,18 @@ Three levels, all mandatory for every feature. E2E is optional-slow.
   - `test_schemathesis.py` — schemathesis conformance: loads the live
     OpenAPI spec via `schemathesis.openapi.from_asgi("/openapi.json", app)`
     and calls `schema["/api/v1/extract"]["POST"].validate_response(...)`
-    on a hand-rolled request per declared status code (200, 400, 404,
-    413, 422, 502, 503, 504). Targeted requests rather than
+    on hand-rolled requests covering each declared status code (200,
+    400, 404, 413, 422, 502, 503, 504) — some codes have multiple
+    requests, one per distinct `DomainError` that maps to that code
+    (e.g. 400 covers both `PdfInvalidError` and
+    `PdfPasswordProtectedError`). Targeted requests rather than
     `@schema.parametrize` because schemathesis cannot synthesize valid
     PDFs from `format: binary`.
   - `test_extract_contract.py` — shape assertions for `/api/v1/extract`:
     verifies the OpenAPI spec declares the expected form fields and
     media types (`application/json`, `application/pdf`, `multipart/mixed`
     for the 200 path) and asserts `ErrorResponse` envelope shape for the
-    413 (`PDF_TOO_LARGE`) and 504 (`INTELLIGENCE_TIMEOUT`) happy paths.
+    413 (`PDF_TOO_LARGE`) and 504 (`INTELLIGENCE_TIMEOUT`) error responses.
   - `test_degraded_contract.py` — degraded-mode response shape
     conformance: pins `app.state.ollama_health_probe` to a `FakeProbe`
     so the startup probe fails deterministically, then asserts `/ready`
