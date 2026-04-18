@@ -721,6 +721,42 @@ async def test_extraction_service_rejects_when_at_capacity() -> None:
     assert isinstance(result, ExtractionResult)
 
 
+async def test_extraction_service_overloaded_error_suppresses_timeout_cause() -> None:
+    """Over-cap rejection must not chain the signalling ``TimeoutError``.
+
+    Admission uses ``asyncio.timeout(0)`` as a non-blocking try-acquire
+    primitive: the inner ``TimeoutError`` is a pure signalling mechanism
+    for "would block", not a real timeout carrying diagnostic value.
+    Chaining it into ``ExtractionOverloadedError.__cause__`` produces
+    noisy, low-signal "During handling of the above exception, another
+    exception occurred" traces in logs and error responses.
+
+    The rest of this file already uses ``from None`` when remapping
+    timeouts to DomainError subclasses (see ``ExtractionBudgetExceededError``
+    at line 275 of ``service.py`` and ``IntelligenceTimeoutError`` in
+    ``extraction_engine.py``). This test pins the same invariant for the
+    admission-path remap so the file speaks one way, not two.
+    """
+    settings = _build_settings(max_concurrent_extractions=1)
+    service = _build_service(settings=settings)
+
+    # Exhaust the cap by taking the permit directly, so the next
+    # ``extract`` call's non-blocking acquire fires the TimeoutError
+    # path without needing a gated engine.
+    await service._semaphore.acquire()  # noqa: SLF001 — test probes the admission remap
+    try:
+        with pytest.raises(ExtractionOverloadedError) as excinfo:
+            await service.extract(_PDF_BYTES, "invoice", "1", OutputMode.JSON_ONLY)
+    finally:
+        service._semaphore.release()  # noqa: SLF001 — matched with the acquire above
+
+    # ``raise ... from None`` suppresses the ``__cause__`` link AND sets
+    # ``__suppress_context__ = True`` so Python's traceback renderer omits
+    # the "During handling ..." chain for the signalling TimeoutError.
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__suppress_context__ is True
+
+
 class _LyingLockedSemaphore:
     """Semaphore whose ``locked()`` always lies (returns ``False``).
 

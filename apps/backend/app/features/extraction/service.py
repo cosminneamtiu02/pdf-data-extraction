@@ -144,10 +144,17 @@ class ExtractionService:
         try:
             async with asyncio.timeout(0):
                 await self._semaphore.acquire()
-        except TimeoutError as err:
+        except TimeoutError:
+            # ``from None`` to match the file's "timeout → DomainError"
+            # pattern (``ExtractionBudgetExceededError`` below uses it, as
+            # does ``IntelligenceTimeoutError`` in ``extraction_engine.py``).
+            # Here the inner ``TimeoutError`` is a pure signalling primitive
+            # for "would block" — it carries no diagnostic context worth
+            # chaining, only a misleading "TimeoutError" tail on what is
+            # really a capacity-rejection event.
             raise ExtractionOverloadedError(
                 max_concurrent=self._max_concurrent_extractions,
-            ) from err
+            ) from None
 
         try:
             return await self._run_pipeline(
