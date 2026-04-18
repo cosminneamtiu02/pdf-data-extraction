@@ -223,10 +223,10 @@ def test_c1_check_catches_dynamic_sibling_feature_import() -> None:
 
     Synthesizes the collector output for a hypothetical extraction-tree file
     that does `importlib.import_module("app.features.billing.foo")` and
-    asserts the same predicate used by
-    `test_extraction_does_not_import_from_sibling_features` at line 108-111
-    would flag it. Before the fix, targets was `{"app"}` and the predicate
-    always evaluated to False, so the guard could never fire.
+    asserts the same sibling-feature-exclusion predicate used by
+    `test_extraction_does_not_import_from_sibling_features` would flag it.
+    Before the fix, targets was `{"app"}` and the predicate always
+    evaluated to False, so the guard could never fire.
     """
     source = 'import importlib\nimportlib.import_module("app.features.billing.foo")\n'
     targets = _collect_dynamic_import_targets(source)
