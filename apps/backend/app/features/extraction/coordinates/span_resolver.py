@@ -32,9 +32,15 @@ class SpanResolver:
     1. `value is None`                 → status=failed, grounded=False.
     2. `grounded is False`              → status=extracted, source=inferred,
                                           grounded=False.
-    3. Single-block span, matcher hit   → status=extracted, source=document,
+    3. Single-block span, offsets hit   → status=extracted, source=document,
                                           grounded=True, one whole-block
-                                          BoundingBoxRef. (Tight sub-block
+                                          BoundingBoxRef. Covers both the
+                                          direct-offset happy path (the
+                                          reported slice `block.text[start:end]`
+                                          equals `value`) and the matcher-hit
+                                          fallback (SubBlockMatcher.locate
+                                          recovers a range when the offsets
+                                          drift). (Tight sub-block
                                           interpolation was removed per
                                           issue #151; future glyph-level
                                           geometry will re-enable tight
