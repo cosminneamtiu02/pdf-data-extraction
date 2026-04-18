@@ -61,6 +61,25 @@ class StructuredOutputValidator:
     ) -> None:
         self._settings = settings
         self._correction_prompt_builder = correction_prompt_builder
+        # Compiled-validator cache keyed by ``id(output_schema)``. Building a
+        # ``Draft7Validator`` walks the schema to normalise refs and precompile
+        # per-keyword validators (issue #233); the cost compounds across
+        # per-extraction retries and across concurrent extractions. Both real
+        # schema sources — ``LANGEXTRACT_WRAPPER_SCHEMA`` (module constant) and
+        # ``Skill.output_schema`` (``MappingProxyType`` held by the long-lived
+        # ``Skill`` instance) — have process-lifetime stability, so id-keying is
+        # safe. We keep the schema object itself in the cache value so the id
+        # cannot be recycled onto a different object while the cache is live.
+        self._compiled_validators: dict[int, tuple[Any, Draft7Validator]] = {}
+
+    def _get_compiled_validator(self, output_schema: dict[str, Any]) -> Draft7Validator:
+        schema_id = id(output_schema)
+        cached = self._compiled_validators.get(schema_id)
+        if cached is not None:
+            return cached[1]
+        compiled = Draft7Validator(output_schema)
+        self._compiled_validators[schema_id] = (output_schema, compiled)
+        return compiled
 
     async def validate_and_retry(
         self,
@@ -72,6 +91,7 @@ class StructuredOutputValidator:
         max_total_attempts = self._settings.structured_output_max_retries + 1
         current_text = raw_text
         log_causes: list[str] = []
+        compiled_validator = self._get_compiled_validator(output_schema)
 
         for attempt in range(1, max_total_attempts + 1):
             cleaned = _clean(current_text)
@@ -80,7 +100,7 @@ class StructuredOutputValidator:
             if parse_failure is not None:
                 failure = parse_failure
             else:
-                failure = _validate(parsed, output_schema)
+                failure = _validate(parsed, compiled_validator)
                 if failure is None:
                     return GenerationResult(
                         data=parsed,
@@ -167,10 +187,9 @@ def _coerce_object(
 
 def _validate(
     parsed: dict[str, Any],
-    output_schema: dict[str, Any],
+    compiled_validator: Draft7Validator,
 ) -> _FailurePair | None:
-    validator = Draft7Validator(output_schema)
-    raw_errors: Any = validator.iter_errors(parsed)  # pyright: ignore[reportUnknownMemberType]  # jsonschema's overloaded iter_errors signature is partially typed in the stubs
+    raw_errors: Any = compiled_validator.iter_errors(parsed)  # pyright: ignore[reportUnknownMemberType]  # jsonschema's overloaded iter_errors signature is partially typed in the stubs
     errors: list[ValidationError] = sorted(
         raw_errors,
         key=lambda e: [str(p) for p in e.absolute_path],
