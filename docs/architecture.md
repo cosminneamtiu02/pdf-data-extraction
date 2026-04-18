@@ -94,9 +94,11 @@ The full contract set lives in
 [`apps/backend/architecture/import-linter-contracts.ini`](../apps/backend/architecture/import-linter-contracts.ini)
 and is enforced by `task check:arch`, a direct dependency of `task check`
 (issue #215; CI in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)
-runs the same gates as `task check` via individual workflow steps, and
-`task lint` itself is ruff-only). Every contract carries a `#` comment
-block explaining the rule it encodes and why.
+runs related validation steps via individual workflow checks — lint,
+format, pyright on `app/ scripts/`, architecture, and the test suite —
+which overlaps with but does not exhaustively mirror every `task check`
+gate. `task lint` itself is ruff-only). Every contract carries a `#`
+comment block explaining the rule it encodes and why.
 
 Two enforcement layers work together:
 
