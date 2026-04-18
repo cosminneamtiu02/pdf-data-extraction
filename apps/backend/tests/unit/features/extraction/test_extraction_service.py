@@ -15,6 +15,7 @@ import pytest
 
 from app.core.config import Settings
 from app.exceptions import (
+    ExtractionOverloadedError,
     IntelligenceTimeoutError,
     PdfInvalidError,
     SkillNotFoundError,
@@ -639,3 +640,124 @@ async def test_extraction_service_timeout_with_blocking_thread_raises() -> None:
             "1",
             OutputMode.JSON_ONLY,
         )
+
+
+async def test_extraction_service_rejects_when_at_capacity() -> None:
+    """Issue #109: over-cap requests fail fast with ExtractionOverloadedError.
+
+    The semaphore bounds concurrent pipelines. With cap=1, holding one
+    request in-flight means any further request must be rejected immediately
+    — not queued — so callers do not pile up behind a 504 budget while the
+    background Docling+Ollama work keeps consuming CPU.
+    """
+
+    class _GatedEngine:
+        """Engine that waits for a caller-controlled event before returning."""
+
+        def __init__(self, gate: asyncio.Event) -> None:
+            self._gate = gate
+            self.in_flight = 0
+            self.max_in_flight = 0
+
+        async def extract(
+            self,
+            _text: str,
+            _skill: Any,
+            _provider: Any,
+        ) -> list[RawExtraction]:
+            self.in_flight += 1
+            self.max_in_flight = max(self.max_in_flight, self.in_flight)
+            try:
+                await self._gate.wait()
+                return _build_raw_extractions()
+            finally:
+                self.in_flight -= 1
+
+    gate = asyncio.Event()
+    engine = _GatedEngine(gate)
+    settings = _build_settings(max_concurrent_extractions=1)
+    service = _build_service(engine=engine, settings=settings)
+
+    # Launch first call — it will hold the semaphore until we release the gate.
+    first = asyncio.create_task(
+        service.extract(_PDF_BYTES, "invoice", "1", OutputMode.JSON_ONLY),
+    )
+    # Give the first task a chance to enter the pipeline and acquire the semaphore.
+    for _ in range(50):
+        await asyncio.sleep(0)
+        if engine.in_flight >= 1:
+            break
+    assert engine.in_flight == 1, "First call should have entered the pipeline"
+
+    # Second and third concurrent calls must fail fast (no queuing).
+    with pytest.raises(ExtractionOverloadedError) as excinfo_2:
+        await service.extract(_PDF_BYTES, "invoice", "1", OutputMode.JSON_ONLY)
+    assert excinfo_2.value.http_status == 503
+    assert excinfo_2.value.params is not None
+    assert excinfo_2.value.params.model_dump() == {"max_concurrent": 1}
+
+    with pytest.raises(ExtractionOverloadedError):
+        await service.extract(_PDF_BYTES, "invoice", "1", OutputMode.JSON_ONLY)
+
+    # The gated engine must never have seen more than one in-flight call.
+    assert engine.max_in_flight == 1
+
+    # Release the first call and make sure it completes successfully.
+    gate.set()
+    result = await first
+    assert isinstance(result, ExtractionResult)
+
+
+async def test_extraction_service_releases_semaphore_on_success() -> None:
+    """After a successful extract, the semaphore permit is returned."""
+    settings = _build_settings(max_concurrent_extractions=1)
+    service = _build_service(settings=settings)
+
+    # First call should succeed and release the permit.
+    await service.extract(_PDF_BYTES, "invoice", "1", OutputMode.JSON_ONLY)
+    # A second call should not be rejected (permit was released).
+    result = await service.extract(_PDF_BYTES, "invoice", "1", OutputMode.JSON_ONLY)
+    assert isinstance(result, ExtractionResult)
+
+
+class _FailOnceParser:
+    """Parser that raises PdfInvalidError on the first call, then succeeds.
+
+    Lets the release-on-error test reuse the SAME service instance (and
+    therefore its semaphore) across both calls — the prior pattern of
+    swapping to a fresh service would also be green even if the original
+    service never released the permit, because the fresh service has its
+    own semaphore.
+    """
+
+    def __init__(self, doc: ParsedDocument | None = None) -> None:
+        self._doc = doc or _build_parsed_doc()
+        self._calls = 0
+
+    async def parse(self, _pdf_bytes: bytes, _docling_config: Any) -> ParsedDocument:
+        self._calls += 1
+        if self._calls == 1:
+            raise PdfInvalidError
+        return self._doc
+
+
+async def test_extraction_service_releases_semaphore_on_error() -> None:
+    """After a pipeline error, the semaphore permit is returned to the SAME
+    service instance.
+
+    Crucial that both calls go through the same service (not a fresh one):
+    a fresh service has a fresh semaphore, so it would pass this test even
+    if the original service leaked the permit. Using `_FailOnceParser`
+    keeps the first call's error surface while letting the second call
+    succeed through the same pipeline components.
+    """
+    settings = _build_settings(max_concurrent_extractions=1)
+    service = _build_service(parser=_FailOnceParser(), settings=settings)
+
+    with pytest.raises(PdfInvalidError):
+        await service.extract(_PDF_BYTES, "invoice", "1", OutputMode.JSON_ONLY)
+
+    # Same service — if the permit leaked, this call would raise
+    # ExtractionOverloadedError instead of succeeding.
+    result = await service.extract(_PDF_BYTES, "invoice", "1", OutputMode.JSON_ONLY)
+    assert isinstance(result, ExtractionResult)
