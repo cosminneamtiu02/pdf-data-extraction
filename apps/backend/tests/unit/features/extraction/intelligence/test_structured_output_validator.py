@@ -12,6 +12,7 @@ The validator is provider-agnostic: every test passes a plain async stub for
 
 from collections.abc import Awaitable, Callable
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from pydantic import ValidationError as PydanticValidationError
@@ -19,10 +20,14 @@ from structlog.testing import capture_logs
 
 from app.core.config import Settings
 from app.exceptions import StructuredOutputFailedError
+from app.features.extraction.intelligence import (
+    structured_output_validator as sov_module,
+)
 from app.features.extraction.intelligence.correction_prompt_builder import (
     CorrectionPromptBuilder,
 )
 from app.features.extraction.intelligence.structured_output_validator import (
+    _COMPILED_VALIDATOR_CACHE_SOFT_CAP,
     StructuredOutputValidator,
     _clean,
 )
@@ -440,3 +445,215 @@ async def test_structured_output_retry_log_uses_sanitized_cause_field() -> None:
     assert isinstance(retry["cause"], str)
     # Legacy field name must be gone.
     assert "reason" not in retry
+
+
+async def test_draft7_validator_is_built_once_across_retries_for_same_schema() -> None:
+    """Regression guard for issue #233: Draft7Validator must be compiled once per schema.
+
+    Under default settings the validator runs 4 total attempts. This test
+    scripts valid JSON that violates the schema so every attempt reaches
+    ``_validate`` (i.e. genuinely exercises the schema-validation retry path
+    the cache is meant to amortize). It patches ``Draft7Validator`` and
+    asserts the constructor is invoked exactly once across all retries within
+    a single ``validate_and_retry`` call for the same ``output_schema``
+    identity.
+    """
+    validator = _build_validator()
+    # Four attempts: all valid JSON, all violating `_FOO_STRING_SCHEMA` (foo
+    # must be a string). Each attempt reaches `_validate` → exercises the
+    # schema-validation retry path, which is exactly what the cache amortizes.
+    call, _prompts = _scripted_callable(['{"foo": 2}', '{"foo": 3}', '{"foo": 4}'])
+
+    with (
+        patch.object(
+            sov_module,
+            "Draft7Validator",
+            wraps=sov_module.Draft7Validator,
+        ) as mock_validator,
+        pytest.raises(StructuredOutputFailedError),
+    ):
+        await validator.validate_and_retry(
+            raw_text='{"foo": 1}',
+            output_schema=_FOO_STRING_SCHEMA,
+            regeneration_callable=call,
+        )
+
+    # Four attempts over the same schema identity → exactly ONE constructor call.
+    assert mock_validator.call_count == 1
+
+
+async def test_draft7_validator_is_not_built_when_every_attempt_fails_json_parsing() -> None:
+    """Lazy-compile guarantee: no Draft7Validator is built when parsing never succeeds.
+
+    Building ``Draft7Validator`` walks the schema to normalise refs and
+    precompile per-keyword validators — a real cost. Paying that cost for a
+    call whose every attempt fails JSON parsing (so ``_validate`` is never
+    reached) would be a pointless performance regression. This test scripts
+    outputs that all fail parsing and asserts the constructor is never
+    invoked.
+    """
+    validator = _build_validator()
+    # Four attempts, all pure parse-failures (not JSON at all).
+    call, _prompts = _scripted_callable(["not json", "still not json", "never valid"])
+
+    with (
+        patch.object(
+            sov_module,
+            "Draft7Validator",
+            wraps=sov_module.Draft7Validator,
+        ) as mock_validator,
+        pytest.raises(StructuredOutputFailedError),
+    ):
+        await validator.validate_and_retry(
+            raw_text="not json",
+            output_schema=_FOO_STRING_SCHEMA,
+            regeneration_callable=call,
+        )
+
+    # Parsing never succeeds → _validate is never called → no Draft7Validator built.
+    assert mock_validator.call_count == 0
+
+
+async def test_draft7_validator_is_reused_across_separate_validate_calls() -> None:
+    """The compiled validator must persist across distinct `validate_and_retry` calls.
+
+    Two sequential calls against the same `output_schema` identity share one
+    Draft7Validator — not two. This is the sustained-load savings the issue
+    describes: concurrent extractions and per-extraction retries all amortize
+    onto a single compilation per schema per validator instance.
+    """
+    validator = _build_validator()
+
+    with patch.object(
+        sov_module,
+        "Draft7Validator",
+        wraps=sov_module.Draft7Validator,
+    ) as mock_validator:
+        for _ in range(3):
+            result = await validator.validate_and_retry(
+                raw_text='{"foo": "bar"}',
+                output_schema=_FOO_STRING_SCHEMA,
+                regeneration_callable=_never_called(),
+            )
+            assert result.data == {"foo": "bar"}
+
+    assert mock_validator.call_count == 1
+
+
+async def test_distinct_schemas_each_compile_once() -> None:
+    """Two different schema objects → two compiled validators, each reused.
+
+    The cache is keyed per schema identity: distinct schemas must not collide,
+    and each schema's compiled validator must still be reused on repeat calls.
+    """
+    validator = _build_validator()
+    schema_a: dict[str, Any] = {
+        "type": "object",
+        "required": ["foo"],
+        "properties": {"foo": {"type": "string"}},
+    }
+    schema_b: dict[str, Any] = {
+        "type": "object",
+        "required": ["bar"],
+        "properties": {"bar": {"type": "integer"}},
+    }
+
+    with patch.object(
+        sov_module,
+        "Draft7Validator",
+        wraps=sov_module.Draft7Validator,
+    ) as mock_validator:
+        for _ in range(2):
+            await validator.validate_and_retry(
+                raw_text='{"foo": "bar"}',
+                output_schema=schema_a,
+                regeneration_callable=_never_called(),
+            )
+            await validator.validate_and_retry(
+                raw_text='{"bar": 7}',
+                output_schema=schema_b,
+                regeneration_callable=_never_called(),
+            )
+
+    # Two distinct schemas compiled once each → exactly 2 constructor calls.
+    assert mock_validator.call_count == 2
+
+
+async def test_soft_cap_warning_emitted_exactly_once_on_crossing() -> None:
+    """Regression for PR #241 review: the soft-cap canary must fire once, not per-insert.
+
+    The cache has no eviction path, so ``len > cap`` stays true forever once
+    crossed. A `> cap` condition would re-emit the warning on EVERY subsequent
+    insertion — a hot log loop in production if an operator ever violates the
+    identity-stability contract. This test inserts enough distinct schemas to
+    cross the cap AND continue well past it, and asserts the warning fires
+    exactly once on the crossing insertion (``len == cap + 1``).
+    """
+    validator = _build_validator()
+    cap = _COMPILED_VALIDATOR_CACHE_SOFT_CAP
+    # Insert cap + 5: we cross the cap on insertion cap+1, then do 4 more
+    # inserts that must not re-emit the warning.
+    total_inserts = cap + 5
+    schemas: list[dict[str, Any]] = [
+        {
+            "type": "object",
+            "required": ["foo"],
+            "properties": {"foo": {"type": "string"}},
+        }
+        for _ in range(total_inserts)
+    ]
+
+    with capture_logs() as logs:
+        for schema in schemas:
+            await validator.validate_and_retry(
+                raw_text='{"foo": "bar"}',
+                output_schema=schema,
+                regeneration_callable=_never_called(),
+            )
+
+    warnings = [
+        log
+        for log in logs
+        if log.get("event") == "structured_output_validator_cache_soft_cap_exceeded"
+    ]
+    # Exactly one warning, carrying the crossing cache size (cap + 1).
+    assert len(warnings) == 1
+    assert warnings[0]["log_level"] == "warning"
+    assert warnings[0]["cache_size"] == cap + 1
+    assert warnings[0]["soft_cap"] == cap
+
+
+async def test_soft_cap_warning_not_emitted_below_or_at_cap() -> None:
+    """The canary must stay silent until the cap is *crossed*, not merely reached.
+
+    Pin the "at cap: no warning, one-over cap: warning" boundary so a future
+    refactor can't regress to emitting on reach (``>= cap``) or on every
+    insert.
+    """
+    validator = _build_validator()
+    cap = _COMPILED_VALIDATOR_CACHE_SOFT_CAP
+    # Insert exactly `cap` distinct schemas — cache size reaches but does not
+    # exceed the cap, so no warning should fire.
+    schemas_at_cap: list[dict[str, Any]] = [
+        {
+            "type": "object",
+            "required": ["foo"],
+            "properties": {"foo": {"type": "string"}},
+        }
+        for _ in range(cap)
+    ]
+
+    with capture_logs() as logs:
+        for schema in schemas_at_cap:
+            await validator.validate_and_retry(
+                raw_text='{"foo": "bar"}',
+                output_schema=schema,
+                regeneration_callable=_never_called(),
+            )
+
+    warnings = [
+        log
+        for log in logs
+        if log.get("event") == "structured_output_validator_cache_soft_cap_exceeded"
+    ]
+    assert warnings == []
