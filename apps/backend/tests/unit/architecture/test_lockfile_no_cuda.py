@@ -29,20 +29,21 @@ _FORBIDDEN_PREFIXES: tuple[str, ...] = (
 )
 
 
-def _package_names_resolved_for_linux() -> list[str]:
-    """Return every package name in `uv.lock` whose resolved wheel would
-    apply on linux (either unconditionally or via a matching environment
-    marker). The check is intentionally approximate: we inspect the
-    package name alone because the forbidden set is itself Linux-specific
-    (NVIDIA wheels only publish linux builds), so any entry appearing in
-    `uv.lock` is by definition candidate for the Linux image.
+def _package_names_in_lockfile() -> list[str]:
+    """Return every package name recorded in `uv.lock`.
+
+    This regression guard intentionally scans the full lockfile instead of
+    evaluating per-package `resolution-markers` / `marker` fields. The
+    forbidden package set is specific to CUDA/NVIDIA-related Linux
+    artifacts, so any such package appearing anywhere in `uv.lock` should
+    fail the test.
     """
     data = tomllib.loads(_LOCKFILE_PATH.read_text(encoding="utf-8"))
     return [pkg["name"] for pkg in data.get("package", [])]
 
 
 def test_uv_lock_has_no_cuda_or_nvidia_packages() -> None:
-    names = _package_names_resolved_for_linux()
+    names = _package_names_in_lockfile()
     offenders = sorted(
         name for name in names if any(name.startswith(prefix) for prefix in _FORBIDDEN_PREFIXES)
     )
