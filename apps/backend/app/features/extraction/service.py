@@ -20,9 +20,11 @@ elsewhere; once that work completes, its result is discarded.
 up on CPU and Ollama, a per-service ``asyncio.Semaphore`` caps the
 number of concurrent pipelines at ``Settings.max_concurrent_extractions``
 (issue #109). Over-cap requests are rejected immediately with
-``ExtractionOverloadedError`` (HTTP 503) — the semaphore is checked
-non-blockingly before entry and is never awaited, so callers do not
-queue behind their own 504 budget.
+``ExtractionOverloadedError`` (HTTP 503). ``extract()`` checks
+``Semaphore.locked()`` before entering the ``async with`` block and
+short-circuits if no permit is available, so admitted callers acquire
+the semaphore without waiting and rejected callers fail fast instead
+of queuing behind their own 504 timeout budget.
 """
 
 from __future__ import annotations

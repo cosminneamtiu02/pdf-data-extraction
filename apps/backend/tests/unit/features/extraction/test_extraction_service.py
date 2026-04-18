@@ -720,15 +720,44 @@ async def test_extraction_service_releases_semaphore_on_success() -> None:
     assert isinstance(result, ExtractionResult)
 
 
+class _FailOnceParser:
+    """Parser that raises PdfInvalidError on the first call, then succeeds.
+
+    Lets the release-on-error test reuse the SAME service instance (and
+    therefore its semaphore) across both calls — the prior pattern of
+    swapping to a fresh service would also be green even if the original
+    service never released the permit, because the fresh service has its
+    own semaphore.
+    """
+
+    def __init__(self, doc: ParsedDocument | None = None) -> None:
+        self._doc = doc or _build_parsed_doc()
+        self._calls = 0
+
+    async def parse(self, _pdf_bytes: bytes, _docling_config: Any) -> ParsedDocument:
+        self._calls += 1
+        if self._calls == 1:
+            raise PdfInvalidError
+        return self._doc
+
+
 async def test_extraction_service_releases_semaphore_on_error() -> None:
-    """After a pipeline error, the semaphore permit is still returned."""
+    """After a pipeline error, the semaphore permit is returned to the SAME
+    service instance.
+
+    Crucial that both calls go through the same service (not a fresh one):
+    a fresh service has a fresh semaphore, so it would pass this test even
+    if the original service leaked the permit. Using `_FailOnceParser`
+    keeps the first call's error surface while letting the second call
+    succeed through the same pipeline components.
+    """
     settings = _build_settings(max_concurrent_extractions=1)
-    # Use a parser that always raises — the permit must still be released.
-    service = _build_service(parser=_ErrorParser(), settings=settings)
+    service = _build_service(parser=_FailOnceParser(), settings=settings)
 
     with pytest.raises(PdfInvalidError):
         await service.extract(_PDF_BYTES, "invoice", "1", OutputMode.JSON_ONLY)
-    # Switch to a healthy pipeline and confirm the next call is not rejected.
-    healthy = _build_service(settings=settings)
-    result = await healthy.extract(_PDF_BYTES, "invoice", "1", OutputMode.JSON_ONLY)
+
+    # Same service — if the permit leaked, this call would raise
+    # ExtractionOverloadedError instead of succeeding.
+    result = await service.extract(_PDF_BYTES, "invoice", "1", OutputMode.JSON_ONLY)
     assert isinstance(result, ExtractionResult)
