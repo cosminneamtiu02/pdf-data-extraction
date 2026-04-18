@@ -20,6 +20,7 @@ def _valid_schema(**overrides: object) -> SkillYamlSchema:
     base: dict[str, object] = {
         "name": "invoice",
         "version": 1,
+        "description": "Invoice header extractor.",
         "prompt": "Extract.",
         "examples": [SkillExample(input="x", output={"a": "1"})],
         "output_schema": {
@@ -146,6 +147,7 @@ def test_from_schema_after_load_from_file_merges_yaml_docling(
     body: dict[str, object] = {
         "name": "invoice",
         "version": 1,
+        "description": "Invoice header extractor.",
         "prompt": "Extract.",
         "examples": [{"input": "x", "output": {"a": "1"}}],
         "output_schema": {
