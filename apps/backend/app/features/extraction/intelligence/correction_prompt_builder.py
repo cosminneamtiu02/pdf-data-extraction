@@ -8,7 +8,33 @@ tuned empirically during PDFX-E004-F002's integration tests against Gemma 4.
 
 import json
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, cast
+
+
+def _thaw_for_json(value: Any) -> Any:
+    """Recursively convert a (possibly deep-frozen) value to JSON-native types.
+
+    ``Skill.output_schema`` is produced by ``deep_freeze_mapping`` and is a
+    ``MappingProxyType`` whose nested values are themselves ``MappingProxyType``
+    (and sequences are tuples). ``json.dumps`` does not accept arbitrary
+    ``Mapping`` implementations — it only recognises plain ``dict`` — so any
+    nested ``MappingProxyType`` reaches the encoder's ``default()`` path and
+    raises ``TypeError``. Shallow-copying via ``dict(...)`` only thaws the
+    top level, so we recurse.
+
+    Duplicated (not imported) from ``skills.deep_freeze.thaw`` because the
+    ``intelligence`` leaf subpackage is layer-independent from ``skills``
+    per the C2a import-linter contract; the helper is tiny and stable, so
+    the cost of duplication is lower than the cost of widening the layer
+    boundary.
+    """
+    if isinstance(value, Mapping):
+        mapping = cast("Mapping[str, Any]", value)
+        return {str(k): _thaw_for_json(v) for k, v in mapping.items()}
+    if isinstance(value, (list, tuple)):
+        seq = cast("list[Any] | tuple[Any, ...]", value)
+        return [_thaw_for_json(item) for item in seq]
+    return value
 
 
 class CorrectionPromptBuilder:
@@ -19,10 +45,11 @@ class CorrectionPromptBuilder:
         output_schema: Mapping[str, Any],
         failure_reason: str,
     ) -> str:
-        # ``json.dumps`` accepts any ``Mapping`` via its default encoder path,
-        # so widening beyond ``dict`` costs nothing at runtime and lets us
-        # accept the ``MappingProxyType`` that ``Skill.output_schema`` uses.
-        schema_json = json.dumps(dict(output_schema), indent=2, sort_keys=True)
+        # ``Skill.output_schema`` is a deep-frozen ``MappingProxyType`` with
+        # nested ``MappingProxyType`` values, which ``json.dumps`` does not
+        # accept. Recursively thaw to plain ``dict``/``list`` before dumping
+        # so every nested level is JSON-serializable.
+        schema_json = json.dumps(_thaw_for_json(output_schema), indent=2, sort_keys=True)
         return (
             f"{original_prompt}\n\n"
             "The previous response was not valid JSON matching the required schema.\n"
