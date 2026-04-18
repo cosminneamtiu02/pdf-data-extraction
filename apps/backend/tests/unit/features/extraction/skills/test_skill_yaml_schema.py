@@ -38,7 +38,7 @@ def test_load_from_file_returns_populated_instance(
     assert len(schema.examples) == 1
     assert schema.examples[0].output == {"number": "INV-1"}
     assert schema.output_schema["required"] == ["number"]
-    assert schema.description is None
+    assert schema.description == "Invoice header extractor."
     assert schema.docling is None
 
 
@@ -241,11 +241,74 @@ def test_multiple_example_violations_all_reported(
 def test_optional_description_defaults_to_none(
     write_skill_yaml: SkillYamlFactory,
 ) -> None:
-    path = write_skill_yaml()
+    path = write_skill_yaml(description=REMOVE)
 
     schema = SkillYamlSchema.load_from_file(path)
 
     assert schema.description is None
+
+
+def test_duplicate_top_level_keys_raise_skill_validation_error(tmp_path: Path) -> None:
+    """Two ``prompt:`` keys at the top level surface as a curated error.
+
+    PyYAML's default ``SafeLoader`` silently collapses repeated keys
+    last-wins; the custom ``DuplicateKeyDetectingSafeLoader`` rejects them
+    so an author's copy-paste typo cannot deploy a skill whose authored
+    intent was silently erased. Issue #208.
+    """
+    path = tmp_path / "1.yaml"
+    path.write_text(
+        "name: invoice\n"
+        "version: 1\n"
+        "description: Invoice header extractor.\n"
+        "prompt: first\n"
+        "prompt: second\n"
+        'examples:\n  - input: "x"\n    output: {number: "1"}\n'
+        "output_schema: {type: object, properties: {number: {type: string}}}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SkillValidationFailedError) as exc_info:
+        SkillYamlSchema.load_from_file(path)
+
+    reason = _reason(exc_info.value)
+    assert "duplicate key" in reason
+    assert "'prompt'" in reason
+
+
+def test_duplicate_output_schema_property_keys_raise_skill_validation_error(
+    tmp_path: Path,
+) -> None:
+    """Two entries with the same name under ``output_schema.properties`` fail.
+
+    Without the duplicate-key detection, the second entry would silently
+    overwrite the first and the schema would validate as if the first had
+    never been authored. The defect would only surface at request time on
+    live traffic. Issue #208.
+    """
+    path = tmp_path / "1.yaml"
+    path.write_text(
+        "name: invoice\n"
+        "version: 1\n"
+        "description: Invoice header extractor.\n"
+        'prompt: "Extract."\n'
+        'examples:\n  - input: "x"\n    output: {amount_due: "1"}\n'
+        "output_schema:\n"
+        "  type: object\n"
+        "  properties:\n"
+        "    amount_due:\n"
+        "      type: string\n"
+        "    amount_due:\n"
+        "      type: integer\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SkillValidationFailedError) as exc_info:
+        SkillYamlSchema.load_from_file(path)
+
+    reason = _reason(exc_info.value)
+    assert "duplicate key" in reason
+    assert "'amount_due'" in reason
 
 
 def test_optional_docling_defaults_to_none(

@@ -350,7 +350,7 @@ async def test_extract_works_with_skill_from_schema_using_mappingproxy(
     schema = SkillYamlSchema(
         name="mappingproxy-skill",
         version=1,
-        description=None,
+        description="mappingproxy skill.",
         prompt="Extract name and age.",
         examples=[
             SkillExample(input="Alice is 30.", output={"name": "Alice", "age": "30"}),

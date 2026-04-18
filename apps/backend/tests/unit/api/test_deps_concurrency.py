@@ -48,6 +48,7 @@ def _settings(tmp_path: Path) -> Settings:
     (skills / "1.yaml").write_text(
         "name: invoice\n"
         "version: 1\n"
+        "description: Invoice header extractor.\n"
         "prompt: Extract header fields.\n"
         "examples:\n"
         "  - input: INV-1\n"
