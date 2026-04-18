@@ -39,8 +39,8 @@ pooling still works.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
+import weakref
 from typing import TYPE_CHECKING, Any, cast
 
 import httpx
@@ -74,6 +74,17 @@ _logger = structlog.get_logger(__name__)
 # the call site.
 _HTTP_CLIENT_ERROR_MIN = 400
 _HTTP_SERVER_ERROR_MIN = 500
+
+# Hard upper bound on how long we will block waiting for an old loop to
+# run the stale client's ``aclose()`` coroutine after we scheduled it via
+# ``run_coroutine_threadsafe``. If the old loop is not running the
+# coroutine, the caller-driven ``await`` on ``asyncio.wrap_future`` would
+# block indefinitely; this deadline bounds the teardown so we always fall
+# back to the best-effort close on the current loop (issue #234 review
+# feedback). Expressed in seconds; 2.0 s is comfortably above any real
+# ``aclose()`` but fast enough that a stuck teardown does not visibly
+# stall callers.
+_STALE_CLIENT_ACLOSE_TIMEOUT_SECONDS = 2.0
 
 
 def _build_generate_url(base_url: str) -> str:
@@ -162,57 +173,167 @@ class OllamaGemmaProvider(BaseLanguageModel):
         self._injected_http_client = http_client
         self.http_client = http_client or httpx.AsyncClient(timeout=self._timeout)
         self._http_client_loop: asyncio.AbstractEventLoop | None = None
+        # Per-loop `asyncio.Lock`s that serialize the rebuild critical
+        # section so concurrent entrants on the same loop do not both
+        # allocate a fresh client (issue #234). A single instance-level
+        # lock will not work because `asyncio.Lock` binds to the first
+        # loop it is acquired on, and the rebuild path is reached on
+        # loops that alternate. The dict is weakly keyed — see
+        # `_rebuild_lock_for` — so dead loops do not retain locks.
+        self._rebuild_locks: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = (
+            weakref.WeakKeyDictionary()
+        )
 
-    def _get_http_client(self) -> httpx.AsyncClient:
+    def _rebuild_lock_for(self, loop: asyncio.AbstractEventLoop) -> asyncio.Lock:
+        """Return the ``asyncio.Lock`` guarding rebuild on *loop*.
+
+        Lazily creates one lock per event loop. The dict is a
+        ``WeakKeyDictionary`` so that once an event loop is garbage
+        collected its lock entry disappears — long-lived providers
+        spanning many short-lived loops (e.g. test suites) do not
+        accumulate lock references and leak them. Lookup/insert here is
+        synchronous and executes between ``await`` points under the
+        cooperative scheduler, so it is safe from same-loop interleave.
+        """
+        lock = self._rebuild_locks.get(loop)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._rebuild_locks[loop] = lock
+        return lock
+
+    async def _get_http_client(self) -> httpx.AsyncClient:
         """Return an `AsyncClient` bound to the currently-running event loop.
 
         If the caller injected a client via the constructor, return it
         unchanged — they own its loop affinity. Otherwise rebuild
-        `self.http_client` when the running loop differs from the one the
-        current client was first used on. This fixes the cross-loop
+        ``self.http_client`` when the running loop differs from the one
+        the current client was first used on. This fixes the cross-loop
         regression in issue #132 where a single provider instance used
-        across `asyncio.run` scopes would raise `RuntimeError: Event loop
-        is closed` on the second call.
+        across `asyncio.run` scopes would raise ``RuntimeError: Event loop
+        is closed`` on the second call.
 
-        Old-client cleanup: when we rebind, the outgoing client is bound to
-        the previous loop. If that loop is still running we schedule
-        ``aclose()`` onto it via ``run_coroutine_threadsafe`` so sockets
-        close cleanly; if it is already closed we cannot run any coroutine
-        on it — the transport was torn down when the loop closed, so the
-        only observable residue is a possible `httpx` "unclosed client"
-        warning on GC, which is acceptable given the alternative is an
-        error (the correct place for callers who care is to call
-        `provider.aclose()` inside each `asyncio.run` scope before leaving
-        it — see the regression tests).
+        Concurrency (issue #234): the check-and-swap is guarded by a
+        per-loop ``asyncio.Lock`` so that two concurrent entrants on the
+        same loop serialize — the first performs the rebuild, the
+        second re-checks inside the lock and shares the already-rebuilt
+        instance. Without the lock, the ``await`` on the old client's
+        ``aclose()`` below would be a scheduling point where a sibling
+        coroutine could slip in and double-allocate; only the second
+        write would be retained and the first fresh client would leak.
+
+        Old-client cleanup (issue #234): on rebuild, the outgoing
+        client is ``aclose()``d before the new client is returned. If
+        the old loop is still alive we schedule ``aclose()`` on it via
+        ``run_coroutine_threadsafe`` and await the wrapped future so the
+        transport tears down on the loop it was bound to. If the old
+        loop has already been closed, we fall back to awaiting
+        ``aclose()`` on the current loop; real httpx clients bound to a
+        dead loop may raise ``RuntimeError`` inside transport teardown
+        because their connection pool is unreachable — we log and drop
+        that error because the sockets were already reaped alongside
+        the dead loop (and surfacing it here would mask a successfully
+        rebuilt provider from callers).
         """
         if self._injected_http_client is not None:
             return self._injected_http_client
         current_loop = asyncio.get_running_loop()
-        if self._http_client_loop is not None and current_loop is not self._http_client_loop:
+        # Fast path: already bound to this loop. Avoids the lock
+        # acquisition cost on every request. The sync read is atomic
+        # under cooperative scheduling.
+        if self._http_client_loop is current_loop:
+            return self.http_client
+        async with self._rebuild_lock_for(current_loop):
+            # Re-check inside the lock: another entrant may have
+            # completed the rebuild while we awaited the lock.
+            if self._http_client_loop is current_loop:
+                return self.http_client
             old_loop = self._http_client_loop
+            if old_loop is None:
+                # First-ever binding. The eagerly-constructed client in
+                # ``__init__`` has not yet touched a loop, so we simply
+                # stamp it onto the current loop — no rebuild, no stale
+                # client to close.
+                self._http_client_loop = current_loop
+                return self.http_client
             old_client = self.http_client
             self.http_client = httpx.AsyncClient(timeout=self._timeout)
-            # Best-effort close of the prior client. `is_closed` on an
-            # `asyncio.AbstractEventLoop` is the canonical "can we schedule
-            # work on it" check. If the old loop is alive we submit
-            # `aclose()` to it from this thread/loop; if closed, we skip —
-            # the transport already went with the loop.
-            if not old_loop.is_closed():
-                # Loop may transition to closed between the check and the
-                # submit — `run_coroutine_threadsafe` raises `RuntimeError`
-                # if so, which is benign (we fall through as if the loop was
-                # already closed at check time).
-                with contextlib.suppress(RuntimeError):
-                    asyncio.run_coroutine_threadsafe(old_client.aclose(), old_loop)
-        self._http_client_loop = current_loop
+            self._http_client_loop = current_loop
+            await self._aclose_stale_client(old_client, old_loop)
         return self.http_client
+
+    async def _aclose_stale_client(
+        self,
+        old_client: httpx.AsyncClient,
+        old_loop: asyncio.AbstractEventLoop,
+    ) -> None:
+        """Await close of a client bound to a previous event loop (issue #234).
+
+        Three disjoint cases:
+
+        1. Old loop is alive AND running — schedule ``aclose()`` on it
+           via ``run_coroutine_threadsafe`` and await the wrapped future
+           (bounded by ``_STALE_CLIENT_ACLOSE_TIMEOUT_SECONDS``) so
+           sockets tear down on the loop that opened them.
+        2. Old loop is not closed but is not running (e.g. ``loop.stop()``
+           without ``close()``). Scheduling via
+           ``run_coroutine_threadsafe`` would block forever because
+           nothing advances the loop, so we skip it and fall through to
+           the current-loop best-effort branch.
+        3. Old loop is closed — schedule is impossible. Fall back to
+           ``await old_client.aclose()`` on the current loop. Real
+           ``httpx.AsyncClient`` instances whose connection pool was
+           bound to a dead loop may raise ``RuntimeError`` inside
+           transport teardown; we log and drop the error because the
+           transport sockets already went with the dead loop.
+
+        The timeout guards case (1) against a loop that was running at
+        submit time but stopped (or hung) before draining the scheduled
+        coroutine — without it the ``asyncio.wrap_future`` await would
+        block forever on the current loop (issue #234 review feedback).
+        """
+        if not old_loop.is_closed() and old_loop.is_running():
+            try:
+                future = asyncio.run_coroutine_threadsafe(old_client.aclose(), old_loop)
+            except RuntimeError:
+                # Loop transitioned closed between the state checks and
+                # ``run_coroutine_threadsafe`` submit. Fall through to
+                # the current-loop best-effort branch below.
+                _logger.debug("stale_client_old_loop_raced_closed")
+            else:
+                try:
+                    await asyncio.wait_for(
+                        asyncio.wrap_future(future),
+                        timeout=_STALE_CLIENT_ACLOSE_TIMEOUT_SECONDS,
+                    )
+                except TimeoutError:
+                    # The old loop stopped (or blocked) after submission
+                    # and never drained the scheduled ``aclose()``.
+                    # Fall back to the current-loop best-effort branch
+                    # rather than hanging. The scheduled coroutine
+                    # remains on the old loop's queue; if that loop is
+                    # subsequently closed its sockets go with it, and if
+                    # it is later restarted the close runs harmlessly
+                    # against the already-detached client.
+                    _logger.debug("stale_client_old_loop_close_timed_out")
+                else:
+                    return
+        try:
+            await old_client.aclose()
+        except RuntimeError as exc:
+            # Expected when the old client's transport was bound to a
+            # now-dead loop: httpcore raises `RuntimeError: Event loop is
+            # closed`. The sockets were reaped when the loop closed, so
+            # the leak window is already zero. Log for observability and
+            # continue — the fresh client on the current loop is valid.
+            _logger.debug("stale_client_aclose_skipped", error=str(exc))
 
     async def generate(
         self,
         prompt: str,
         output_schema: dict[str, Any],
     ) -> GenerationResult:
-        return await self._validated_generate(prompt, output_schema, client=self._get_http_client())
+        client = await self._get_http_client()
+        return await self._validated_generate(prompt, output_schema, client=client)
 
     async def _validated_generate(
         self,
@@ -357,7 +478,8 @@ class OllamaGemmaProvider(BaseLanguageModel):
 
     async def health_check(self) -> bool:
         try:
-            response = await self._get_http_client().get(self._tags_url)
+            client = await self._get_http_client()
+            response = await client.get(self._tags_url)
             response.raise_for_status()
         except (httpx.RequestError, httpx.HTTPStatusError):
             return False
