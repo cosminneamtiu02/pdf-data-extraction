@@ -1,4 +1,14 @@
-"""Structured logging configuration with structlog."""
+"""Structured logging configuration with structlog.
+
+This module is the ONE and ONLY place in `app/` that is permitted to call
+`logging.getLogger`. CLAUDE.md forbids the pattern everywhere else because
+direct stdlib `logging` calls bypass the structlog processor chain (and the
+redaction filter installed by `configure_logging`). The `silence_stdlib_logger`
+helper below gives feature code a structured way to request suppression of a
+noisy third-party logger without reaching for `logging.getLogger` directly —
+new suppressions are wired from `configure_logging` below rather than from
+individual feature modules at import time (issue #210).
+"""
 
 import logging
 import sys
@@ -6,6 +16,36 @@ import sys
 import structlog
 
 from app.core.log_redaction_filter import LogRedactionFilter
+
+
+def silence_stdlib_logger(logger_name: str, level: int) -> None:
+    """Cap a third-party stdlib logger at `level` (defense against noisy deps).
+
+    Why this helper exists: Docling, httpx, httpcore, SQLAlchemy and similar
+    third-party libraries emit INFO/DEBUG logs through the stdlib ``logging``
+    module. Without suppression they would flood our service's structured
+    log stream. The obvious fix is
+    ``logging.getLogger(name).setLevel(level)``, but CLAUDE.md bans
+    ``logging.getLogger`` outside this module — the architecture test
+    ``test_only_core_logging_py_uses_logging_getlogger`` enforces that.
+
+    Centralising the call here gives three wins at once:
+
+    1. Every suppression is visible in one file — easy to audit.
+    2. Feature modules never call ``logging.getLogger`` directly, so the
+       CLAUDE.md rule holds by construction.
+    3. Suppression is driven by ``configure_logging`` at application
+       startup, not as a module-import side effect of an unrelated feature
+       module (the pattern the parser used to have at import time before
+       issue #210).
+
+    Args:
+        logger_name: The stdlib logger name to suppress
+            (e.g. ``"docling"``, ``"httpx"``, ``"httpcore"``).
+        level: The numeric level to cap the logger at
+            (e.g. ``logging.WARNING``, ``logging.ERROR``).
+    """
+    logging.getLogger(logger_name).setLevel(level)
 
 
 def configure_logging(
@@ -85,12 +125,18 @@ def configure_logging(
     root_logger.addHandler(handler)
     root_logger.setLevel(log_level.upper())
 
-    # Silence noisy third-party loggers
+    # Silence noisy third-party loggers.
+    #
+    # "docling" is listed here (not at Docling-parser module-import time, where
+    # it used to live) so issue #210's invariant holds: only this file calls
+    # `logging.getLogger`. The parser module no longer needs to import
+    # `logging` at all.
     noisy_loggers = {
         "uvicorn.access": logging.WARNING,
         "sqlalchemy.engine": logging.WARNING,
         "httpx": logging.WARNING,
         "httpcore": logging.WARNING,
+        "docling": logging.WARNING,
     }
     for logger_name, level in noisy_loggers.items():
-        logging.getLogger(logger_name).setLevel(level)
+        silence_stdlib_logger(logger_name, level)

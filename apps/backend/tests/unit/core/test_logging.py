@@ -5,7 +5,7 @@ import logging
 import structlog
 
 from app.core.log_redaction_filter import LogRedactionFilter
-from app.core.logging import configure_logging
+from app.core.logging import configure_logging, silence_stdlib_logger
 
 
 def test_configure_logging_inserts_redaction_filter_into_chain() -> None:
@@ -61,3 +61,45 @@ def test_format_exc_info_runs_before_redaction_filter() -> None:
     fmt_idx = next(i for i, p in enumerate(processors) if p is structlog.processors.format_exc_info)
     redact_idx = next(i for i, p in enumerate(processors) if isinstance(p, LogRedactionFilter))
     assert fmt_idx < redact_idx
+
+
+def test_silence_stdlib_logger_sets_level_on_named_logger() -> None:
+    """Helper sets the level of the named stdlib logger (issue #210).
+
+    Uses a dedicated test-only logger name so the assertion does not interfere
+    with any production logger that other tests rely on.
+    """
+    logger_name = "issue_210_silence_helper_fixture_alpha"
+    # Reset to a known baseline before the helper runs.
+    logging.getLogger(logger_name).setLevel(logging.DEBUG)
+
+    silence_stdlib_logger(logger_name, logging.WARNING)
+
+    assert logging.getLogger(logger_name).level == logging.WARNING
+
+
+def test_silence_stdlib_logger_accepts_arbitrary_level_and_name() -> None:
+    """Helper must be generic: any name + any int level, not hardcoded to docling/WARNING."""
+    logger_name = "issue_210_silence_helper_fixture_beta"
+    logging.getLogger(logger_name).setLevel(logging.DEBUG)
+
+    silence_stdlib_logger(logger_name, logging.ERROR)
+
+    assert logging.getLogger(logger_name).level == logging.ERROR
+
+
+def test_configure_logging_silences_docling_via_helper() -> None:
+    """Docling silencing must be driven from configure_logging, not from the parser module.
+
+    Before issue #210, `docling_document_parser.py` called
+    `logging.getLogger("docling").setLevel(WARNING)` at module import time.
+    That violated the "no `logging.getLogger` outside `app/core/logging.py`"
+    rule. The fix moves the call inside `configure_logging(...)` via the
+    `silence_stdlib_logger` helper so the containment invariant holds.
+    """
+    # Reset first so we are not observing a leftover from a prior test.
+    logging.getLogger("docling").setLevel(logging.DEBUG)
+
+    configure_logging(log_level="info", json_output=False)
+
+    assert logging.getLogger("docling").level == logging.WARNING
