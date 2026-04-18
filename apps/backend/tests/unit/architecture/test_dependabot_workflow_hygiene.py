@@ -14,10 +14,9 @@ from typing import Any, Final
 import pytest
 import yaml
 
-from ._linter_subprocess import BACKEND_DIR
+from ._linter_subprocess import REPO_ROOT
 
-_REPO_ROOT: Final[Path] = BACKEND_DIR.parent.parent
-_WORKFLOWS_DIR: Final[Path] = _REPO_ROOT / ".github" / "workflows"
+_WORKFLOWS_DIR: Final[Path] = REPO_ROOT / ".github" / "workflows"
 
 # Dependabot workflows that act on an individual PR. Every one of these must
 # be serialised by PR number so two events on the same PR cannot race — see
@@ -41,6 +40,11 @@ def test_dependabot_pr_workflow_declares_concurrency_block(workflow_name: str) -
     """
     workflow_path = _WORKFLOWS_DIR / workflow_name
     workflow: dict[str, Any] = yaml.safe_load(workflow_path.read_text())
+
+    assert isinstance(workflow, dict), (
+        f"{workflow_path} did not parse to a YAML mapping — "
+        "got a non-mapping or null value, likely malformed YAML."
+    )
 
     assert "concurrency" in workflow, (
         f"{workflow_name} lacks a top-level `concurrency:` block. "
