@@ -240,7 +240,14 @@ def _default_converter_factory(config: DoclingConfig) -> _DoclingConverterLike:
     pdf_pipeline_options_cls: Any = pipeline_options_mod.PdfPipelineOptions
     table_structure_options_cls: Any = pipeline_options_mod.TableStructureOptions
     table_former_mode: Any = pipeline_options_mod.TableFormerMode
-    easy_ocr_options_cls: Any = pipeline_options_mod.EasyOcrOptions
+    # Tesseract via CLI — not EasyOCR. `EasyOcrOptions` triggered
+    # `ImportError: EasyOCR is not installed` on any runtime OCR path because
+    # `easyocr` is not a Docling base dependency (it is a heavy torch/opencv
+    # extra that would undo the CUDA-bloat work tracked in issue #139).
+    # `TesseractCliOcrOptions` shells out to the system `tesseract` binary and
+    # needs no Python bindings — the Dockerfile ships `tesseract-ocr` +
+    # `tesseract-ocr-eng` via apt. See docs/decisions.md ADR-013 and issue #106.
+    tesseract_cli_ocr_options_cls: Any = pipeline_options_mod.TesseractCliOcrOptions
     document_converter_cls: Any = document_converter_mod.DocumentConverter
     pdf_format_option_cls: Any = document_converter_mod.PdfFormatOption
 
@@ -265,7 +272,7 @@ def _default_converter_factory(config: DoclingConfig) -> _DoclingConverterLike:
         mode=mode,
     )
     if do_ocr:
-        pipeline_options.ocr_options = easy_ocr_options_cls(
+        pipeline_options.ocr_options = tesseract_cli_ocr_options_cls(
             force_full_page_ocr=force_full_page_ocr,
         )
 
