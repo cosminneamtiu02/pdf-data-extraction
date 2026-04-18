@@ -92,9 +92,10 @@ directly — those imports are contained to specific implementation files via
 
 The full contract set lives in
 [`apps/backend/architecture/import-linter-contracts.ini`](../apps/backend/architecture/import-linter-contracts.ini)
-and is enforced by `task lint` (which includes `task check:arch`, and `task check`
-runs as part of every PR's gate). Every contract carries a `#` comment block
-explaining the rule it encodes and why.
+and is enforced by `task check:arch`, a direct dependency of `task check`
+(issue #215; `task check` runs as part of every PR's gate, and `task lint`
+itself is ruff-only). Every contract carries a `#` comment block explaining
+the rule it encodes and why.
 
 Two enforcement layers work together:
 
