@@ -34,6 +34,14 @@ class Settings(BaseSettings):
     app_env: str = "development"
     log_level: str = "info"
     cors_origins: list[str] = ["http://localhost:5173"]
+    # CORS method / header allowlists. Default to the current route surface
+    # (GET for /health, /ready, /openapi.json etc.; POST for /api/v1/extract)
+    # plus the minimum headers the app consumes. Hardcoding ``["*"]`` here
+    # previously accepted any verb and any request header (including
+    # ``Authorization``) regardless of how tightly operators scoped
+    # ``cors_origins`` — see issue #211.
+    cors_methods: list[str] = ["GET", "HEAD", "POST"]
+    cors_headers: list[str] = ["Authorization", "Content-Type", "X-Request-Id"]
 
     log_max_value_length: int = 500
     log_redacted_keys: list[str] = [
