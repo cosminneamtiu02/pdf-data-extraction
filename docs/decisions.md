@@ -166,6 +166,59 @@ index — is pinned by
 so a future `uv lock` regen or docling metadata change that reintroduces them
 trips CI rather than bloating the image silently. See issue #139.
 
+## ADR-013: Tesseract CLI as the Default OCR Engine (2026-04-17)
+
+**Status:** Accepted
+**Date:** 2026-04-17
+
+`DoclingDocumentParser._default_converter_factory` configures Docling's
+`TesseractCliOcrOptions` whenever OCR is enabled (the `auto` default, plus
+`force` mode). Previously it configured `EasyOcrOptions`, which crashed every
+real OCR path with `ImportError: EasyOCR is not installed` because `easyocr`
+is not a Docling base dependency (see issue #106). The runtime stage of
+[`infra/docker/backend.Dockerfile`](../infra/docker/backend.Dockerfile) now
+installs `tesseract-ocr` and `tesseract-ocr-eng` via apt so the CLI variant
+finds its binary and English language pack out of the box.
+
+**Rationale:** The service needs a working OCR engine on every deployment; it
+does not need the biggest or most multilingual one. Tesseract via the CLI has
+the smallest footprint of any complete option:
+
+- **Not EasyOCR.** EasyOCR would re-introduce ~1 GB of torch-vision / opencv
+  extras and first-run model downloads on top of the CPU torch wheels already
+  pinned, undoing the Docker image-size work tracked by ADR-012 and issue #139.
+- **Not `TesseractOcrOptions` (Python bindings).** The bindings variant needs
+  `tesserocr`, which pip-builds against `libtesseract-dev` / `libleptonica-dev`
+  / `pkg-config` at install time. That is more system packages, a longer build,
+  and a C-compile step the slim Python base image does not carry by default.
+  The CLI variant only needs the `tesseract` executable and its language
+  data — two apt packages, no build step.
+- **Not RapidOCR.** RapidOCR is genuinely lightweight, but it still ships a
+  set of ONNX models and currently depends on a backend choice
+  (`onnxruntime` / `openvino` / `paddle` / `torch`) we would have to own. The
+  CLI path has one moving part.
+- **Conditional fallback (wrap EasyOCR in try/except ImportError).** Rejected
+  as the permanent shape. It keeps a broken default in the tree, defers the
+  decision to runtime, and makes the "which engine actually runs here?"
+  question context-dependent. One deterministic default is simpler.
+
+**Image size.** The Debian-slim-based runtime layer grows by roughly
+`tesseract-ocr` (~15 MB) + `tesseract-ocr-eng` (~5 MB) + apt cache overhead,
+net of the `rm -rf /var/lib/apt/lists/*` cleanup. This is an order of magnitude
+smaller than the EasyOCR alternative and does not touch the builder stage.
+
+**Adding languages.** OCR on non-English PDFs needs the matching
+`tesseract-ocr-<lang>` package and, if the system path differs, a
+`TESSDATA_PREFIX` env var. Those are runtime-stage Dockerfile edits — the
+parser configuration does not change per language today because
+`DoclingConfig` doesn't expose a language knob.
+
+**Verification.** Integration tests in
+`apps/backend/tests/integration/features/extraction/parsing/test_docling_document_parser_integration.py`
+(opt-in via `task test:slow`) exercise the full Docling + Tesseract path
+against fixture PDFs and replaced the EasyOCR-failure blocker that motivated
+this ADR.
+
 ## Superseded ADRs
 
 - **ADR-002 (offset pagination)** — superseded. There are no paginated

@@ -38,6 +38,21 @@ RUN uv sync --frozen --no-dev
 # stage's `FROM` line — keeping builder and runtime pinned to the same digest.
 FROM ${PYTHON_IMAGE}
 
+# Install Tesseract OCR so Docling's `TesseractCliOcrOptions` path can shell out
+# to the `tesseract` binary at OCR time (see docs/decisions.md ADR-013 and
+# issue #106). The CLI variant is deliberately chosen over `TesseractOcrOptions`
+# (which requires `tesserocr` Python bindings built against
+# libtesseract-dev/libleptonica-dev) and over EasyOCR (which pulls ~1 GB of
+# torch/opencv extras on top of the CPU torch wheels already pinned — undoing
+# the image-size work in issue #139). `tesseract-ocr-eng` supplies the English
+# language data; add more `tesseract-ocr-<lang>` packages here if the service
+# ever needs to OCR non-English PDFs, and set `TESSDATA_PREFIX` accordingly.
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y \
+        tesseract-ocr \
+        tesseract-ocr-eng \
+    && rm -rf /var/lib/apt/lists/*
+
 # Run as non-root user
 RUN groupadd --gid 1000 appuser && \
     useradd --uid 1000 --gid appuser --create-home appuser
