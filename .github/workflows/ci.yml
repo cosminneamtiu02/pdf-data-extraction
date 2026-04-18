@@ -21,6 +21,11 @@ jobs:
         working-directory: apps/backend
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          # No downstream step pushes or calls an authenticated GH API;
+          # keeping GITHUB_TOKEN in git config is unnecessary attack
+          # surface if a run: step is ever compromised. Issue #212.
+          persist-credentials: false
 
       - name: Install uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
@@ -74,6 +79,11 @@ jobs:
         working-directory: packages/error-contracts
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          # No downstream step pushes or calls an authenticated GH API;
+          # keeping GITHUB_TOKEN in git config is unnecessary attack
+          # surface if a run: step is ever compromised. Issue #212.
+          persist-credentials: false
 
       - name: Install uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
