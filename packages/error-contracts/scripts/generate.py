@@ -90,7 +90,10 @@ def load_and_validate(errors_path: Path) -> ErrorsYaml:
         raise ValueError(msg)
     data = cast("ErrorsYaml", loaded)
 
-    errors_raw = data.get("errors", {})
+    if "errors" not in data:
+        msg = "errors.yaml missing required 'errors' key at the top level"
+        raise ValueError(msg)
+    errors_raw = data["errors"]
     if not isinstance(errors_raw, dict):
         msg = (
             f"errors.yaml 'errors' key must be a mapping, got "
@@ -100,19 +103,20 @@ def load_and_validate(errors_path: Path) -> ErrorsYaml:
     errors = cast("dict[str, ErrorSpec]", errors_raw)
 
     for code, spec in errors.items():
-        # Validate code shape: YAML keys can parse as non-strings (int, bool,
-        # null) if the author writes them bare. Enforce string-ness before
-        # the regex so `re.match(..., 42)` doesn't crash with TypeError.
-        if not isinstance(code, str):
+        # YAML parses bare int/bool/null keys as non-strings, and scalar
+        # or list values as non-dicts. The surrounding `cast` suppresses
+        # the types pyright needs to see, but the runtime shape is still
+        # reachable through malformed YAML — these guards are load-bearing
+        # at runtime even though pyright considers them redundant under
+        # strict mode.
+        if not isinstance(code, str):  # pyright: ignore[reportUnnecessaryIsInstance]
             msg = f"Error code must be a string, got {type(code).__name__}: {code!r}"
             raise ValueError(msg)
         if not re.match(r"^[A-Z][A-Z0-9_]*$", code):
             msg = f"Error code must be SCREAMING_SNAKE_CASE: {code}"
             raise ValueError(msg)
 
-        # Validate spec shape: YAML accepts scalars or lists as values too,
-        # so guard before `.get(...)` calls that assume a mapping.
-        if not isinstance(spec, dict):
+        if not isinstance(spec, dict):  # pyright: ignore[reportUnnecessaryIsInstance]
             msg = f"Error spec for {code} must be a mapping, got {type(spec).__name__}"
             raise ValueError(msg)
 

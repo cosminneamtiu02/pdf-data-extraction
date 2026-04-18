@@ -250,3 +250,17 @@ def test_codegen_rejects_non_string_error_code(tmp_path: Path):
 
     with pytest.raises(ValueError, match="code.*must be a string"):
         load_and_validate(path)
+
+
+def test_codegen_rejects_missing_errors_key(tmp_path: Path):
+    """An `errors.yaml` without a top-level `errors:` key must surface a
+    clear ValueError from `load_and_validate`, not a downstream KeyError
+    when `generate_python`/`generate_typescript` index `data["errors"]`.
+    """
+    path = tmp_path / "errors.yaml"
+    path.write_text("version: 1\n")
+
+    from scripts.generate import load_and_validate
+
+    with pytest.raises(ValueError, match="'errors' key"):
+        load_and_validate(path)
