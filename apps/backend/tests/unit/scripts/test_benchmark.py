@@ -252,6 +252,111 @@ def test_parse_args_iterations_zero_exits_nonzero() -> None:
     assert exc_info.value.code != 0
 
 
+def test_parse_args_reads_bench_env_vars_via_pydantic_settings(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """BENCH_* env vars flow through BenchmarkSettings into parse_args defaults.
+
+    Regression guard for issue #237: the script previously read env vars via
+    ``os.environ.get`` (CLAUDE.md-forbidden). After the refactor they flow
+    through :class:`app.core.benchmark_settings.BenchmarkSettings`, so this
+    test pins the wiring by exercising every BENCH_* variable at once.
+    """
+    fixtures_dir = tmp_path / "bench-pdfs"
+    monkeypatch.setenv("BENCH_URL", "http://example:9090")
+    monkeypatch.setenv("BENCH_ITERATIONS", "3")
+    monkeypatch.setenv("BENCH_FIXTURES_DIR", str(fixtures_dir))
+    monkeypatch.setenv("BENCH_SKILL_NAME", "receipt")
+    monkeypatch.setenv("BENCH_SKILL_VERSION", "2")
+    monkeypatch.setenv("BENCH_SERVICE_PID", "1234")
+
+    config = parse_args([])
+
+    assert config.url == "http://example:9090"
+    assert config.iterations == 3
+    assert config.fixtures_dir == fixtures_dir
+    assert config.skill_name == "receipt"
+    assert config.skill_version == "2"
+    assert config.service_pid == 1234
+
+
+def test_parse_args_empty_bench_service_pid_is_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Empty ``BENCH_SERVICE_PID`` (as passed by Taskfile) parses as ``None``."""
+    monkeypatch.setenv("BENCH_SERVICE_PID", "")
+    config = parse_args([])
+    assert config.service_pid is None
+
+
+def test_parse_args_invalid_bench_env_exits_two_with_stderr_message(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Invalid ``BENCH_*`` env values produce a concise stderr message + exit 2.
+
+    ``BenchmarkSettings()`` can raise ``pydantic.ValidationError`` on bad env
+    input; ``parse_args`` must convert that into an argparse-style operator
+    error (stderr + ``SystemExit(2)``) rather than letting it bubble up as a
+    traceback. Regression guard for the Copilot review feedback on PR #246:
+    the pre-refactor ``_safe_int_env`` branch gave exit code 2 + stderr; the
+    pydantic-settings replacement must preserve that contract.
+    """
+    monkeypatch.setenv("BENCH_ITERATIONS", "banana")
+
+    with pytest.raises(SystemExit) as exc_info:
+        parse_args([])
+
+    assert exc_info.value.code == 2
+    captured = capsys.readouterr()
+    assert "BENCH_ITERATIONS" in captured.err or "iterations" in captured.err.lower()
+    # No traceback or Pydantic internals leaked to stderr
+    assert "Traceback" not in captured.err
+    assert "ValidationError" not in captured.err
+
+
+def test_parse_args_cli_iterations_overrides_invalid_bench_iterations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An explicit ``--iterations`` flag wins over a malformed ``BENCH_ITERATIONS``.
+
+    Regression guard for the PR #246 round-2 Copilot feedback: previously
+    ``BenchmarkSettings()`` was constructed *before* argv was parsed, so a bad
+    ``BENCH_*`` value aborted the script even if the operator had supplied a
+    valid overriding flag on the same command line. ``parse_args`` must parse
+    argv first, collect explicit CLI overrides, and pass them as init kwargs
+    to ``BenchmarkSettings(**cli_overrides)`` so the env source is only used
+    for fields the CLI did not cover — matching pydantic-settings' documented
+    priority ordering (CLI > init kwargs > env > defaults).
+    """
+    monkeypatch.setenv("BENCH_ITERATIONS", "banana")
+
+    config = parse_args(["--iterations", "5"])
+
+    assert config.iterations == 5
+
+
+def test_parse_args_service_pid_zero_normalizes_to_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``service_pid=0`` (from env or CLI) normalizes to ``None`` in BenchConfig.
+
+    PID ``0`` is never a valid target process (POSIX reserves it for the
+    current process group in ``kill(2)`` / signal semantics, and ``ps -p 0``
+    produces no output). The pre-refactor ``_safe_int_env`` path collapsed 0
+    to ``None`` via ``... or None``; this test pins that semantics through
+    the pydantic-settings replacement so an operator who sets
+    ``BENCH_SERVICE_PID=0`` or ``--service-pid 0`` does not carry a dangling
+    invalid PID through the config.
+    """
+    monkeypatch.setenv("BENCH_SERVICE_PID", "0")
+    assert parse_args([]).service_pid is None
+
+    monkeypatch.delenv("BENCH_SERVICE_PID", raising=False)
+    assert parse_args(["--service-pid", "0"]).service_pid is None
+
+
 # ---------------------------------------------------------------------------
 # Warm-up discard
 # ---------------------------------------------------------------------------
