@@ -152,10 +152,11 @@ class ExtractionService:
         (rather than a misleading 504 with a fake ``budget_seconds``).
         """
         t0 = time.monotonic()
-        # Bind the Timeout context manager to a local before entering ``async
-        # with`` so the ``except TimeoutError`` branch below can query
-        # ``budget_cm.expired()`` even though the exception unbinds the
-        # ``as`` target in the suite's local scope.
+        # Bind the ``asyncio.timeout`` context manager to a local before
+        # entering ``async with`` so the ``except TimeoutError`` branch below
+        # can query ``budget_cm.expired()`` and tell whether this specific
+        # pipeline timeout expired or whether the TimeoutError came from an
+        # unrelated inner component.
         budget_cm = asyncio.timeout(self._timeout_seconds)
         try:
             async with budget_cm:
