@@ -6,6 +6,9 @@ declared field names, and returns one `ExtractedField` per declared field in
 declared order — enforcing the "every field always present" API invariant.
 """
 
+from typing import NoReturn
+
+import pytest
 from structlog.testing import capture_logs
 
 from app.features.extraction.coordinates.offset_index import OffsetIndex
@@ -26,9 +29,14 @@ class _ForbiddenMatcher(SubBlockMatcher):
     (direct-offset hit) case, rather than inferring it from the absence
     of a matcher_failed log event — which could also mean the matcher
     was called and succeeded silently.
+
+    The return annotation is `NoReturn` (not `CharRange | None` like the
+    base) because every call path raises; `NoReturn` is a subtype of any
+    return annotation and keeps the override type-compatible with the
+    base signature under strict type checking.
     """
 
-    def locate(self, block_text: str, value: str) -> None:
+    def locate(self, block_text: str, value: str) -> NoReturn:
         msg = f"SubBlockMatcher.locate should not have been called (block_text={block_text!r}, value={value!r})"
         raise AssertionError(msg)
 
@@ -101,26 +109,45 @@ def test_single_block_sub_block_match_returns_whole_block_bbox() -> None:
     assert (ref.page, ref.x0, ref.y0, ref.x1, ref.y1) == (1, 10.0, 100.0, 210.0, 120.0)
 
 
-def test_tight_sub_block_bbox_falls_back_to_whole_block_when_glyph_geometry_unavailable() -> None:
+@pytest.mark.parametrize(
+    ("text", "value", "offset_start", "offset_end"),
+    [
+        # Narrow chars followed by wide ones — under any proportional font
+        # the interpolation would push the highlight left of the real glyphs.
+        ("il111 MMMW", "MMMW", 6, 10),
+        # Wide chars followed by narrow ones — the inverse drift scenario.
+        ("MMMW il111", "il111", 5, 10),
+        # CJK + Latin mixed — wide East-Asian glyphs deviate most from
+        # proportional-width assumptions.
+        ("\u65e5\u672c amount \u00a51000", "amount", 3, 9),
+    ],
+    ids=["narrow_then_wide", "wide_then_narrow", "cjk_mixed_latin"],
+)
+def test_tight_sub_block_bbox_falls_back_to_whole_block_when_glyph_geometry_unavailable(
+    text: str,
+    value: str,
+    offset_start: int,
+    offset_end: int,
+) -> None:
     # Issue #151: without per-glyph geometry we cannot position a sub-block
-    # rectangle over the actual glyphs. For text that mixes narrow and wide
-    # glyphs ("il111 MMMW" — narrow chars followed by wide ones under any
-    # proportional font), character-ratio interpolation would drift the
-    # highlight away from the real position. We return the whole-block bbox
-    # instead — correctness over sub-block precision.
+    # rectangle over the actual glyphs. For any text that mixes narrow and
+    # wide glyphs (Latin proportional fonts, CJK, emoji, diacritics) the
+    # character-ratio interpolation would drift the highlight away from
+    # the real position. We return the whole-block bbox instead —
+    # correctness over sub-block precision.
     resolver = SpanResolver()
     block = _block(
         block_id="b0",
-        text="il111 MMMW",
+        text=text,
         bbox=(0.0, 0.0, 100.0, 20.0),
     )
     doc = _doc(block)
-    index = _index((0, 10, "b0"))
+    index = _index((0, len(text), "b0"))
     raw = RawExtraction(
         field_name="word",
-        value="MMMW",
-        char_offset_start=6,
-        char_offset_end=10,
+        value=value,
+        char_offset_start=offset_start,
+        char_offset_end=offset_end,
         grounded=True,
         attempts=1,
     )
@@ -128,9 +155,9 @@ def test_tight_sub_block_bbox_falls_back_to_whole_block_when_glyph_geometry_unav
     result = resolver.resolve([raw], index, doc, ["word"])
 
     ref = result[0].bbox_refs[0]
-    # Whole-block bbox, NOT the drifty character-ratio interpolation
-    # (which would have produced x0=60, x1=100 — clearly missing the "MMMW"
-    # glyphs since they occupy the right-hand ~70% of the visual box).
+    # Whole-block bbox regardless of offset range — proves we never
+    # emitted a drifty character-ratio interpolation for any of the
+    # narrow/wide mix scenarios parametrized above.
     assert (ref.x0, ref.y0, ref.x1, ref.y1) == (0.0, 0.0, 100.0, 20.0)
 
 
@@ -669,7 +696,10 @@ def test_repeated_value_in_block_matches_offset_range_without_matcher_invocation
 
 def test_repeated_value_first_occurrence_also_resolves_without_matcher_invocation() -> None:
     # Same block "A=42 B=42" but offsets point to the first "42" (2..4).
-    resolver = SpanResolver()
+    # Inject the same forbidden-matcher spy used in the sibling test so the
+    # "without matcher invocation" claim is actually enforced (not just
+    # asserted via log absence).
+    resolver = SpanResolver(matcher=_ForbiddenMatcher())
     block = _block(block_id="b0", text="A=42 B=42", bbox=(0, 0, 90, 20))
     doc = _doc(block)
     index = _index((0, 9, "b0"))
