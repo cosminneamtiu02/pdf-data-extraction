@@ -71,7 +71,16 @@ def _collect_static_dotted_imports(source: str) -> set[str]:
 
 
 def _collect_dynamic_import_targets(source: str) -> set[str]:
-    """Find string-literal arguments to importlib.import_module calls."""
+    """Find string-literal arguments to importlib.import_module calls.
+
+    Returns the FULL dotted target (e.g. `"app.features.billing.foo"` or
+    `"docling.datamodel.base_models"`), not just the root module. Storing
+    only the root silently neutralized the C1 sibling-feature guard at
+    `test_extraction_does_not_import_from_sibling_features`, whose
+    `startswith("app.features.")` predicate could never match `"app"`.
+    Downstream callers that want to match a root package must use a
+    dotted-boundary prefix check (see `_target_matches_package`).
+    """
     tree = ast.parse(source)
     targets: set[str] = set()
     for node in ast.walk(tree):
@@ -86,8 +95,18 @@ def _collect_dynamic_import_targets(source: str) -> set[str]:
         if is_import_module and node.args:
             arg = node.args[0]
             if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
-                targets.add(arg.value.split(".")[0])
+                targets.add(arg.value)
     return targets
+
+
+def _target_matches_package(target: str, package: str) -> bool:
+    """Check whether a dotted dynamic-import target belongs to `package`.
+
+    Matches `package` itself and any submodule (`package.X.Y`), but not
+    lookalikes like `packageish`. Companion to `_collect_dynamic_import_targets`
+    now that it returns full dotted paths.
+    """
+    return target == package or target.startswith(package + ".")
 
 
 def test_extraction_does_not_import_from_sibling_features() -> None:
@@ -142,7 +161,7 @@ def test_dynamic_imports_of_contained_packages_are_allowlisted(
         if py_file.name in allowed_files:
             continue
         targets = _collect_dynamic_import_targets(py_file.read_text())
-        if package in targets:
+        if any(_target_matches_package(target, package) for target in targets):
             rel = str(py_file.relative_to(_APP_ROOT))
             offenders.append(rel)
 
@@ -181,3 +200,54 @@ def test_static_imports_of_contained_packages_are_allowlisted(
         f"Static import of '{package}' found outside allowed files "
         f"{sorted(allowed_files)}:\n" + "\n".join(f"  - {o}" for o in offenders)
     )
+
+
+def test_collect_dynamic_import_targets_records_full_dotted_path() -> None:
+    """Direct unit test: the collector must store the full dotted target, not just the root.
+
+    Before the fix, `_collect_dynamic_import_targets` stored only the root
+    module name (e.g. `"app"` for `importlib.import_module("app.features.billing.foo")`).
+    That made the C1 sibling-feature guard's `startswith("app.features.")`
+    predicate always False, silently disabling enforcement. The collector
+    must store the whole dotted path so the downstream `startswith` / prefix
+    checks can match meaningfully.
+    """
+    source = 'import importlib\nimportlib.import_module("app.features.billing.foo")\n'
+    targets = _collect_dynamic_import_targets(source)
+    assert "app.features.billing.foo" in targets
+    assert targets == {"app.features.billing.foo"}
+
+
+def test_c1_check_catches_dynamic_sibling_feature_import() -> None:
+    """Regression: the C1 guard's predicate fires on a dynamic sibling-feature import.
+
+    Synthesizes the collector output for a hypothetical extraction-tree file
+    that does `importlib.import_module("app.features.billing.foo")` and
+    asserts the same predicate used by
+    `test_extraction_does_not_import_from_sibling_features` at line 108-111
+    would flag it. Before the fix, targets was `{"app"}` and the predicate
+    always evaluated to False, so the guard could never fire.
+    """
+    source = 'import importlib\nimportlib.import_module("app.features.billing.foo")\n'
+    targets = _collect_dynamic_import_targets(source)
+
+    offenders = [
+        target
+        for target in targets
+        if target.startswith("app.features.") and not target.startswith("app.features.extraction")
+    ]
+
+    assert offenders == ["app.features.billing.foo"], (
+        f"C1 dynamic-sibling-feature guard predicate did not fire; targets={targets!r}"
+    )
+
+
+def test_collect_dynamic_import_targets_preserves_root_only_target() -> None:
+    """The collector still records plain root-level dynamic imports verbatim.
+
+    `importlib.import_module("docling")` must show up as `"docling"` (not
+    lost) so the third-party containment parametrized tests keep working.
+    """
+    source = 'import importlib\nimportlib.import_module("docling")\n'
+    targets = _collect_dynamic_import_targets(source)
+    assert targets == {"docling"}
