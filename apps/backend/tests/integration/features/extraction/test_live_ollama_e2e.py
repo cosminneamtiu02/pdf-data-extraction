@@ -18,12 +18,22 @@ Skip-gate mechanism
 
 The test is skipped cleanly (not failed) when Ollama is not reachable at
 the configured ``ollama_base_url`` OR the configured ``ollama_model`` tag
-is missing from its ``/api/tags`` listing. A short, synchronous ``httpx``
-probe runs once at module load to decide. This mirrors how the real-
-Docling slow tests guard on ``docling`` being importable. The probe is
-sync (not async) because pytest's skip decision is made at collection time,
-before any event loop exists, so the simplest correct thing is
-``httpx.get`` with a small timeout.
+is missing from its ``/api/tags`` listing. The probe is run via the
+module-scoped ``_ollama_reachable_fixture`` pytest fixture (see below):
+pytest requests the fixture *before* the async test body starts, so the
+synchronous ``httpx.get`` call happens outside any event loop and cannot
+block one. The fixture calls ``pytest.skip(...)`` directly on failure,
+keeping the async test body free of reachability plumbing.
+
+Collection MUST stay network-free: probing at module-import time (or in
+any `@pytest.fixture(scope="session", autouse=True)` path that pytest
+evaluates before deselect) would fire a real network request during
+``pytest --collect-only`` and during every ``task test:integration`` run
+that deselects this suite via ``-m "not slow"``, adding latency and
+potentially hanging on misconfigured networks. The fixture is therefore
+scoped to the module (not the session), opt-in via explicit request
+from the test function, and guarded by the ``@pytest.mark.slow`` marker
+on the module so deselect-based invocations never instantiate it.
 
 Running locally
 ---------------
@@ -78,11 +88,19 @@ def _ollama_reachable(settings: Settings) -> tuple[bool, str]:
     malformed JSON, or missing model yields ``False`` and a human-readable
     reason that pytest surfaces as the skip message.
 
-    Kept separate from ``OllamaHealthProbe`` because this is a synchronous,
-    module-load-time check used only to make a pytest skip decision, and
-    ``OllamaHealthProbe`` is async. Duplicating the ~10 lines of probing
-    logic here is cheaper than spinning up an event loop at collection
-    time.
+    Invocation scope: called **only** from the module-scoped
+    ``_ollama_reachable_fixture`` pytest fixture, which pytest resolves
+    *before* the async test body is scheduled. This keeps the synchronous
+    ``httpx.get`` call off any event loop — async tests cannot tolerate a
+    multi-second blocking call inside their body.
+
+    Do NOT reintroduce a call to this helper at module-import time or
+    inside ``pytest_collection_modifyitems`` / any collection hook: that
+    would fire a real network request during ``pytest --collect-only``
+    and during every ``-m "not slow"`` run, adding latency to the default
+    integration suite and potentially hanging on misconfigured networks.
+    Kept separate from ``OllamaHealthProbe`` (which is ``async``) so this
+    skip-gate path has no event-loop requirements of its own.
     """
     url = settings.ollama_base_url.rstrip("/") + "/api/tags"
     try:
@@ -110,12 +128,43 @@ def _ollama_reachable(settings: Settings) -> tuple[bool, str]:
     return True, ""
 
 
-# Ollama reachability is probed inside the test body (see the test
-# function's early `pytest.skip(...)` call), not at module-import time.
-# Probing at module scope would fire a real network request during pytest
-# collection — even for `task test:integration` runs that deselect this
-# suite via `-m "not slow"` — adding latency to every integration test
-# invocation and potentially hanging on misconfigured networks.
+# Shared timeout budget. The Ollama client timeout (``ollama_timeout_seconds``)
+# is the inner budget for a single HTTP call to Ollama; the extraction
+# timeout (``extraction_timeout_seconds``) wraps the whole Docling +
+# LangExtract pipeline and therefore must be >= the Ollama timeout. The
+# HTTPX test-client request timeout (``_CLIENT_TIMEOUT_SECONDS``) sits
+# *outside* the server, so it must be >= the extraction budget plus
+# headroom for ASGI scheduling, otherwise the client aborts while the
+# server is still well within budget (observed on slow machines when
+# client=120s but server=180s). Deriving all three from one constant
+# keeps the invariant visible in one place.
+_EXTRACTION_BUDGET_SECONDS: float = 180.0
+_OLLAMA_CLIENT_BUDGET_SECONDS: float = 120.0
+_CLIENT_TIMEOUT_SECONDS: float = _EXTRACTION_BUDGET_SECONDS + 20.0
+
+
+@pytest.fixture(scope="module")
+def _ollama_reachable_fixture() -> None:
+    """Module-scoped skip gate for live-Ollama reachability.
+
+    Why a fixture rather than an in-body probe: the reachability check
+    uses synchronous ``httpx.get`` (see ``_ollama_reachable`` for the
+    reasoning). Calling that from inside an ``async def`` test body would
+    block the event loop for up to the probe timeout. Pytest resolves
+    fixtures *before* scheduling the coroutine, so running the probe in a
+    fixture keeps the blocking call entirely off the event loop.
+
+    Why ``scope="module"``: the probe runs at most once per pytest
+    process that actually invokes this module — not at collection time.
+    ``-m "not slow"`` invocations deselect the test before fixture setup
+    runs, so the probe stays silent for the default integration suite.
+    ``autouse=False``: the test function requests the fixture explicitly
+    by name so the call graph is visible in the signature.
+    """
+    probe_settings: Settings = Settings()  # type: ignore[reportCallIssue]  # pydantic-settings loads fields from env
+    ollama_ready, ollama_skip_reason = _ollama_reachable(probe_settings)
+    if not ollama_ready:
+        pytest.skip(ollama_skip_reason)
 
 
 def _write_invoice_skill(base: Path) -> None:
@@ -149,8 +198,11 @@ def _write_invoice_skill(base: Path) -> None:
 
 @pytest.mark.skipif(not _DOCLING_AVAILABLE, reason=_SKIP_REASON_DOCLING)
 @pytest.mark.skipif(not _FIXTURE_PDF.exists(), reason=_SKIP_REASON_FIXTURE)
+@pytest.mark.usefixtures("_ollama_reachable_fixture")
 @pytest.mark.asyncio
-async def test_extract_endpoint_end_to_end_against_live_ollama(tmp_path: Path) -> None:
+async def test_extract_endpoint_end_to_end_against_live_ollama(
+    tmp_path: Path,
+) -> None:
     """Full-stack smoke test: multipart POST -> Docling -> Gemma -> response.
 
     Asserts the *shape* of a successful extraction, not specific Gemma
@@ -158,28 +210,25 @@ async def test_extract_endpoint_end_to_end_against_live_ollama(tmp_path: Path) -
     present in the response — a catastrophic regression in the Ollama
     integration would break that contract, which is exactly what this
     test catches.
-    """
-    # Probe inside the test body (not at module-import time). If Ollama is
-    # not reachable or the configured Gemma model is not installed, skip
-    # cleanly. Using Settings() here reads the same env the running app
-    # would, so a developer who set OLLAMA_BASE_URL=http://localhost:11434
-    # in their .env probes the right endpoint.
-    probe_settings: Settings = Settings()  # type: ignore[reportCallIssue]  # pydantic-settings loads fields from env
-    ollama_ready, ollama_skip_reason = _ollama_reachable(probe_settings)
-    if not ollama_ready:
-        pytest.skip(ollama_skip_reason)
 
+    Requests ``_ollama_reachable_fixture`` so the synchronous reachability
+    probe runs before the coroutine is scheduled (keeping it off the
+    event loop). The fixture calls ``pytest.skip(...)`` directly if
+    Ollama is unreachable or the configured model is missing.
+    """
     _write_invoice_skill(tmp_path)
     # Preserve the user's OLLAMA_BASE_URL / OLLAMA_MODEL but override the
     # Ollama client timeout so slower CPUs / first-run model loads (where
     # Gemma can easily exceed the 30s default) don't 504 the inference.
     # extraction_timeout_seconds wraps the whole pipeline including Docling
     # + LangExtract retries, so it needs to be >= ollama_timeout_seconds.
+    # Both budgets are derived from module-level constants so the HTTPX
+    # client timeout below can be kept consistent with the server budget.
     settings = Settings(  # type: ignore[reportCallIssue]  # pydantic-settings loads fields from env
         skills_dir=tmp_path,
         app_env="development",
-        ollama_timeout_seconds=120.0,
-        extraction_timeout_seconds=180.0,
+        ollama_timeout_seconds=_OLLAMA_CLIENT_BUDGET_SECONDS,
+        extraction_timeout_seconds=_EXTRACTION_BUDGET_SECONDS,
     )
     app = create_app(settings)
 
@@ -198,7 +247,10 @@ async def test_extract_endpoint_end_to_end_against_live_ollama(tmp_path: Path) -
                     "output_mode": "JSON_ONLY",
                 },
                 files={"pdf": ("invoice.pdf", pdf_bytes, "application/pdf")},
-                timeout=120.0,  # real Gemma inference on CPU is slow
+                # Must be >= _EXTRACTION_BUDGET_SECONDS + ASGI headroom,
+                # else the client aborts while the server is still within
+                # budget on slow CPUs / first-run Gemma loads.
+                timeout=_CLIENT_TIMEOUT_SECONDS,
             )
 
     assert response.status_code == 200, (
