@@ -1,5 +1,9 @@
 """Generated error classes. Do not edit."""
 
+from app.exceptions._generated.extraction_budget_exceeded_error import ExtractionBudgetExceededError
+from app.exceptions._generated.extraction_budget_exceeded_params import (
+    ExtractionBudgetExceededParams,
+)
 from app.exceptions._generated.extraction_overloaded_error import ExtractionOverloadedError
 from app.exceptions._generated.extraction_overloaded_params import ExtractionOverloadedParams
 from app.exceptions._generated.intelligence_timeout_error import IntelligenceTimeoutError
@@ -25,6 +29,8 @@ from app.exceptions._generated.validation_failed_error import ValidationFailedEr
 from app.exceptions._generated.validation_failed_params import ValidationFailedParams
 
 __all__ = [
+    "ExtractionBudgetExceededError",
+    "ExtractionBudgetExceededParams",
     "ExtractionOverloadedError",
     "ExtractionOverloadedParams",
     "IntelligenceTimeoutError",
