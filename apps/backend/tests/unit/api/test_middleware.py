@@ -29,6 +29,14 @@ from app.api.middleware import configure_middleware
 from app.api.request_id_middleware import RequestIdMiddleware
 from app.api.upload_size_limit_middleware import UploadSizeLimitMiddleware
 
+# Minimal CORS allowlists for the registration-order tests. These tests do
+# not care what the actual allowed methods/headers are — only the middleware
+# stacking order is under test — but ``configure_middleware`` now requires
+# both keyword args so the call site cannot silently re-introduce a wildcard
+# default (issue #211).
+_TEST_CORS_METHODS = ["GET", "POST"]
+_TEST_CORS_HEADERS = ["Content-Type"]
+
 
 def test_configure_middleware_registers_expected_execution_order() -> None:
     """Runtime order is CORS -> RequestId -> AccessLog -> UploadSizeLimit.
@@ -40,7 +48,13 @@ def test_configure_middleware_registers_expected_execution_order() -> None:
     """
     app = FastAPI()
 
-    configure_middleware(app, cors_origins=["http://localhost"], max_upload_bytes=50 * 1024 * 1024)
+    configure_middleware(
+        app,
+        cors_origins=["http://localhost"],
+        max_upload_bytes=50 * 1024 * 1024,
+        cors_methods=_TEST_CORS_METHODS,
+        cors_headers=_TEST_CORS_HEADERS,
+    )
 
     registered_classes = [m.cls for m in app.user_middleware]
     assert registered_classes == [
@@ -68,7 +82,13 @@ def test_upload_size_limit_is_innermost_so_it_runs_before_route_dispatch() -> No
     """
     app = FastAPI()
 
-    configure_middleware(app, cors_origins=["http://localhost"], max_upload_bytes=1024)
+    configure_middleware(
+        app,
+        cors_origins=["http://localhost"],
+        max_upload_bytes=1024,
+        cors_methods=_TEST_CORS_METHODS,
+        cors_headers=_TEST_CORS_HEADERS,
+    )
 
     classes = [m.cls for m in app.user_middleware]
     upload_index = classes.index(UploadSizeLimitMiddleware)
@@ -98,11 +118,47 @@ def test_cors_is_outermost_so_preflight_bypasses_inner_middleware() -> None:
     """
     app = FastAPI()
 
-    configure_middleware(app, cors_origins=["http://localhost"], max_upload_bytes=50 * 1024 * 1024)
+    configure_middleware(
+        app,
+        cors_origins=["http://localhost"],
+        max_upload_bytes=50 * 1024 * 1024,
+        cors_methods=_TEST_CORS_METHODS,
+        cors_headers=_TEST_CORS_HEADERS,
+    )
 
     assert app.user_middleware[0].cls is CORSMiddleware, (
         "CORSMiddleware must be registered first (outermost) so preflight "
         "OPTIONS requests are handled before any other middleware sees them."
+    )
+
+
+def test_cors_methods_and_headers_are_narrowed_not_wildcarded() -> None:
+    """CORS ``allow_methods`` and ``allow_headers`` must honour explicit lists.
+
+    Hardcoding ``["*"]`` in ``configure_middleware`` accepted any verb and
+    any header (including ``Authorization``), regardless of how carefully
+    an operator scoped ``cors_origins``. ``configure_middleware`` now takes
+    keyword-only ``cors_methods`` / ``cors_headers`` and forwards them to
+    ``CORSMiddleware`` verbatim. Issue #211.
+    """
+    app = FastAPI()
+
+    configure_middleware(
+        app,
+        cors_origins=["http://localhost"],
+        max_upload_bytes=50 * 1024 * 1024,
+        cors_methods=["GET", "POST"],
+        cors_headers=["Authorization", "Content-Type"],
+    )
+
+    cors_mw = next(m for m in app.user_middleware if m.cls is CORSMiddleware)
+    assert cors_mw.kwargs["allow_methods"] == ["GET", "POST"], (
+        "allow_methods must reflect the caller's list verbatim, "
+        f"not a wildcard. Got: {cors_mw.kwargs['allow_methods']!r}"
+    )
+    assert cors_mw.kwargs["allow_headers"] == ["Authorization", "Content-Type"], (
+        "allow_headers must reflect the caller's list verbatim, "
+        f"not a wildcard. Got: {cors_mw.kwargs['allow_headers']!r}"
     )
 
 
@@ -118,7 +174,13 @@ def test_request_id_runs_before_access_log_so_log_has_correlation_id() -> None:
     """
     app = FastAPI()
 
-    configure_middleware(app, cors_origins=["http://localhost"], max_upload_bytes=50 * 1024 * 1024)
+    configure_middleware(
+        app,
+        cors_origins=["http://localhost"],
+        max_upload_bytes=50 * 1024 * 1024,
+        cors_methods=_TEST_CORS_METHODS,
+        cors_headers=_TEST_CORS_HEADERS,
+    )
 
     classes = [m.cls for m in app.user_middleware]
     request_id_index = classes.index(RequestIdMiddleware)

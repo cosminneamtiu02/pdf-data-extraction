@@ -73,6 +73,8 @@ def configure_middleware(
     cors_origins: list[str],
     *,
     max_upload_bytes: int,
+    cors_methods: list[str],
+    cors_headers: list[str],
 ) -> None:
     """Attach all middleware to the FastAPI app.
 
@@ -88,6 +90,10 @@ def configure_middleware(
     middleware to the front of the stack. See the module docstring for why
     flipping these calls breaks CORS preflight, request-id propagation,
     or the upload-size guard (issue #112).
+
+    ``cors_methods`` and ``cors_headers`` are required keyword-only so the
+    call site must source them from ``Settings`` — no hidden wildcards
+    (issue #211).
     """
     app.add_middleware(
         UploadSizeLimitMiddleware,
@@ -101,6 +107,6 @@ def configure_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=cors_methods,
+        allow_headers=cors_headers,
     )
