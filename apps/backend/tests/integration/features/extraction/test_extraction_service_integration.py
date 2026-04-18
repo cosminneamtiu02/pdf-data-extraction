@@ -207,7 +207,14 @@ async def test_extraction_service_happy_path_through_fastapi_stack(
 async def test_extraction_service_timeout_serializes_as_504_envelope(
     tmp_path: Path,
 ) -> None:
-    """Timeout → IntelligenceTimeoutError → 504 via exception handler."""
+    """Pipeline budget expiry → ExtractionBudgetExceededError → 504 via exception handler.
+
+    Issue #227: the outer ``asyncio.timeout`` wrapping the whole pipeline
+    (parse + extract + resolve + annotate) now surfaces as
+    ``EXTRACTION_BUDGET_EXCEEDED`` rather than the Ollama-scoped
+    ``INTELLIGENCE_TIMEOUT`` code, keeping operator alerting keyed on the
+    right component.
+    """
     _write_valid_skill(tmp_path)
     settings = _settings_with_skills(tmp_path, extraction_timeout_seconds=0.1)
     app = create_app(settings)
@@ -229,7 +236,7 @@ async def test_extraction_service_timeout_serializes_as_504_envelope(
 
     assert response.status_code == 504
     body = response.json()
-    assert body["error"]["code"] == "INTELLIGENCE_TIMEOUT"
+    assert body["error"]["code"] == "EXTRACTION_BUDGET_EXCEEDED"
     assert body["error"]["params"] == {"budget_seconds": 0.1}
     assert "request_id" in body["error"]
 
