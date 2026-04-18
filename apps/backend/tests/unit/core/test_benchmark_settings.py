@@ -20,8 +20,13 @@ from app.core.benchmark_settings import BenchmarkSettings
 
 
 def test_benchmark_settings_defaults() -> None:
-    """BenchmarkSettings constructs with the pre-refactor defaults."""
-    s = BenchmarkSettings()
+    """BenchmarkSettings constructs with the pre-refactor defaults.
+
+    Passes ``_env_file=None`` to disable ``.env`` loading so a developer's
+    local ``apps/backend/.env`` with ``BENCH_*`` overrides cannot make this
+    test workstation-dependent — same pattern as ``test_config.py``.
+    """
+    s = BenchmarkSettings(_env_file=None)  # type: ignore[call-arg]
     assert s.url == "http://localhost:8000"
     assert s.iterations == 10
     assert s.fixtures_dir == Path("fixtures/bench")
@@ -43,7 +48,7 @@ def test_benchmark_settings_reads_env_prefix(
     monkeypatch.setenv("BENCH_SKILL_VERSION", "2")
     monkeypatch.setenv("BENCH_SERVICE_PID", "4242")
 
-    s = BenchmarkSettings()
+    s = BenchmarkSettings(_env_file=None)  # type: ignore[call-arg]
 
     assert s.url == "http://example.com:9000"
     assert s.iterations == 7
@@ -58,10 +63,10 @@ def test_benchmark_settings_empty_service_pid_is_none(
 ) -> None:
     """An unset or empty BENCH_SERVICE_PID yields None (not 0)."""
     monkeypatch.delenv("BENCH_SERVICE_PID", raising=False)
-    assert BenchmarkSettings().service_pid is None
+    assert BenchmarkSettings(_env_file=None).service_pid is None  # type: ignore[call-arg]
 
     monkeypatch.setenv("BENCH_SERVICE_PID", "")
-    assert BenchmarkSettings().service_pid is None
+    assert BenchmarkSettings(_env_file=None).service_pid is None  # type: ignore[call-arg]
 
 
 def test_benchmark_settings_rejects_invalid_iterations(
@@ -70,7 +75,7 @@ def test_benchmark_settings_rejects_invalid_iterations(
     """A non-integer BENCH_ITERATIONS value raises ValidationError."""
     monkeypatch.setenv("BENCH_ITERATIONS", "banana")
     with pytest.raises(ValidationError):
-        BenchmarkSettings()
+        BenchmarkSettings(_env_file=None)  # type: ignore[call-arg]
 
 
 def test_benchmark_settings_rejects_invalid_service_pid(
@@ -79,4 +84,4 @@ def test_benchmark_settings_rejects_invalid_service_pid(
     """A non-integer BENCH_SERVICE_PID value raises ValidationError."""
     monkeypatch.setenv("BENCH_SERVICE_PID", "not-an-int")
     with pytest.raises(ValidationError):
-        BenchmarkSettings()
+        BenchmarkSettings(_env_file=None)  # type: ignore[call-arg]

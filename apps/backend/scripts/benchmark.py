@@ -33,6 +33,7 @@ except ModuleNotFoundError:
 
 import httpx
 import structlog
+from pydantic import ValidationError
 
 from app.core.benchmark_settings import BenchmarkSettings
 
@@ -477,8 +478,22 @@ def parse_args(argv: list[str]) -> BenchConfig:
     so ``BENCH_*`` environment variables flow through pydantic-settings
     rather than ``os.environ`` (CLAUDE.md forbidden pattern; issue #237).
     Explicit CLI flags still win over env vars.
+
+    If a ``BENCH_*`` env value is syntactically invalid (e.g.
+    ``BENCH_ITERATIONS=banana``), ``BenchmarkSettings()`` raises
+    ``pydantic.ValidationError``; we translate that into an argparse-style
+    operator error — concise stderr message and ``SystemExit(2)`` — so the
+    script preserves the exit-code contract of the pre-refactor
+    ``_safe_int_env`` branch instead of crashing with a traceback.
     """
-    env_defaults = BenchmarkSettings()
+    try:
+        env_defaults = BenchmarkSettings()
+    except ValidationError as exc:
+        for error in exc.errors():
+            loc = ".".join(str(part) for part in error["loc"]) or "<root>"
+            env_key = f"BENCH_{loc.upper()}"
+            sys.stderr.write(f"Error: {env_key}: {error['msg']}\n")
+        raise SystemExit(2) from None  # operator-facing message, not a domain error
 
     parser = argparse.ArgumentParser(
         prog="benchmark",

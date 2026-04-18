@@ -290,6 +290,32 @@ def test_parse_args_empty_bench_service_pid_is_none(
     assert config.service_pid is None
 
 
+def test_parse_args_invalid_bench_env_exits_two_with_stderr_message(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Invalid ``BENCH_*`` env values produce a concise stderr message + exit 2.
+
+    ``BenchmarkSettings()`` can raise ``pydantic.ValidationError`` on bad env
+    input; ``parse_args`` must convert that into an argparse-style operator
+    error (stderr + ``SystemExit(2)``) rather than letting it bubble up as a
+    traceback. Regression guard for the Copilot review feedback on PR #246:
+    the pre-refactor ``_safe_int_env`` branch gave exit code 2 + stderr; the
+    pydantic-settings replacement must preserve that contract.
+    """
+    monkeypatch.setenv("BENCH_ITERATIONS", "banana")
+
+    with pytest.raises(SystemExit) as exc_info:
+        parse_args([])
+
+    assert exc_info.value.code == 2
+    captured = capsys.readouterr()
+    assert "BENCH_ITERATIONS" in captured.err or "iterations" in captured.err.lower()
+    # No traceback or Pydantic internals leaked to stderr
+    assert "Traceback" not in captured.err
+    assert "ValidationError" not in captured.err
+
+
 # ---------------------------------------------------------------------------
 # Warm-up discard
 # ---------------------------------------------------------------------------
