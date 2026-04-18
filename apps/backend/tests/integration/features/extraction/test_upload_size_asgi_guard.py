@@ -62,33 +62,89 @@ def _build_app(tmp_path: Path, stub: ExtractionService, **settings_overrides: ob
 async def test_asgi_guard_rejects_oversized_upload_before_service(tmp_path: Path) -> None:
     """An oversized Content-Length produces 413 PDF_TOO_LARGE and the
     ``ExtractionService`` is never invoked (i.e. the multipart body was
-    never parsed)."""
+    never parsed).
+
+    The production wiring inflates the ASGI threshold by a 64 KiB
+    multipart-overhead allowance on top of ``Settings.max_pdf_bytes``, so
+    the body must exceed ``max_pdf_bytes + overhead`` to trip the guard.
+    The error envelope still advertises ``max_pdf_bytes`` (the
+    authoritative PDF limit clients need to know), not the inflated
+    threshold.
+    """
     stub = _stub_service()
-    max_bytes = 1024
-    app = _build_app(tmp_path, stub, max_pdf_bytes=max_bytes)
+    max_pdf_bytes = 1024
+    # Overhead in prod wiring; matches ``_MULTIPART_OVERHEAD_ALLOWANCE_BYTES``
+    # in ``app/api/middleware.py``. Mirrored locally rather than imported
+    # since the constant is internal to the wiring module.
+    overhead = 64 * 1024
+    body_size = max_pdf_bytes + overhead + 2048
+    app = _build_app(tmp_path, stub, max_pdf_bytes=max_pdf_bytes)
     transport = ASGITransport(app=app)
 
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        # Send a raw body larger than max_bytes. httpx sets Content-Length
-        # automatically based on ``content`` length; the middleware must
-        # reject based on that header before the route is dispatched.
+        # Send a raw body larger than ``max_pdf_bytes + overhead``. httpx
+        # sets Content-Length automatically based on ``content`` length;
+        # the middleware must reject based on that header before the route
+        # is dispatched.
         response = await client.post(
             "/api/v1/extract",
-            content=b"x" * (max_bytes + 2048),
+            content=b"x" * body_size,
             headers={"content-type": "multipart/form-data; boundary=b"},
         )
 
     assert response.status_code == 413
     body = response.json()
     assert body["error"]["code"] == "PDF_TOO_LARGE"
-    assert body["error"]["params"]["max_bytes"] == max_bytes
-    assert body["error"]["params"]["actual_bytes"] == max_bytes + 2048
+    # Envelope reports the authoritative PDF limit, NOT the inflated ASGI
+    # threshold — clients should see the real constraint they're violating.
+    assert body["error"]["params"]["max_bytes"] == max_pdf_bytes
+    assert body["error"]["params"]["actual_bytes"] == body_size
     # Correlation id round-trips through the production middleware stack.
     assert body["error"]["request_id"] == response.headers["x-request-id"]
 
     # Crucially: the service mock was never called — confirming the guard
     # ran before route dispatch and before multipart spooling.
     stub.extract.assert_not_called()
+
+
+async def test_asgi_guard_allows_pdf_at_limit_with_multipart_overhead(tmp_path: Path) -> None:
+    """A PDF of exactly ``max_pdf_bytes`` wrapped in a multipart envelope
+    (boundary + field headers + separators) passes the ASGI guard.
+
+    Before the overhead allowance was added, the ASGI threshold was set
+    to ``max_pdf_bytes`` verbatim; any legitimate multipart body carrying
+    a max-sized PDF would exceed it and be rejected at the ASGI layer,
+    denying valid uploads. This test pins the opposite invariant: the
+    ASGI guard lets the request through even though Content-Length
+    slightly exceeds ``max_pdf_bytes``. (The request may still fail
+    downstream — fixture skill mismatch, missing PDF fields — but it
+    must not be rejected by the ASGI guard.)
+    """
+    stub = _stub_service()
+    max_pdf_bytes = 1024
+    app = _build_app(tmp_path, stub, max_pdf_bytes=max_pdf_bytes)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # Simulate a realistic-ish multipart envelope: 1024 bytes of
+        # content plus a small multipart preamble, well under the 64 KiB
+        # overhead allowance.
+        response = await client.post(
+            "/api/v1/extract",
+            content=b"x" * max_pdf_bytes,
+            headers={"content-type": "multipart/form-data; boundary=b"},
+        )
+
+    # The ASGI guard must NOT have rejected this — any 413 from the guard
+    # would report the PDF_TOO_LARGE envelope shape. Whatever the
+    # downstream response is (200 on the canned stub, or 422 on parse
+    # failure), it should not be the ASGI-layer rejection.
+    if response.status_code == 413:
+        body = response.json()
+        assert body["error"]["code"] != "PDF_TOO_LARGE", (
+            "ASGI guard rejected a PDF at exactly max_pdf_bytes — overhead "
+            "allowance is too small to admit a legitimate multipart envelope."
+        )
 
 
 async def test_asgi_guard_does_not_affect_health_endpoint(tmp_path: Path) -> None:

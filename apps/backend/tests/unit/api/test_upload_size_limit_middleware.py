@@ -327,12 +327,11 @@ async def test_middleware_rejects_chunked_transfer_encoding() -> None:
         "state": {},
     }
 
-    middleware = UploadSizeLimitMiddleware(
-        app,
-        max_bytes=1024,
-        guarded_paths=("/api/v1/extract",),
-    )
-    await middleware(scope, _receive, _send)  # pyright: ignore[reportArgumentType]
+    # Exercise the middleware as it is actually mounted on ``app`` by
+    # ``_build_app`` — calling ``app(...)`` directly avoids wrapping the
+    # app in a second middleware instance, which would hide any
+    # regression in ``_build_app``'s wiring.
+    await app(scope, _receive, _send)  # pyright: ignore[reportArgumentType]
 
     start = next(m for m in sent if m["type"] == "http.response.start")
     assert start["status"] == 413
@@ -368,12 +367,9 @@ async def test_middleware_rejects_duplicate_content_length_headers() -> None:
         "state": {},
     }
 
-    middleware = UploadSizeLimitMiddleware(
-        app,
-        max_bytes=1024,
-        guarded_paths=("/api/v1/extract",),
-    )
-    await middleware(scope, _receive, _send)  # pyright: ignore[reportArgumentType]
+    # Same rationale as the chunked-TE test: exercise the middleware as
+    # mounted on ``app`` rather than constructing a second wrapper.
+    await app(scope, _receive, _send)  # pyright: ignore[reportArgumentType]
 
     start = next(m for m in sent if m["type"] == "http.response.start")
     assert start["status"] == 413

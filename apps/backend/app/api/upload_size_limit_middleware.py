@@ -67,9 +67,20 @@ class UploadSizeLimitMiddleware:
     app:
         The downstream ASGI application this middleware wraps.
     max_bytes:
-        Maximum allowed ``Content-Length`` (strict greater-than check; an
-        upload of exactly ``max_bytes`` is accepted). Must be positive to
-        match ``Settings.max_pdf_bytes`` which is ``Field(gt=0)``.
+        ASGI-layer rejection threshold — a request whose ``Content-Length``
+        strictly exceeds this value is rejected before the body is parsed.
+        Typically the authoritative PDF-byte limit plus a generous
+        multipart overhead allowance, so a legitimate PDF of exactly
+        ``Settings.max_pdf_bytes`` is not rejected because its multipart
+        envelope (boundary markers, Content-Disposition headers, form
+        fields) bumps the body size slightly past the PDF byte count.
+        Must be positive.
+    reported_limit:
+        The ``max_bytes`` value advertised in the ``PDF_TOO_LARGE``
+        rejection envelope. Defaults to ``max_bytes`` when not supplied.
+        Production wiring passes the authoritative ``Settings.max_pdf_bytes``
+        here so clients see the real PDF limit, not the inflated ASGI
+        threshold. Must be positive.
     guarded_paths:
         Iterable of exact request paths on which ``POST`` requests are
         subject to the size check. A tuple of paths (rather than a single
@@ -84,12 +95,17 @@ class UploadSizeLimitMiddleware:
         *,
         max_bytes: int,
         guarded_paths: Iterable[str],
+        reported_limit: int | None = None,
     ) -> None:
         if max_bytes <= 0:
             msg = f"max_bytes must be positive; got {max_bytes}"
             raise ValueError(msg)
+        if reported_limit is not None and reported_limit <= 0:
+            msg = f"reported_limit must be positive; got {reported_limit}"
+            raise ValueError(msg)
         self._app = app
         self._max_bytes = max_bytes
+        self._reported_limit = reported_limit if reported_limit is not None else max_bytes
         # Materialize into a frozenset for O(1) path lookup and
         # constructor-time immutability against accidental mutation of a
         # list passed by caller.
@@ -178,14 +194,20 @@ class UploadSizeLimitMiddleware:
         ``X-Request-Id`` header always carry a valid correlation id,
         matching the fallback in ``app.api.errors._get_request_id``.
         """
-        err = PdfTooLargeError(max_bytes=self._max_bytes, actual_bytes=actual_bytes)
+        # Envelope reports ``_reported_limit`` (the authoritative PDF-byte
+        # limit in production), not ``_max_bytes`` (the inflated ASGI
+        # threshold), so clients see the limit that actually governs what
+        # they can upload. The log line includes both values for ops
+        # visibility.
+        err = PdfTooLargeError(max_bytes=self._reported_limit, actual_bytes=actual_bytes)
         request_id = _get_request_id(scope)
 
         _logger.warning(
             "upload_rejected",
             path=scope.get("path"),
             reason=reason,
-            max_bytes=self._max_bytes,
+            threshold_bytes=self._max_bytes,
+            reported_limit=self._reported_limit,
             actual_bytes=actual_bytes,
             request_id=request_id,
         )

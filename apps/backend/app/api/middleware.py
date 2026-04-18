@@ -56,6 +56,17 @@ _GUARDED_UPLOAD_PATHS: tuple[str, ...] = (
     "/api/v1/extract/",
 )
 
+# Generous allowance added on top of the PDF-bytes limit so the ASGI guard
+# does not reject a legitimate max-sized PDF whose multipart envelope
+# (boundary markers, Content-Disposition headers on every form field,
+# Content-Type headers) naturally pushes Content-Length a little past
+# ``Settings.max_pdf_bytes``. 64 KiB is an order of magnitude larger than
+# the actual multipart overhead (~1-2 KiB for the current fields) so the
+# check stays permissive at the ASGI layer; the authoritative PDF-bytes
+# check is still ``read_with_byte_limit`` inside the route handler. See
+# ``app/features/extraction/router.py`` and issue #112.
+_MULTIPART_OVERHEAD_ALLOWANCE_BYTES: int = 64 * 1024
+
 
 def configure_middleware(
     app: FastAPI,
@@ -80,7 +91,8 @@ def configure_middleware(
     """
     app.add_middleware(
         UploadSizeLimitMiddleware,
-        max_bytes=max_upload_bytes,
+        max_bytes=max_upload_bytes + _MULTIPART_OVERHEAD_ALLOWANCE_BYTES,
+        reported_limit=max_upload_bytes,
         guarded_paths=_GUARDED_UPLOAD_PATHS,
     )
     app.add_middleware(AccessLogMiddleware)
