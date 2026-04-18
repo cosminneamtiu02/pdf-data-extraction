@@ -59,7 +59,7 @@ def _build_app(max_bytes: int, *, guarded_paths: tuple[str, ...] = ("/api/v1/ext
     return application
 
 
-async def _client(app: FastAPI) -> AsyncClient:
+def _client(app: FastAPI) -> AsyncClient:
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
 
@@ -68,7 +68,7 @@ async def test_rejects_when_content_length_exceeds_max_bytes() -> None:
     reaches the downstream handler."""
     app = _build_app(max_bytes=1024)
 
-    async with await _client(app) as ac:
+    async with _client(app) as ac:
         # httpx auto-derives Content-Length from ``content``'s length, so the
         # middleware sees an accurate numeric header without us setting one.
         response = await ac.post(
@@ -90,7 +90,7 @@ async def test_accepts_when_content_length_equals_max_bytes() -> None:
     """CL == max_bytes is allowed through (strict greater-than check)."""
     app = _build_app(max_bytes=1024)
 
-    async with await _client(app) as ac:
+    async with _client(app) as ac:
         response = await ac.post(
             "/api/v1/extract",
             content=b"x" * 1024,
@@ -105,7 +105,7 @@ async def test_accepts_when_content_length_below_max_bytes() -> None:
     """CL < max_bytes is allowed through."""
     app = _build_app(max_bytes=1024)
 
-    async with await _client(app) as ac:
+    async with _client(app) as ac:
         response = await ac.post(
             "/api/v1/extract",
             content=b"x" * 512,
@@ -205,10 +205,10 @@ async def test_rejects_when_content_length_is_malformed() -> None:
 
 
 async def test_accepts_content_length_zero_on_guarded_path() -> None:
-    """CL=0 is allowed through — let the handler produce its normal 422."""
+    """CL=0 is allowed through, so the middleware passes the request on."""
     app = _build_app(max_bytes=1024)
 
-    async with await _client(app) as ac:
+    async with _client(app) as ac:
         response = await ac.post(
             "/api/v1/extract",
             content=b"",
@@ -237,7 +237,7 @@ async def test_non_post_on_guarded_path_passes_through() -> None:
         app.state.handler_calls += 1
         return {"deleted": True}
 
-    async with await _client(app) as ac:
+    async with _client(app) as ac:
         response = await ac.delete(
             "/api/v1/extract",
             headers={"content-length": "999999"},
@@ -252,7 +252,7 @@ async def test_unguarded_path_passes_through_regardless_of_content_length() -> N
     """A route outside ``guarded_paths`` is not subject to the size check."""
     app = _build_app(max_bytes=1024)
 
-    async with await _client(app) as ac:
+    async with _client(app) as ac:
         response = await ac.get(
             "/healthz",
             headers={"content-length": "999999"},
@@ -270,7 +270,7 @@ async def test_middleware_sets_x_request_id_when_request_id_in_state() -> None:
     # RequestIdMiddleware must wrap UploadSizeLimitMiddleware to set state.
     app.add_middleware(RequestIdMiddleware)
 
-    async with await _client(app) as ac:
+    async with _client(app) as ac:
         response = await ac.post(
             "/api/v1/extract",
             content=b"x" * 2048,
@@ -386,7 +386,7 @@ async def test_middleware_generates_fallback_request_id_when_state_missing() -> 
     """
     app = _build_app(max_bytes=1024)
 
-    async with await _client(app) as ac:
+    async with _client(app) as ac:
         response = await ac.post(
             "/api/v1/extract",
             content=b"x" * 2048,

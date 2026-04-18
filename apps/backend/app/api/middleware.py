@@ -46,9 +46,15 @@ from app.api.upload_size_limit_middleware import UploadSizeLimitMiddleware
 # co-located with the middleware wiring (rather than in the router) because
 # ``configure_middleware`` is the only place that needs it — the router
 # continues to rely on its own ``read_with_byte_limit`` for
-# defense-in-depth. When a second upload route is added, extend this
-# tuple here; the middleware accepts any number of paths.
-_GUARDED_UPLOAD_PATHS: tuple[str, ...] = ("/api/v1/extract",)
+# defense-in-depth. Both the canonical path and its trailing-slash variant
+# are listed so the guard survives FastAPI's default redirect_slashes
+# behavior (a ``/api/v1/extract/`` request would otherwise bypass the
+# ASGI guard and fall through to the slower in-handler limit). Extend
+# this tuple when a second upload route is added.
+_GUARDED_UPLOAD_PATHS: tuple[str, ...] = (
+    "/api/v1/extract",
+    "/api/v1/extract/",
+)
 
 
 def configure_middleware(

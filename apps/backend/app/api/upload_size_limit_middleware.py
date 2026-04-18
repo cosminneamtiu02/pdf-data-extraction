@@ -107,15 +107,30 @@ class UploadSizeLimitMiddleware:
         # Fail closed on either: chunked transfer-encoding OR duplicate
         # Content-Length headers get rejected with the unknown sentinel.
         if _has_chunked_transfer_encoding(scope):
-            await self._reject(scope, send, actual_bytes=_UNKNOWN_CONTENT_LENGTH)
+            await self._reject(
+                scope,
+                send,
+                actual_bytes=_UNKNOWN_CONTENT_LENGTH,
+                reason="chunked_transfer_encoding",
+            )
             return
 
         content_length = _parse_content_length(scope)
         if content_length is None:
-            await self._reject(scope, send, actual_bytes=_UNKNOWN_CONTENT_LENGTH)
+            await self._reject(
+                scope,
+                send,
+                actual_bytes=_UNKNOWN_CONTENT_LENGTH,
+                reason="missing_or_ambiguous_content_length",
+            )
             return
         if content_length > self._max_bytes:
-            await self._reject(scope, send, actual_bytes=content_length)
+            await self._reject(
+                scope,
+                send,
+                actual_bytes=content_length,
+                reason="content_length_exceeds_max",
+            )
             return
 
         await self._app(scope, receive, send)
@@ -134,13 +149,27 @@ class UploadSizeLimitMiddleware:
             return False
         return scope.get("path") in self._guarded_paths
 
-    async def _reject(self, scope: Scope, send: Send, *, actual_bytes: int) -> None:
+    async def _reject(
+        self,
+        scope: Scope,
+        send: Send,
+        *,
+        actual_bytes: int,
+        reason: str,
+    ) -> None:
         """Emit the ``PDF_TOO_LARGE`` error envelope at the ASGI layer.
 
         The envelope shape matches what
         ``app.api.errors.register_exception_handlers`` produces for a
         ``PdfTooLargeError`` raised from the handler, so callers see an
         identical response regardless of which layer rejected them.
+
+        ``reason`` is a structured log field (``chunked_transfer_encoding``,
+        ``missing_or_ambiguous_content_length``, ``content_length_exceeds_max``)
+        that dashboards / alerts can split on. The log event itself stays
+        generic (``upload_rejected``) — the previous ``upload_rejected_oversized``
+        name was misleading for the chunked / missing-CL paths where the
+        body is unknown-sized, not confirmed-oversized.
 
         ``_get_request_id`` guarantees a 32-char hex string — either the
         one set by ``RequestIdMiddleware`` (when it ran upstream) or a
@@ -153,8 +182,9 @@ class UploadSizeLimitMiddleware:
         request_id = _get_request_id(scope)
 
         _logger.warning(
-            "upload_rejected_oversized",
+            "upload_rejected",
             path=scope.get("path"),
+            reason=reason,
             max_bytes=self._max_bytes,
             actual_bytes=actual_bytes,
             request_id=request_id,
