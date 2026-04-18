@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-import logging
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -47,11 +46,12 @@ if TYPE_CHECKING:
 
 _log = structlog.get_logger(__name__)
 
-# Docling's own logs must not flood service stdout. Setting the level here is
-# cheap (it only installs a filter on the root docling logger) and safe to do
-# unconditionally even when docling is not installed — Python's logging
-# module creates the logger on demand without importing the package.
-logging.getLogger("docling").setLevel(logging.WARNING)
+# Docling's own logs are capped at WARNING by `configure_logging` in
+# `app.core.logging` (via the `silence_stdlib_logger` helper). This module
+# deliberately does NOT reach into the stdlib logging module directly —
+# CLAUDE.md forbids that pattern outside `app/core/logging.py`, and the
+# architecture test `test_only_core_logging_py_uses_logging_getlogger`
+# enforces it (issue #210).
 
 
 def _default_pdf_preflight(pdf_bytes: bytes) -> int:
