@@ -75,6 +75,17 @@ _logger = structlog.get_logger(__name__)
 _HTTP_CLIENT_ERROR_MIN = 400
 _HTTP_SERVER_ERROR_MIN = 500
 
+# Hard upper bound on how long we will block waiting for an old loop to
+# run the stale client's ``aclose()`` coroutine after we scheduled it via
+# ``run_coroutine_threadsafe``. If the old loop is not running the
+# coroutine, the caller-driven ``await`` on ``asyncio.wrap_future`` would
+# block indefinitely; this deadline bounds the teardown so we always fall
+# back to the best-effort close on the current loop (issue #234 review
+# feedback). Expressed in seconds; 2.0 s is comfortably above any real
+# ``aclose()`` but fast enough that a stuck teardown does not visibly
+# stall callers.
+_STALE_CLIENT_ACLOSE_TIMEOUT_SECONDS = 2.0
+
 
 def _build_generate_url(base_url: str) -> str:
     return f"{base_url.rstrip('/')}/api/generate"
@@ -257,29 +268,55 @@ class OllamaGemmaProvider(BaseLanguageModel):
     ) -> None:
         """Await close of a client bound to a previous event loop (issue #234).
 
-        Two disjoint cases:
+        Three disjoint cases:
 
-        1. Old loop is still alive — schedule ``aclose()`` on it via
-           ``run_coroutine_threadsafe`` and await the wrapped future so
+        1. Old loop is alive AND running — schedule ``aclose()`` on it
+           via ``run_coroutine_threadsafe`` and await the wrapped future
+           (bounded by ``_STALE_CLIENT_ACLOSE_TIMEOUT_SECONDS``) so
            sockets tear down on the loop that opened them.
-        2. Old loop is closed — schedule is impossible. Fall back to
+        2. Old loop is not closed but is not running (e.g. ``loop.stop()``
+           without ``close()``). Scheduling via
+           ``run_coroutine_threadsafe`` would block forever because
+           nothing advances the loop, so we skip it and fall through to
+           the current-loop best-effort branch.
+        3. Old loop is closed — schedule is impossible. Fall back to
            ``await old_client.aclose()`` on the current loop. Real
            ``httpx.AsyncClient`` instances whose connection pool was
            bound to a dead loop may raise ``RuntimeError`` inside
            transport teardown; we log and drop the error because the
            transport sockets already went with the dead loop.
+
+        The timeout guards case (1) against a loop that was running at
+        submit time but stopped (or hung) before draining the scheduled
+        coroutine — without it the ``asyncio.wrap_future`` await would
+        block forever on the current loop (issue #234 review feedback).
         """
-        if not old_loop.is_closed():
+        if not old_loop.is_closed() and old_loop.is_running():
             try:
                 future = asyncio.run_coroutine_threadsafe(old_client.aclose(), old_loop)
             except RuntimeError:
-                # Loop transitioned closed between ``is_closed()`` check
-                # and ``run_coroutine_threadsafe`` submit. Fall through to
-                # the closed-loop branch below.
+                # Loop transitioned closed between the state checks and
+                # ``run_coroutine_threadsafe`` submit. Fall through to
+                # the current-loop best-effort branch below.
                 _logger.debug("stale_client_old_loop_raced_closed")
             else:
-                await asyncio.wrap_future(future)
-                return
+                try:
+                    await asyncio.wait_for(
+                        asyncio.wrap_future(future),
+                        timeout=_STALE_CLIENT_ACLOSE_TIMEOUT_SECONDS,
+                    )
+                except TimeoutError:
+                    # The old loop stopped (or blocked) after submission
+                    # and never drained the scheduled ``aclose()``.
+                    # Fall back to the current-loop best-effort branch
+                    # rather than hanging. The scheduled coroutine
+                    # remains on the old loop's queue; if that loop is
+                    # subsequently closed its sockets go with it, and if
+                    # it is later restarted the close runs harmlessly
+                    # against the already-detached client.
+                    _logger.debug("stale_client_old_loop_close_timed_out")
+                else:
+                    return
         try:
             await old_client.aclose()
         except RuntimeError as exc:

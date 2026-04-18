@@ -1088,7 +1088,7 @@ def _patch_httpx_async_client_factory(
     )
 
 
-def test_generate_aclosees_outgoing_client_when_old_loop_already_closed(
+def test_generate_acloses_outgoing_client_when_old_loop_already_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Regression: issue #234 — the outgoing client on a loop-switch rebuild
@@ -1210,4 +1210,77 @@ def test_generate_concurrent_loop_switch_builds_at_most_one_new_client(
         f"concurrent rebuild built {new_clients_built} clients; "
         "the asyncio.Lock guard must serialize the check-and-swap "
         "so only one fresh client is allocated per loop switch"
+    )
+
+
+def test_generate_does_not_hang_when_old_loop_stopped_but_not_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: PR #244 review feedback — the rebuild path must not
+    hang when the old loop is not closed but is not running either (e.g.
+    stopped via ``loop.stop()`` without a follow-up ``loop.close()``).
+
+    Before the review fix, ``_aclose_stale_client`` branched on
+    ``not old_loop.is_closed()`` and scheduled ``aclose()`` via
+    ``run_coroutine_threadsafe``, then ``await``ed the wrapped future on
+    the CURRENT loop. If the old loop was stopped-but-not-closed, nothing
+    pulled the coroutine off its queue and the wrapped future never
+    completed — the provider would block forever on the next
+    ``generate()`` call after the stopped loop had been stamped onto
+    ``_http_client_loop``.
+
+    The fix narrows the schedule branch to ``is_running()`` and bounds
+    the wait with ``asyncio.wait_for`` so even the residual case where
+    ``is_running()`` is briefly true but the loop stalls afterwards
+    falls back to a current-loop best-effort close within a few seconds.
+
+    This test stamps a stopped-but-not-closed loop as
+    ``_http_client_loop`` directly (rather than driving the rebuild via
+    that loop) because pytest's main thread can only run one loop at a
+    time; the invariant being pinned is that the rebuild path on the
+    NEW loop does not submit-and-await on an unrunning old loop.
+    """
+    built_clients: list[_CountingFakeClient] = []
+    _patch_httpx_async_client_factory(monkeypatch, built_clients)
+
+    settings = _build_settings()
+    provider = OllamaGemmaProvider(
+        settings=settings,
+        validator=_build_validator(settings),
+    )
+    assert len(built_clients) == 1
+    initial_client = built_clients[0]
+
+    # Construct an event loop that is neither running nor closed, then
+    # stamp it on the provider as if an earlier ``generate()`` call had
+    # bound the client to it. ``new_event_loop()`` returns a loop that
+    # has never run — ``is_running()`` is False and ``is_closed()`` is
+    # False, which is exactly the state this test needs.
+    stopped_loop = asyncio.new_event_loop()
+    try:
+        assert not stopped_loop.is_closed()
+        assert not stopped_loop.is_running()
+        provider._http_client_loop = stopped_loop  # noqa: SLF001 — exercising the rebuild-path invariant
+
+        # Drive ``generate()`` on a FRESH loop. The rebuild path fires
+        # because ``_http_client_loop`` is a different (stopped) loop.
+        # Under the BUG, ``run_coroutine_threadsafe(aclose(), stopped_loop)``
+        # is submitted, nothing drains it, and ``asyncio.wrap_future(...)``
+        # blocks forever. Under the FIX, the ``is_running()`` guard skips
+        # the schedule path and runs ``aclose()`` on the current loop —
+        # this call returns in well under the test's implicit timeout.
+        new_loop = asyncio.new_event_loop()
+        try:
+            result = new_loop.run_until_complete(provider.generate("p1", _NAME_STRING_SCHEMA))
+        finally:
+            new_loop.close()
+    finally:
+        stopped_loop.close()
+
+    assert result.data == {"name": "Alice"}
+    # The outgoing client was still aclosed — via the current-loop
+    # fallback branch — so no file descriptor leaks across the switch.
+    assert initial_client.aclose_calls == 1, (
+        "outgoing client was not aclose()'d via the current-loop fallback "
+        "when the old loop was stopped-but-not-closed"
     )
