@@ -28,7 +28,7 @@ from app.exceptions import StructuredOutputFailedError
 from app.features.extraction.intelligence.generation_result import GenerationResult
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Mapping
 
     from jsonschema.exceptions import ValidationError
 
@@ -40,6 +40,16 @@ if TYPE_CHECKING:
 _logger = structlog.get_logger(__name__)
 
 _FENCE_LANGUAGE_PREFIXES: tuple[str, ...] = ("```json", "```JSON", "```")
+
+# Soft cap on the compiled-validator cache. Real call sites pass process-
+# lifetime schemas (``LANGEXTRACT_WRAPPER_SCHEMA`` + one ``Skill.output_schema``
+# per installed skill), so cache size is bounded by the skills manifest. The
+# cap is a one-shot canary: the warning is emitted exactly once, on the single
+# insertion that crosses the cap (when ``len == cap + 1``). Crossing means a
+# caller is passing per-request dicts, violating the cache's identity-stability
+# contract, and we want an operator-visible warning rather than silent memory
+# growth — but only once, not as a per-insert log loop.
+_COMPILED_VALIDATOR_CACHE_SOFT_CAP: int = 128
 
 
 # Each parse/validate helper returns either a successful parse, or a failure
@@ -61,17 +71,59 @@ class StructuredOutputValidator:
     ) -> None:
         self._settings = settings
         self._correction_prompt_builder = correction_prompt_builder
+        # Compiled-validator cache keyed by ``id(output_schema)``. Building a
+        # ``Draft7Validator`` walks the schema to normalise refs and precompile
+        # per-keyword validators (issue #233); the cost compounds across
+        # per-extraction retries and across concurrent extractions. Both real
+        # schema sources — ``LANGEXTRACT_WRAPPER_SCHEMA`` (module constant) and
+        # ``Skill.output_schema`` (``MappingProxyType`` held by the long-lived
+        # ``Skill`` instance) — have process-lifetime stability, so id-keying is
+        # safe. We keep the schema object itself in the cache value so the id
+        # cannot be recycled onto a different object while the cache is live.
+        # The cache is expected to stay small (one entry per distinct schema,
+        # i.e. one per skill plus the LangExtract wrapper). We soft-cap and
+        # warn if ever exceeded, as a canary for a caller that violates the
+        # "process-lifetime schema identity" contract with per-request dicts.
+        self._compiled_validators: dict[int, tuple[Mapping[str, Any], Draft7Validator]] = {}
+
+    def _get_compiled_validator(self, output_schema: Mapping[str, Any]) -> Draft7Validator:
+        schema_id = id(output_schema)
+        cached = self._compiled_validators.get(schema_id)
+        if cached is not None:
+            return cached[1]
+        compiled = Draft7Validator(output_schema)
+        self._compiled_validators[schema_id] = (output_schema, compiled)
+        # Canary fires exactly once, on the crossing insertion. The cache has
+        # no eviction, so ``len > cap`` would stay true forever once crossed
+        # and re-emit on every subsequent insertion — a hot log loop in
+        # production if a caller ever violates the identity-stability contract.
+        # Checking ``== cap + 1`` pins the emission to the single insertion
+        # that takes us over.
+        if len(self._compiled_validators) == _COMPILED_VALIDATOR_CACHE_SOFT_CAP + 1:
+            _logger.warning(
+                "structured_output_validator_cache_soft_cap_exceeded",
+                cache_size=len(self._compiled_validators),
+                soft_cap=_COMPILED_VALIDATOR_CACHE_SOFT_CAP,
+            )
+        return compiled
 
     async def validate_and_retry(
         self,
         raw_text: str,
-        output_schema: dict[str, Any],
+        output_schema: Mapping[str, Any],
         regeneration_callable: Callable[[str], Awaitable[str]],
         original_prompt: str = "",
     ) -> GenerationResult:
         max_total_attempts = self._settings.structured_output_max_retries + 1
         current_text = raw_text
         log_causes: list[str] = []
+        # Lazily compile the Draft7Validator only on the first attempt that
+        # yields a parsed object — parsing can fail for every attempt (e.g. the
+        # model never emits JSON), in which case we should not pay the
+        # compilation cost at all. Once compiled, the instance is cached for
+        # reuse across subsequent schema-validation retries within this call
+        # AND across future `validate_and_retry` invocations.
+        compiled_validator: Draft7Validator | None = None
 
         for attempt in range(1, max_total_attempts + 1):
             cleaned = _clean(current_text)
@@ -80,7 +132,9 @@ class StructuredOutputValidator:
             if parse_failure is not None:
                 failure = parse_failure
             else:
-                failure = _validate(parsed, output_schema)
+                if compiled_validator is None:
+                    compiled_validator = self._get_compiled_validator(output_schema)
+                failure = _validate(parsed, compiled_validator)
                 if failure is None:
                     return GenerationResult(
                         data=parsed,
@@ -167,10 +221,9 @@ def _coerce_object(
 
 def _validate(
     parsed: dict[str, Any],
-    output_schema: dict[str, Any],
+    compiled_validator: Draft7Validator,
 ) -> _FailurePair | None:
-    validator = Draft7Validator(output_schema)
-    raw_errors: Any = validator.iter_errors(parsed)  # pyright: ignore[reportUnknownMemberType]  # jsonschema's overloaded iter_errors signature is partially typed in the stubs
+    raw_errors: Any = compiled_validator.iter_errors(parsed)  # pyright: ignore[reportUnknownMemberType]  # jsonschema's overloaded iter_errors signature is partially typed in the stubs
     errors: list[ValidationError] = sorted(
         raw_errors,
         key=lambda e: [str(p) for p in e.absolute_path],
