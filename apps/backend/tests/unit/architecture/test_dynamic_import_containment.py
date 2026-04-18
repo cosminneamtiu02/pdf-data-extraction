@@ -71,7 +71,13 @@ def _collect_static_dotted_imports(source: str) -> set[str]:
 
 
 def _collect_dynamic_import_targets(source: str) -> set[str]:
-    """Find string-literal arguments to importlib.import_module calls.
+    """Find string-literal arguments to dynamic-import calls.
+
+    Covers both dynamic-import mechanisms named in this module's docstring:
+    ``importlib.import_module(...)`` and the ``__import__`` builtin. Missing
+    either one lets a file reach a contained package without import-linter
+    or this AST scan firing — ``__import__`` is an expression, not an
+    ``import`` statement, so import-linter cannot see it.
 
     Returns the FULL dotted target (e.g. `"app.features.billing.foo"` or
     `"docling.datamodel.base_models"`), not just the root module. Storing
@@ -87,12 +93,12 @@ def _collect_dynamic_import_targets(source: str) -> set[str]:
         if not isinstance(node, ast.Call):
             continue
         func = node.func
-        is_import_module = False
+        is_dynamic_import = False
         if (isinstance(func, ast.Attribute) and func.attr == "import_module") or (
-            isinstance(func, ast.Name) and func.id == "import_module"
+            isinstance(func, ast.Name) and func.id in {"import_module", "__import__"}
         ):
-            is_import_module = True
-        if is_import_module and node.args:
+            is_dynamic_import = True
+        if is_dynamic_import and node.args:
             arg = node.args[0]
             if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
                 targets.add(arg.value)
@@ -251,3 +257,30 @@ def test_collect_dynamic_import_targets_preserves_root_only_target() -> None:
     source = 'import importlib\nimportlib.import_module("docling")\n'
     targets = _collect_dynamic_import_targets(source)
     assert targets == {"docling"}
+
+
+def test_collect_dynamic_import_targets_records_builtin___import__() -> None:
+    """The collector must also catch the ``__import__`` builtin.
+
+    ``__import__("docling")`` is a second dynamic-import mechanism named in
+    this module's docstring alongside ``importlib.import_module``. Missing it
+    lets a file use the builtin to reach a contained package (Docling,
+    PyMuPDF, LangExtract, httpx-to-Ollama) without any containment test
+    firing — import-linter cannot see the call either, since it is an
+    expression, not an ``import`` statement.
+    """
+    source = '__import__("docling")\n'
+    targets = _collect_dynamic_import_targets(source)
+    assert targets == {"docling"}
+
+
+def test_collect_dynamic_import_targets_records_builtin___import___with_dotted_path() -> None:
+    """The ``__import__`` branch must record the FULL dotted target.
+
+    Mirrors the ``importlib.import_module`` invariant — storing only the
+    root would neutralise the C1 sibling-feature guard's
+    ``startswith("app.features.")`` predicate.
+    """
+    source = '__import__("app.features.billing.foo")\n'
+    targets = _collect_dynamic_import_targets(source)
+    assert targets == {"app.features.billing.foo"}
