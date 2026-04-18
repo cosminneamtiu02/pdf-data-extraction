@@ -147,7 +147,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     application.state.settings = resolved_settings
 
-    configure_middleware(application, cors_origins=resolved_settings.cors_origins)
+    configure_middleware(
+        application,
+        cors_origins=resolved_settings.cors_origins,
+        max_upload_bytes=resolved_settings.max_pdf_bytes,
+    )
     register_exception_handlers(application)
 
     default_docling = SkillDoclingConfig(
