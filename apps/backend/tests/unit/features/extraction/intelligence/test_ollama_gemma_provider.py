@@ -1008,3 +1008,206 @@ def test_generate_single_call_still_succeeds_positive_regression(
     result = asyncio.run(_run_generate())
 
     assert result.data == {"extractions": []}
+
+
+# ── Loop-switch leak regression tests (issue #234) ─────────────────────
+#
+# Issue #234 pins two defensive invariants on ``_get_http_client``'s
+# loop-switch rebuild path:
+#
+# 1. **No orphaned client on loop switch.** When the rebuild path fires, the
+#    OUTGOING client must be ``aclose()``d. Before the fix, the code only
+#    scheduled ``aclose()`` via ``run_coroutine_threadsafe`` when
+#    ``old_loop.is_closed()`` was False; in the common test pattern where
+#    the old loop is closed between calls, the scheduled branch is skipped
+#    and the outgoing client leaks (only torn down eventually by GC with
+#    an ``unclosed client`` warning).
+#
+# 2. **At most one new client per rebuild, even under concurrent entrants.**
+#    Two coroutines reaching the rebuild branch on the same tick must
+#    serialize on an ``asyncio.Lock`` so only the first allocates a fresh
+#    ``httpx.AsyncClient``; the second sees the rebuilt state after the
+#    first completes.
+#
+# These tests use a fake ``httpx.AsyncClient`` factory that counts
+# constructions and ``aclose()`` invocations. They do NOT open real TCP
+# connections — the cross-loop teardown mechanics are orthogonal to the
+# invariants above, and mixing sockets in here would couple the tests to
+# ``ThreadingTCPServer`` fixtures that already cover the socket path in
+# the issue-#132 block above.
+
+
+class _CountingFakeClient:
+    """Fake ``httpx.AsyncClient`` that counts aclose calls and serves scripted posts.
+
+    The monkey-patched factory below replaces ``httpx.AsyncClient`` inside
+    the provider module so every construction the provider does in the
+    rebuild path returns one of these. Tests then read ``.aclose_calls``
+    to verify the outgoing client was awaited-close, not leaked.
+
+    The fake also supports ``post()`` so callers can drive the full
+    ``generate()`` path through it — the rebuild branch only fires inside
+    async methods, and exercising ``generate()`` is the most-faithful way
+    to prove the end-to-end behaviour (vs. poking the private seam).
+    """
+
+    def __init__(self, *, timeout: httpx.Timeout | None = None) -> None:
+        self.timeout = timeout or httpx.Timeout(30.0)
+        self.aclose_calls = 0
+        self.is_closed = False
+        self._post_body: dict[str, Any] = {"response": '{"name":"Alice"}'}
+
+    async def post(self, url: str, *, json: dict[str, Any]) -> _FakeResponse:  # noqa: ARG002 — mirror httpx signature
+        return _FakeResponse(body=self._post_body)
+
+    async def aclose(self) -> None:
+        self.aclose_calls += 1
+        self.is_closed = True
+
+
+def _patch_httpx_async_client_factory(
+    monkeypatch: pytest.MonkeyPatch,
+    built_clients: list[_CountingFakeClient],
+) -> None:
+    """Patch ``ollama_gemma_provider.httpx.AsyncClient`` to return counting fakes.
+
+    Every construction the provider does — both the eager one in
+    ``__init__`` and the rebuild path in ``_get_http_client`` — routes
+    through this factory so the test sees every client the provider
+    ever owns.
+    """
+
+    def _factory(**kwargs: Any) -> _CountingFakeClient:
+        client = _CountingFakeClient(timeout=kwargs.get("timeout"))
+        built_clients.append(client)
+        return client
+
+    monkeypatch.setattr(
+        "app.features.extraction.intelligence.ollama_gemma_provider.httpx.AsyncClient",
+        _factory,
+    )
+
+
+def test_generate_aclosees_outgoing_client_when_old_loop_already_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: issue #234 — the outgoing client on a loop-switch rebuild
+    must be ``aclose()``d even when the old event loop has already been
+    closed.
+
+    Before the fix, ``_get_http_client`` only scheduled ``aclose()`` on the
+    old loop via ``run_coroutine_threadsafe`` when that loop was still
+    alive. Tests that spin up sequential ``asyncio.new_event_loop()``s
+    close the old loop before the next call, so the ``aclose()`` branch
+    is skipped and the outgoing client is orphaned — the exact
+    file-descriptor leak the issue flags. The fix awaits ``aclose()`` on
+    the current loop as a fallback when the old loop is unreachable.
+    """
+    built_clients: list[_CountingFakeClient] = []
+    _patch_httpx_async_client_factory(monkeypatch, built_clients)
+
+    settings = _build_settings()
+    provider = OllamaGemmaProvider(
+        settings=settings,
+        validator=_build_validator(settings),
+    )
+    # Provider's __init__ already built one fake via the auto-constructor
+    # branch of ``self.http_client = http_client or httpx.AsyncClient(...)``.
+    assert len(built_clients) == 1
+    initial_client = built_clients[0]
+
+    # First loop: drive a ``generate()`` so the provider binds
+    # ``self.http_client`` to loop1.
+    loop1 = asyncio.new_event_loop()
+    try:
+        first = loop1.run_until_complete(provider.generate("p1", _NAME_STRING_SCHEMA))
+    finally:
+        loop1.close()
+    assert first.data == {"name": "Alice"}
+
+    # Second loop: trigger the rebuild path. The old loop is already
+    # closed. Under the BUG, ``old_loop.is_closed()`` is True so the
+    # ``run_coroutine_threadsafe`` branch is skipped — the outgoing
+    # client is never ``aclose()``d. Under the FIX, ``aclose()`` is
+    # awaited on the current loop as a fallback.
+    loop2 = asyncio.new_event_loop()
+    try:
+        second = loop2.run_until_complete(provider.generate("p2", _NAME_STRING_SCHEMA))
+    finally:
+        loop2.close()
+    assert second.data == {"name": "Alice"}
+
+    # After the switch there must be a second (fresh) client bound to
+    # loop2 AND the first client must have been awaited-close.
+    assert len(built_clients) == 2
+    assert initial_client.aclose_calls == 1, (
+        "outgoing client was not aclose()'d when the old loop was already closed — "
+        "leak would accumulate across repeated loop switches"
+    )
+
+
+def test_generate_concurrent_loop_switch_builds_at_most_one_new_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: issue #234 — two concurrent entrants on the rebuild
+    branch must serialize on a lock so only ONE fresh ``httpx.AsyncClient``
+    is built per loop switch.
+
+    The rebuild path, after the fix, ``await``s the outgoing client's
+    ``aclose()``. That ``await`` is a scheduling point: without a guard
+    lock, a sibling coroutine scheduled on the same loop could enter
+    ``_get_http_client`` between the new-client assignment and the
+    ``_http_client_loop`` update, see the stale loop reference, and build
+    a SECOND fresh client. Only the second write is retained; the first
+    is lost and never ``aclose()``d.
+
+    This test pins the lock invariant by forcing both siblings to race
+    through the rebuild path via ``asyncio.gather`` and asserting that
+    exactly one new client was constructed during the concurrent window.
+    """
+    built_clients: list[_CountingFakeClient] = []
+    _patch_httpx_async_client_factory(monkeypatch, built_clients)
+
+    settings = _build_settings()
+    provider = OllamaGemmaProvider(
+        settings=settings,
+        validator=_build_validator(settings),
+    )
+    # One client from __init__.
+    assert len(built_clients) == 1
+
+    # Bind to an initial loop so the second loop's rebuild branch fires.
+    loop1 = asyncio.new_event_loop()
+    try:
+        loop1.run_until_complete(provider.generate("p1", _NAME_STRING_SCHEMA))
+    finally:
+        loop1.close()
+
+    # Snapshot the pre-rebuild count so the assertion only counts NEW
+    # clients built during the concurrent rebuild window, not the
+    # earlier ones.
+    pre_rebuild_count = len(built_clients)
+
+    loop2 = asyncio.new_event_loop()
+    try:
+
+        async def _race() -> None:
+            # Two concurrent generate() calls on the fresh loop. Under a
+            # correctly-locked rebuild, exactly one allocates a new
+            # client; the second waits on the lock, re-checks, and
+            # shares the already-rebuilt instance.
+            await asyncio.gather(
+                provider.generate("p2", _NAME_STRING_SCHEMA),
+                provider.generate("p3", _NAME_STRING_SCHEMA),
+            )
+
+        loop2.run_until_complete(_race())
+    finally:
+        loop2.close()
+
+    new_clients_built = len(built_clients) - pre_rebuild_count
+    assert new_clients_built == 1, (
+        f"concurrent rebuild built {new_clients_built} clients; "
+        "the asyncio.Lock guard must serialize the check-and-swap "
+        "so only one fresh client is allocated per loop switch"
+    )
