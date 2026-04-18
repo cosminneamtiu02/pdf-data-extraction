@@ -179,7 +179,10 @@ def _serialize_result(result: ExtractionResult, output_mode: OutputMode) -> Resp
             "model": ErrorResponse,
         },
         503: {
-            "description": "Intelligence backend (Ollama) is unavailable",
+            "description": (
+                "Intelligence backend (Ollama) is unavailable, or the extraction "
+                "service is already at its configured concurrency cap"
+            ),
             "model": ErrorResponse,
         },
         504: {

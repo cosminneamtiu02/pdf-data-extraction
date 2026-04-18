@@ -15,7 +15,8 @@ export type ErrorCode =
   | "STRUCTURED_OUTPUT_FAILED"
   | "INTELLIGENCE_TIMEOUT"
   | "PDF_TOO_LARGE"
-  | "PDF_PARSER_UNAVAILABLE";
+  | "PDF_PARSER_UNAVAILABLE"
+  | "EXTRACTION_OVERLOADED";
 
 export interface ErrorParamsByCode {
   NOT_FOUND: Record<string, never>;
@@ -32,6 +33,7 @@ export interface ErrorParamsByCode {
   INTELLIGENCE_TIMEOUT: { budget_seconds: number };
   PDF_TOO_LARGE: { max_bytes: number; actual_bytes: number };
   PDF_PARSER_UNAVAILABLE: { dependency: string };
+  EXTRACTION_OVERLOADED: { max_concurrent: number };
 }
 
 export interface ApiErrorPayload<C extends ErrorCode = ErrorCode> {
@@ -41,7 +43,7 @@ export interface ApiErrorPayload<C extends ErrorCode = ErrorCode> {
   request_id: string;
 }
 
-export const ERROR_CODES: readonly ErrorCode[] = ["NOT_FOUND", "VALIDATION_FAILED", "INTERNAL_ERROR", "SKILL_VALIDATION_FAILED", "SKILL_NOT_FOUND", "PDF_INVALID", "PDF_PASSWORD_PROTECTED", "PDF_TOO_MANY_PAGES", "PDF_NO_TEXT_EXTRACTABLE", "INTELLIGENCE_UNAVAILABLE", "STRUCTURED_OUTPUT_FAILED", "INTELLIGENCE_TIMEOUT", "PDF_TOO_LARGE", "PDF_PARSER_UNAVAILABLE"] as const;
+export const ERROR_CODES: readonly ErrorCode[] = ["NOT_FOUND", "VALIDATION_FAILED", "INTERNAL_ERROR", "SKILL_VALIDATION_FAILED", "SKILL_NOT_FOUND", "PDF_INVALID", "PDF_PASSWORD_PROTECTED", "PDF_TOO_MANY_PAGES", "PDF_NO_TEXT_EXTRACTABLE", "INTELLIGENCE_UNAVAILABLE", "STRUCTURED_OUTPUT_FAILED", "INTELLIGENCE_TIMEOUT", "PDF_TOO_LARGE", "PDF_PARSER_UNAVAILABLE", "EXTRACTION_OVERLOADED"] as const;
 
 export const HTTP_STATUS_BY_CODE: Record<ErrorCode, number> = {
   NOT_FOUND: 404,
@@ -58,4 +60,5 @@ export const HTTP_STATUS_BY_CODE: Record<ErrorCode, number> = {
   INTELLIGENCE_TIMEOUT: 504,
   PDF_TOO_LARGE: 413,
   PDF_PARSER_UNAVAILABLE: 500,
+  EXTRACTION_OVERLOADED: 503,
 };

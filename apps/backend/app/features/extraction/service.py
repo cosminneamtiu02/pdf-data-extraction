@@ -15,6 +15,16 @@ use ``asyncio.to_thread``). A timed-out request returns 504 while
 the thread may still be finishing. The unfinished background work may
 overlap with later requests unless concurrency is explicitly limited
 elsewhere; once that work completes, its result is discarded.
+
+**Admission control.** To keep timed-out background work from piling
+up on CPU and Ollama, a per-service ``asyncio.Semaphore`` caps the
+number of concurrent pipelines at ``Settings.max_concurrent_extractions``
+(issue #109). Over-cap requests are rejected immediately with
+``ExtractionOverloadedError`` (HTTP 503). ``extract()`` checks
+``Semaphore.locked()`` before entering the ``async with`` block and
+short-circuits if no permit is available, so admitted callers acquire
+the semaphore without waiting and rejected callers fail fast instead
+of queuing behind their own 504 timeout budget.
 """
 
 from __future__ import annotations
@@ -23,7 +33,11 @@ import asyncio
 import time
 from typing import TYPE_CHECKING
 
-from app.exceptions import IntelligenceTimeoutError, StructuredOutputFailedError
+from app.exceptions import (
+    ExtractionOverloadedError,
+    IntelligenceTimeoutError,
+    StructuredOutputFailedError,
+)
 from app.features.extraction.extraction.extraction_engine import declared_field_names
 from app.features.extraction.extraction_result import ExtractionResult
 from app.features.extraction.parsing.docling_config_merger import merge_docling_config
@@ -69,6 +83,14 @@ class ExtractionService:
         self._intelligence_provider = intelligence_provider
         self._settings = settings
         self._timeout_seconds = settings.extraction_timeout_seconds
+        # Admission-control semaphore (issue #109). One permit per
+        # concurrent pipeline; over-cap requests are rejected up-front
+        # in ``extract`` rather than awaiting on ``acquire`` (which would
+        # defeat the backpressure contract — callers would sit in the
+        # wait queue until their 504 budget ran out, with the background
+        # work still consuming CPU and Ollama on the other side).
+        self._max_concurrent_extractions = settings.max_concurrent_extractions
+        self._semaphore = asyncio.Semaphore(self._max_concurrent_extractions)
 
     async def extract(
         self,
@@ -80,12 +102,43 @@ class ExtractionService:
         """Run the full pipeline and return the extraction result.
 
         Raises:
+            ExtractionOverloadedError: the service is already at its
+                configured concurrency cap; the request is rejected
+                immediately without queuing.
             IntelligenceTimeoutError: pipeline exceeded the timeout budget.
             StructuredOutputFailedError: every declared field failed extraction,
                 or the skill declared zero fields.
             SkillNotFoundError: requested skill is not in the manifest.
             Other DomainError subclasses: propagated from downstream components.
         """
+        # Admission check (issue #109). ``Semaphore.locked()`` is True iff
+        # every permit is currently held. The check and the ``async with``
+        # below are effectively atomic on a single-loop scheduler: when
+        # ``locked()`` returns False there is at least one free permit, and
+        # ``Semaphore.acquire()`` only yields when the counter is zero — so
+        # the semaphore is never awaited here, guaranteeing fail-fast
+        # rejection instead of queuing.
+        if self._semaphore.locked():
+            raise ExtractionOverloadedError(
+                max_concurrent=self._max_concurrent_extractions,
+            )
+
+        async with self._semaphore:
+            return await self._run_pipeline(
+                pdf_bytes,
+                skill_name,
+                skill_version,
+                output_mode,
+            )
+
+    async def _run_pipeline(
+        self,
+        pdf_bytes: bytes,
+        skill_name: str,
+        skill_version: str,
+        output_mode: OutputMode,
+    ) -> ExtractionResult:
+        """Execute the pipeline under the end-to-end timeout budget."""
         t0 = time.monotonic()
         try:
             async with asyncio.timeout(self._timeout_seconds):
