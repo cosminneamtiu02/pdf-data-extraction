@@ -23,11 +23,20 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.testclient import TestClient
 
 from app.api.access_log_middleware import AccessLogMiddleware
 from app.api.middleware import configure_middleware
 from app.api.request_id_middleware import RequestIdMiddleware
 from app.api.upload_size_limit_middleware import UploadSizeLimitMiddleware
+
+# Minimal CORS allowlists for the registration-order tests. These tests do
+# not care what the actual allowed methods/headers are — only the middleware
+# stacking order is under test — but ``configure_middleware`` now requires
+# both keyword args so the call site cannot silently re-introduce a wildcard
+# default (issue #211).
+_TEST_CORS_METHODS = ["GET", "POST"]
+_TEST_CORS_HEADERS = ["Content-Type"]
 
 
 def test_configure_middleware_registers_expected_execution_order() -> None:
@@ -40,7 +49,13 @@ def test_configure_middleware_registers_expected_execution_order() -> None:
     """
     app = FastAPI()
 
-    configure_middleware(app, cors_origins=["http://localhost"], max_upload_bytes=50 * 1024 * 1024)
+    configure_middleware(
+        app,
+        cors_origins=["http://localhost"],
+        max_upload_bytes=50 * 1024 * 1024,
+        cors_methods=_TEST_CORS_METHODS,
+        cors_headers=_TEST_CORS_HEADERS,
+    )
 
     registered_classes = [m.cls for m in app.user_middleware]
     assert registered_classes == [
@@ -68,7 +83,13 @@ def test_upload_size_limit_is_innermost_so_it_runs_before_route_dispatch() -> No
     """
     app = FastAPI()
 
-    configure_middleware(app, cors_origins=["http://localhost"], max_upload_bytes=1024)
+    configure_middleware(
+        app,
+        cors_origins=["http://localhost"],
+        max_upload_bytes=1024,
+        cors_methods=_TEST_CORS_METHODS,
+        cors_headers=_TEST_CORS_HEADERS,
+    )
 
     classes = [m.cls for m in app.user_middleware]
     upload_index = classes.index(UploadSizeLimitMiddleware)
@@ -98,11 +119,124 @@ def test_cors_is_outermost_so_preflight_bypasses_inner_middleware() -> None:
     """
     app = FastAPI()
 
-    configure_middleware(app, cors_origins=["http://localhost"], max_upload_bytes=50 * 1024 * 1024)
+    configure_middleware(
+        app,
+        cors_origins=["http://localhost"],
+        max_upload_bytes=50 * 1024 * 1024,
+        cors_methods=_TEST_CORS_METHODS,
+        cors_headers=_TEST_CORS_HEADERS,
+    )
 
     assert app.user_middleware[0].cls is CORSMiddleware, (
         "CORSMiddleware must be registered first (outermost) so preflight "
         "OPTIONS requests are handled before any other middleware sees them."
+    )
+
+
+def test_cors_methods_and_headers_are_narrowed_not_wildcarded() -> None:
+    """CORS ``allow_methods`` and ``allow_headers`` must honour explicit lists.
+
+    Hardcoding ``["*"]`` in ``configure_middleware`` accepted any verb and
+    any header (including ``Authorization``), regardless of how carefully
+    an operator scoped ``cors_origins``. ``configure_middleware`` now takes
+    keyword-only ``cors_methods`` / ``cors_headers`` and forwards them to
+    ``CORSMiddleware`` verbatim. Issue #211.
+    """
+    app = FastAPI()
+
+    configure_middleware(
+        app,
+        cors_origins=["http://localhost"],
+        max_upload_bytes=50 * 1024 * 1024,
+        cors_methods=["GET", "POST"],
+        cors_headers=["Authorization", "Content-Type"],
+    )
+
+    cors_mw = next(m for m in app.user_middleware if m.cls is CORSMiddleware)
+    assert cors_mw.kwargs["allow_methods"] == ["GET", "POST"], (
+        "allow_methods must reflect the caller's list verbatim, "
+        f"not a wildcard. Got: {cors_mw.kwargs['allow_methods']!r}"
+    )
+    assert cors_mw.kwargs["allow_headers"] == ["Authorization", "Content-Type"], (
+        "allow_headers must reflect the caller's list verbatim, "
+        f"not a wildcard. Got: {cors_mw.kwargs['allow_headers']!r}"
+    )
+
+
+def test_cors_preflight_rejects_disallowed_method() -> None:
+    """A preflight for a verb NOT in ``cors_methods`` must not advertise it.
+
+    The unit-level check above (``test_cors_methods_and_headers_are_narrowed_not_wildcarded``)
+    verifies that ``configure_middleware`` forwards the caller's list into
+    ``CORSMiddleware.kwargs`` — it does not observe the behaviour of the
+    middleware itself. This test drives a real OPTIONS preflight through
+    Starlette's ``CORSMiddleware`` via ``TestClient`` and asserts that a
+    ``DELETE`` verb (absent from the allowlist) does NOT appear in
+    ``Access-Control-Allow-Methods``, so browsers will correctly block the
+    follow-up request. Together with the unit assertion, this closes the
+    plumbing-vs-behaviour gap the Copilot reviewer flagged on issue #211.
+    """
+    app = FastAPI()
+    configure_middleware(
+        app,
+        cors_origins=["http://localhost"],
+        max_upload_bytes=1024,
+        cors_methods=["GET", "POST"],
+        cors_headers=["Content-Type"],
+    )
+    client = TestClient(app)
+
+    response = client.options(
+        "/nowhere",
+        headers={
+            "Origin": "http://localhost",
+            "Access-Control-Request-Method": "DELETE",
+        },
+    )
+
+    # Starlette's CORSMiddleware either short-circuits with 400 or responds
+    # without an ``Access-Control-Allow-Methods`` header containing DELETE.
+    # Either shape is acceptable; what matters is that DELETE is not
+    # advertised as allowed.
+    allow_methods = response.headers.get("access-control-allow-methods", "")
+    assert "DELETE" not in allow_methods, (
+        "Preflight for a disallowed verb must not surface that verb in "
+        f"Access-Control-Allow-Methods. Got: {allow_methods!r}"
+    )
+
+
+def test_cors_preflight_allows_listed_method() -> None:
+    """A preflight for a verb IN ``cors_methods`` is accepted by the middleware.
+
+    Companion to ``test_cors_preflight_rejects_disallowed_method`` — without
+    this positive case, a regression that disabled CORS handling entirely
+    would satisfy the negative test trivially. The observable signal is
+    ``Access-Control-Allow-Origin`` echoing the request Origin, which
+    ``CORSMiddleware`` emits only when the preflight passes its verb + header
+    + origin check.
+    """
+    app = FastAPI()
+    configure_middleware(
+        app,
+        cors_origins=["http://localhost"],
+        max_upload_bytes=1024,
+        cors_methods=["GET", "POST"],
+        cors_headers=["Content-Type"],
+    )
+    client = TestClient(app)
+
+    response = client.options(
+        "/nowhere",
+        headers={
+            "Origin": "http://localhost",
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+
+    allow_origin = response.headers.get("access-control-allow-origin", "")
+    assert allow_origin == "http://localhost", (
+        "Preflight for an allowed verb must echo the request Origin in "
+        f"Access-Control-Allow-Origin. Got: {allow_origin!r}"
     )
 
 
@@ -118,7 +252,13 @@ def test_request_id_runs_before_access_log_so_log_has_correlation_id() -> None:
     """
     app = FastAPI()
 
-    configure_middleware(app, cors_origins=["http://localhost"], max_upload_bytes=50 * 1024 * 1024)
+    configure_middleware(
+        app,
+        cors_origins=["http://localhost"],
+        max_upload_bytes=50 * 1024 * 1024,
+        cors_methods=_TEST_CORS_METHODS,
+        cors_headers=_TEST_CORS_HEADERS,
+    )
 
     classes = [m.cls for m in app.user_middleware]
     request_id_index = classes.index(RequestIdMiddleware)
