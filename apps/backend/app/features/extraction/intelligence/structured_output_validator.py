@@ -44,9 +44,11 @@ _FENCE_LANGUAGE_PREFIXES: tuple[str, ...] = ("```json", "```JSON", "```")
 # Soft cap on the compiled-validator cache. Real call sites pass process-
 # lifetime schemas (``LANGEXTRACT_WRAPPER_SCHEMA`` + one ``Skill.output_schema``
 # per installed skill), so cache size is bounded by the skills manifest. The
-# cap is a canary: crossing it means a caller is passing per-request dicts,
-# violating the cache's identity-stability contract, and we want an operator-
-# visible warning rather than silent memory growth.
+# cap is a one-shot canary: the warning is emitted exactly once, on the single
+# insertion that crosses the cap (when ``len == cap + 1``). Crossing means a
+# caller is passing per-request dicts, violating the cache's identity-stability
+# contract, and we want an operator-visible warning rather than silent memory
+# growth — but only once, not as a per-insert log loop.
 _COMPILED_VALIDATOR_CACHE_SOFT_CAP: int = 128
 
 
@@ -91,7 +93,13 @@ class StructuredOutputValidator:
             return cached[1]
         compiled = Draft7Validator(output_schema)
         self._compiled_validators[schema_id] = (output_schema, compiled)
-        if len(self._compiled_validators) > _COMPILED_VALIDATOR_CACHE_SOFT_CAP:
+        # Canary fires exactly once, on the crossing insertion. The cache has
+        # no eviction, so ``len > cap`` would stay true forever once crossed
+        # and re-emit on every subsequent insertion — a hot log loop in
+        # production if a caller ever violates the identity-stability contract.
+        # Checking ``== cap + 1`` pins the emission to the single insertion
+        # that takes us over.
+        if len(self._compiled_validators) == _COMPILED_VALIDATOR_CACHE_SOFT_CAP + 1:
             _logger.warning(
                 "structured_output_validator_cache_soft_cap_exceeded",
                 cache_size=len(self._compiled_validators),

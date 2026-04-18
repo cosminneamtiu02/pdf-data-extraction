@@ -27,6 +27,7 @@ from app.features.extraction.intelligence.correction_prompt_builder import (
     CorrectionPromptBuilder,
 )
 from app.features.extraction.intelligence.structured_output_validator import (
+    _COMPILED_VALIDATOR_CACHE_SOFT_CAP,
     StructuredOutputValidator,
     _clean,
 )
@@ -576,3 +577,83 @@ async def test_distinct_schemas_each_compile_once() -> None:
 
     # Two distinct schemas compiled once each → exactly 2 constructor calls.
     assert mock_validator.call_count == 2
+
+
+async def test_soft_cap_warning_emitted_exactly_once_on_crossing() -> None:
+    """Regression for PR #241 review: the soft-cap canary must fire once, not per-insert.
+
+    The cache has no eviction path, so ``len > cap`` stays true forever once
+    crossed. A `> cap` condition would re-emit the warning on EVERY subsequent
+    insertion — a hot log loop in production if an operator ever violates the
+    identity-stability contract. This test inserts enough distinct schemas to
+    cross the cap AND continue well past it, and asserts the warning fires
+    exactly once on the crossing insertion (``len == cap + 1``).
+    """
+    validator = _build_validator()
+    cap = _COMPILED_VALIDATOR_CACHE_SOFT_CAP
+    # Insert cap + 5: we cross the cap on insertion cap+1, then do 4 more
+    # inserts that must not re-emit the warning.
+    total_inserts = cap + 5
+    schemas: list[dict[str, Any]] = [
+        {
+            "type": "object",
+            "required": ["foo"],
+            "properties": {"foo": {"type": "string"}},
+        }
+        for _ in range(total_inserts)
+    ]
+
+    with capture_logs() as logs:
+        for schema in schemas:
+            await validator.validate_and_retry(
+                raw_text='{"foo": "bar"}',
+                output_schema=schema,
+                regeneration_callable=_never_called(),
+            )
+
+    warnings = [
+        log
+        for log in logs
+        if log.get("event") == "structured_output_validator_cache_soft_cap_exceeded"
+    ]
+    # Exactly one warning, carrying the crossing cache size (cap + 1).
+    assert len(warnings) == 1
+    assert warnings[0]["log_level"] == "warning"
+    assert warnings[0]["cache_size"] == cap + 1
+    assert warnings[0]["soft_cap"] == cap
+
+
+async def test_soft_cap_warning_not_emitted_below_or_at_cap() -> None:
+    """The canary must stay silent until the cap is *crossed*, not merely reached.
+
+    Pin the "at cap: no warning, one-over cap: warning" boundary so a future
+    refactor can't regress to emitting on reach (``>= cap``) or on every
+    insert.
+    """
+    validator = _build_validator()
+    cap = _COMPILED_VALIDATOR_CACHE_SOFT_CAP
+    # Insert exactly `cap` distinct schemas — cache size reaches but does not
+    # exceed the cap, so no warning should fire.
+    schemas_at_cap: list[dict[str, Any]] = [
+        {
+            "type": "object",
+            "required": ["foo"],
+            "properties": {"foo": {"type": "string"}},
+        }
+        for _ in range(cap)
+    ]
+
+    with capture_logs() as logs:
+        for schema in schemas_at_cap:
+            await validator.validate_and_retry(
+                raw_text='{"foo": "bar"}',
+                output_schema=schema,
+                regeneration_callable=_never_called(),
+            )
+
+    warnings = [
+        log
+        for log in logs
+        if log.get("event") == "structured_output_validator_cache_soft_cap_exceeded"
+    ]
+    assert warnings == []
