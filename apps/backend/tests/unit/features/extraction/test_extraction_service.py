@@ -761,3 +761,65 @@ async def test_extraction_service_releases_semaphore_on_error() -> None:
     # ExtractionOverloadedError instead of succeeding.
     result = await service.extract(_PDF_BYTES, "invoice", "1", OutputMode.JSON_ONLY)
     assert isinstance(result, ExtractionResult)
+
+
+_INNER_TIMEOUT_MSG = "parser-internal-timeout"
+
+
+class _InnerTimeoutParser:
+    """Parser that raises a built-in TimeoutError unrelated to budget expiry.
+
+    Models a downstream library (e.g. a socket-layer, sub-operation, or
+    third-party helper) raising the Python 3.11+ unified ``TimeoutError``
+    WITHOUT the outer ``asyncio.timeout(...)`` budget being exhausted.
+    The service must not remap this to ``IntelligenceTimeoutError`` —
+    that error code is specifically reserved for budget-exhaustion (504).
+    """
+
+    async def parse(self, _pdf_bytes: bytes, _docling_config: Any) -> ParsedDocument:
+        raise TimeoutError(_INNER_TIMEOUT_MSG)
+
+
+async def test_timeout_error_from_parser_does_not_map_to_intelligence_timeout() -> None:
+    """Regression: inner TimeoutError must NOT be remapped to IntelligenceTimeoutError.
+
+    Before the fix, the bare ``except TimeoutError`` around the pipeline
+    caught any built-in ``TimeoutError`` — including ones raised by a
+    parser or annotator before the ``asyncio.timeout`` budget expired —
+    and remapped them to ``IntelligenceTimeoutError`` with the full
+    ``extraction_timeout_seconds`` as the reported budget. That hides
+    the real failing component and surfaces a misleading 504.
+    """
+    # Generous budget so there is no ambiguity: zero seconds elapse before
+    # the parser raises, so the ``asyncio.timeout(...)`` budget is nowhere
+    # near exhausted.
+    settings = _build_settings(extraction_timeout_seconds=60.0)
+    service = _build_service(parser=_InnerTimeoutParser(), settings=settings)
+
+    with pytest.raises(TimeoutError) as excinfo:
+        await service.extract(_PDF_BYTES, "invoice", "1", OutputMode.JSON_ONLY)
+
+    # The raised error is the original inner TimeoutError, not an
+    # IntelligenceTimeoutError. ``IntelligenceTimeoutError`` is a
+    # DomainError; the bare built-in ``TimeoutError`` has no ``params``.
+    assert not isinstance(excinfo.value, IntelligenceTimeoutError)
+    assert str(excinfo.value) == _INNER_TIMEOUT_MSG
+
+
+async def test_extraction_service_timeout_budget_seconds_matches_configured() -> None:
+    """Legitimate budget exhaustion still reports configured budget_seconds.
+
+    Complements the regression test above: confirms the happy-path mapping
+    survives — when the outer ``asyncio.timeout`` genuinely expires, we DO
+    raise ``IntelligenceTimeoutError`` and its ``params.budget_seconds``
+    matches the configured ``extraction_timeout_seconds``.
+    """
+    engine = _FakeEngine(sleep_seconds=0.5)
+    settings = _build_settings(extraction_timeout_seconds=0.05)
+    service = _build_service(engine=engine, settings=settings)
+
+    with pytest.raises(IntelligenceTimeoutError) as excinfo:
+        await service.extract(_PDF_BYTES, "invoice", "1", OutputMode.JSON_ONLY)
+
+    assert excinfo.value.params is not None
+    assert excinfo.value.params.model_dump() == {"budget_seconds": 0.05}
