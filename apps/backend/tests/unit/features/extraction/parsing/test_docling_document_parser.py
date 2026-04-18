@@ -410,12 +410,20 @@ def contextlib_suppress_cancelled() -> Any:
 
 
 # ---------------------------------------------------------------------------
-# Docling logger is configured at module import time
+# Docling logger suppression is driven from configure_logging (issue #210)
 # ---------------------------------------------------------------------------
 
 
-def test_docling_logger_level_is_raised_at_module_import() -> None:
-    """Module-level side effect: `logging.getLogger("docling").setLevel(WARNING)`.
+def test_docling_logger_level_is_raised_after_configure_logging() -> None:
+    """After `configure_logging()` runs, the docling stdlib logger is capped at WARNING.
+
+    Before issue #210, `docling_document_parser.py` set this at module
+    import time via a direct `logging.getLogger("docling").setLevel(WARNING)`
+    call. That violated CLAUDE.md's "no `logging.getLogger` outside
+    `app/core/logging.py`" rule. The fix moves the call into
+    `configure_logging` via the `silence_stdlib_logger` helper, so the
+    invariant still holds in production (where `configure_logging` runs in
+    `create_app`) but no longer depends on a module-import side effect.
 
     The parser does not redirect stdout/stderr — that would mutate
     process-global file objects and interleave under concurrent requests.
@@ -425,7 +433,15 @@ def test_docling_logger_level_is_raised_at_module_import() -> None:
     """
     import logging as _logging
 
-    assert _logging.getLogger("docling").level >= _logging.WARNING
+    from app.core.logging import configure_logging
+
+    # Reset to a non-target level first so the assertion observes the side
+    # effect of `configure_logging`, not a leftover from a prior test.
+    _logging.getLogger("docling").setLevel(_logging.DEBUG)
+
+    configure_logging(log_level="info", json_output=False)
+
+    assert _logging.getLogger("docling").level == _logging.WARNING
 
 
 # ---------------------------------------------------------------------------
