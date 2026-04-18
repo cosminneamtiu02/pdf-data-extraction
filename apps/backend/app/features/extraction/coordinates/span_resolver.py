@@ -32,10 +32,22 @@ class SpanResolver:
     1. `value is None`                 → status=failed, grounded=False.
     2. `grounded is False`              → status=extracted, source=inferred,
                                           grounded=False.
-    3. Single-block span, matcher hit   → status=extracted, source=document,
-                                          grounded=True, one tight sub-block
-                                          BoundingBoxRef.
-    4. Single-block span, matcher miss  → same as 3 but whole-block bbox.
+    3. Single-block span, offsets hit   → status=extracted, source=document,
+                                          grounded=True, one whole-block
+                                          BoundingBoxRef. Covers both the
+                                          direct-offset happy path (the
+                                          reported slice `block.text[start:end]`
+                                          equals `value`) and the matcher-hit
+                                          fallback (SubBlockMatcher.locate
+                                          recovers a range when the offsets
+                                          drift). (Tight sub-block
+                                          interpolation was removed per
+                                          issue #151; future glyph-level
+                                          geometry will re-enable tight
+                                          bboxes.)
+    4. Single-block span, matcher miss  → logs the matcher failure; the
+                                          bbox output is the same whole-block
+                                          BoundingBoxRef as case 3.
     5. Multi-block / cross-page span    → one whole-block BoundingBoxRef per
                                           touched block, all with grounded=True.
     6. Offsets outside any block        → grounded=False with empty bbox_refs
@@ -203,19 +215,15 @@ def _whole_block_bbox(block: TextBlock) -> BoundingBoxRef:
 
 
 def _tight_sub_block_bbox(block: TextBlock, match: CharRange) -> BoundingBoxRef:
-    text_length = len(block.text)
-    if text_length == 0:
-        return _whole_block_bbox(block)
-    width = block.bbox.x1 - block.bbox.x0
-    ratio_start = match.start / text_length
-    ratio_end = match.end / text_length
-    return BoundingBoxRef(
-        page=block.page_number,
-        x0=block.bbox.x0 + ratio_start * width,
-        y0=block.bbox.y0,
-        x1=block.bbox.x0 + ratio_end * width,
-        y1=block.bbox.y1,
-    )
+    # Issue #151 interim mitigation: we used to interpolate a sub-block
+    # rectangle via character-offset ratios, which assumes monospaced text and
+    # drifts for proportional fonts / CJK / emoji / diacritics. Until per-cell
+    # glyph geometry is plumbed through TextBlock from Docling, fall back to
+    # the whole-block bbox — correctness over sub-block precision. The `match`
+    # argument is retained so callers and the function signature stay stable
+    # for the future glyph-aware implementation.
+    del match  # unused until glyph-level geometry is available
+    return _whole_block_bbox(block)
 
 
 def _collect_multi_block_bboxes(
