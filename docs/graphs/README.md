@@ -83,8 +83,12 @@ rollup of their children, not a direct action.
 
 1. Check the criterion above for the status you are moving **to**. If it is
    not satisfied, do not bump.
-2. Update only the `status:` line in the frontmatter. Leave every other field
-   untouched.
+2. Prefer status-only bumps: update the `status:` line in the frontmatter and
+   leave the rest of the file untouched, UNLESS the same PR is also correcting
+   a factual error elsewhere in the node (e.g. reverting a documentation
+   regression or aligning a scope bullet with actual runtime behavior). When a
+   factual correction rides along with a status bump, the commit message must
+   list both intents so the grep-able history still tells the story.
 3. If the bump is bulk (e.g. "every feature whose code is on `main` moves to
    `implemented`"), list every file touched in the commit message so the
    history is grep-able.
