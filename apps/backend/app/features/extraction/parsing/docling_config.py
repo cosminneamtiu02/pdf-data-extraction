@@ -21,7 +21,7 @@ class DoclingConfig:
     table_mode: TableMode
 
     def __post_init__(self) -> None:
-        # Fail fast on typos. `DoclingDocumentParser._default_converter_factory`
+        # Fail fast on typos. `_real_docling_converter_adapter.default_converter_factory`
         # otherwise silently maps anything that is not "off" to OCR-on and
         # anything that is not "accurate" to the FAST table-structure mode,
         # which turns configuration typos (e.g. ocr="froce") into silent

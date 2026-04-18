@@ -109,6 +109,15 @@ entire app, not just the extraction feature) so that `app.api`, `app.core`,
 and every other module are also forbidden from importing Docling, PyMuPDF,
 LangExtract, or httpx outside the designated files.
 
+C3 (Docling) permits three files inside `app/features/extraction/parsing/`:
+`docling_document_parser.py` (the public coordinator),
+`_real_docling_converter_adapter.py` (lazy-imports Docling to build the real
+`DocumentConverter`), and `_real_docling_document_adapter.py` (wraps
+`DoclingDocument`). The boundary expanded from a single filename to the
+package after issue #159 split the parser to honor CLAUDE.md's
+one-class-per-file rule; every Docling-touching line still lives behind
+exactly these three allow-listed files.
+
 C1 (feature independence) is an `independence` contract with a single module,
 which is vacuously true in import-linter. The real enforcement is the AST
 scan in `test_dynamic_import_containment.py::test_extraction_does_not_import_from_sibling_features`.
