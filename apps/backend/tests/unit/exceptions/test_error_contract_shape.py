@@ -29,6 +29,8 @@ EXPECTED_CODES = {
     "PDF_TOO_LARGE",
     # Parser runtime-dependency guard (issue #153)
     "PDF_PARSER_UNAVAILABLE",
+    # Admission control for the extraction pipeline (issue #109)
+    "EXTRACTION_OVERLOADED",
 }
 
 PRUNED_CODES = {
@@ -77,6 +79,7 @@ def test_no_stale_generated_error_files() -> None:
         "structured_output_failed_error",
         "pdf_too_large_error",
         "pdf_parser_unavailable_error",
+        "extraction_overloaded_error",
     }
     stale = {"conflict_error", "rate_limited_error", "widget_not_found_error"}
     present_stems = {p.stem for p in GENERATED_DIR.glob("*_error.py")}

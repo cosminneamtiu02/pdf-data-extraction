@@ -85,3 +85,9 @@ errors:
     description: The PDF parser cannot run because a required runtime dependency (e.g. docling, pymupdf) is not installed in this deployment
     params:
       dependency: string
+
+  EXTRACTION_OVERLOADED:
+    http_status: 503
+    description: The extraction service is at its configured concurrency cap; request rejected without queuing so the caller can retry elsewhere
+    params:
+      max_concurrent: integer
