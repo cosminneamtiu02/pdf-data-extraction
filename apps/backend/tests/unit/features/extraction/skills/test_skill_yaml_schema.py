@@ -38,7 +38,7 @@ def test_load_from_file_returns_populated_instance(
     assert len(schema.examples) == 1
     assert schema.examples[0].output == {"number": "INV-1"}
     assert schema.output_schema["required"] == ["number"]
-    assert schema.description is None
+    assert schema.description == "Invoice header extractor."
     assert schema.docling is None
 
 
@@ -241,11 +241,144 @@ def test_multiple_example_violations_all_reported(
 def test_optional_description_defaults_to_none(
     write_skill_yaml: SkillYamlFactory,
 ) -> None:
-    path = write_skill_yaml()
+    path = write_skill_yaml(description=REMOVE)
 
     schema = SkillYamlSchema.load_from_file(path)
 
     assert schema.description is None
+
+
+def test_duplicate_top_level_keys_raise_skill_validation_error(tmp_path: Path) -> None:
+    """Two ``prompt:`` keys at the top level surface as a curated error.
+
+    PyYAML's default ``SafeLoader`` silently collapses repeated keys
+    last-wins; the custom ``DuplicateKeyDetectingSafeLoader`` rejects them
+    so an author's copy-paste typo cannot deploy a skill whose authored
+    intent was silently erased. Issue #208.
+    """
+    path = tmp_path / "1.yaml"
+    path.write_text(
+        "name: invoice\n"
+        "version: 1\n"
+        "description: Invoice header extractor.\n"
+        "prompt: first\n"
+        "prompt: second\n"
+        'examples:\n  - input: "x"\n    output: {number: "1"}\n'
+        "output_schema: {type: object, properties: {number: {type: string}}}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SkillValidationFailedError) as exc_info:
+        SkillYamlSchema.load_from_file(path)
+
+    reason = _reason(exc_info.value)
+    assert "duplicate key" in reason
+    assert "'prompt'" in reason
+
+
+def test_duplicate_output_schema_property_keys_raise_skill_validation_error(
+    tmp_path: Path,
+) -> None:
+    """Two entries with the same name under ``output_schema.properties`` fail.
+
+    Without the duplicate-key detection, the second entry would silently
+    overwrite the first and the schema would validate as if the first had
+    never been authored. The defect would only surface at request time on
+    live traffic. Issue #208.
+    """
+    path = tmp_path / "1.yaml"
+    path.write_text(
+        "name: invoice\n"
+        "version: 1\n"
+        "description: Invoice header extractor.\n"
+        'prompt: "Extract."\n'
+        'examples:\n  - input: "x"\n    output: {amount_due: "1"}\n'
+        "output_schema:\n"
+        "  type: object\n"
+        "  properties:\n"
+        "    amount_due:\n"
+        "      type: string\n"
+        "    amount_due:\n"
+        "      type: integer\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SkillValidationFailedError) as exc_info:
+        SkillYamlSchema.load_from_file(path)
+
+    reason = _reason(exc_info.value)
+    assert "duplicate key" in reason
+    assert "'amount_due'" in reason
+
+
+def test_unhashable_mapping_key_raises_skill_validation_error(
+    tmp_path: Path,
+) -> None:
+    """A sequence used as a mapping key must surface as SkillValidationFailedError.
+
+    PyYAML's upstream ``SafeConstructor.construct_mapping`` explicitly
+    checks ``isinstance(key, Hashable)`` and raises
+    ``yaml.constructor.ConstructorError`` on failure. Without that guard
+    our ``if key in mapping`` would raise a bare ``TypeError`` that
+    bypasses the ``except yaml.YAMLError`` wrapping in
+    ``SkillYamlSchema.load_from_file``, surfacing as a raw traceback
+    instead of the curated ``SkillValidationFailedError`` envelope.
+    """
+    path = tmp_path / "1.yaml"
+    # ``? [a, b]`` is YAML's explicit-key syntax for a sequence-valued key.
+    # The constructed Python object is a list, which is unhashable.
+    path.write_text(
+        "name: invoice\n"
+        "version: 1\n"
+        "description: Invoice header extractor.\n"
+        'prompt: "Extract."\n'
+        'examples:\n  - input: "x"\n    output: {number: "1"}\n'
+        "output_schema:\n"
+        "  type: object\n"
+        "  properties:\n"
+        "    ? [a, b]\n"
+        "    : {type: string}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SkillValidationFailedError) as exc_info:
+        SkillYamlSchema.load_from_file(path)
+
+    reason = _reason(exc_info.value)
+    assert "unhashable" in reason.lower() or "not hashable" in reason.lower()
+
+
+def test_merge_key_still_applied_by_duplicate_key_detecting_loader(
+    tmp_path: Path,
+) -> None:
+    """YAML merge keys (``<<: *anchor``) must still flatten into the mapping.
+
+    Parity guard for the custom loader: our constructor replaces only the
+    duplicate-detection step of PyYAML's default ``SafeConstructor.construct_mapping``,
+    not the ``flatten_mapping`` call that applies YAML merge keys. Without
+    ``loader.flatten_mapping(node)`` the merge-key syntax would silently
+    disappear from the loaded dict — a behavior change vs. plain
+    ``yaml.safe_load`` that would be a footgun for skill authors.
+    """
+    path = tmp_path / "1.yaml"
+    path.write_text(
+        "name: invoice\n"
+        "version: 1\n"
+        'prompt: "Extract."\n'
+        'examples:\n  - input: "x"\n    output: {a: "1"}\n'
+        "output_schema:\n"
+        "  type: object\n"
+        "  properties:\n"
+        "    defaults: &defaults\n"
+        "      type: string\n"
+        "    a:\n"
+        "      <<: *defaults\n",
+        encoding="utf-8",
+    )
+
+    schema = SkillYamlSchema.load_from_file(path)
+
+    assert schema.output_schema["properties"]["a"]["type"] == "string"
 
 
 def test_optional_docling_defaults_to_none(
