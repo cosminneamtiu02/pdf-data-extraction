@@ -116,7 +116,7 @@ features; every other file under `app/api/` must stay feature-agnostic. The
 `shared-no-features` contract therefore deliberately omits `app.api` from its
 `source_modules` list, and the composition-root boundary is instead gated by
 the AST scan at
-`tests/unit/architecture/test_dynamic_import_containment.py::test_api_feature_imports_are_confined_to_composition_root`.
+`apps/backend/tests/unit/architecture/test_dynamic_import_containment.py::test_api_feature_imports_are_confined_to_composition_root`.
 See [ADR-014](decisions.md#adr-014-appapi-as-the-composition-root-2026-04-18)
 for the rationale and enforcement details.
 
