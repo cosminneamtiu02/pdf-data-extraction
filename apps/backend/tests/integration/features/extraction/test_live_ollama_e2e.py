@@ -110,12 +110,12 @@ def _ollama_reachable(settings: Settings) -> tuple[bool, str]:
     return True, ""
 
 
-# Resolve once at module load so the skip decision is deterministic for
-# the whole suite. Using Settings() here reads the same env that the
-# running app would, so a developer who set OLLAMA_BASE_URL=http://localhost:11434
-# in their .env probes the right endpoint.
-_PROBE_SETTINGS: Settings = Settings()  # type: ignore[reportCallIssue]  # pydantic-settings loads fields from env
-_OLLAMA_READY, _OLLAMA_SKIP_REASON = _ollama_reachable(_PROBE_SETTINGS)
+# Ollama reachability is probed inside the test body (see the test
+# function's early `pytest.skip(...)` call), not at module-import time.
+# Probing at module scope would fire a real network request during pytest
+# collection — even for `task test:integration` runs that deselect this
+# suite via `-m "not slow"` — adding latency to every integration test
+# invocation and potentially hanging on misconfigured networks.
 
 
 def _write_invoice_skill(base: Path) -> None:
@@ -149,7 +149,6 @@ def _write_invoice_skill(base: Path) -> None:
 
 @pytest.mark.skipif(not _DOCLING_AVAILABLE, reason=_SKIP_REASON_DOCLING)
 @pytest.mark.skipif(not _FIXTURE_PDF.exists(), reason=_SKIP_REASON_FIXTURE)
-@pytest.mark.skipif(not _OLLAMA_READY, reason=_OLLAMA_SKIP_REASON)
 @pytest.mark.asyncio
 async def test_extract_endpoint_end_to_end_against_live_ollama(tmp_path: Path) -> None:
     """Full-stack smoke test: multipart POST -> Docling -> Gemma -> response.
@@ -160,16 +159,27 @@ async def test_extract_endpoint_end_to_end_against_live_ollama(tmp_path: Path) -
     integration would break that contract, which is exactly what this
     test catches.
     """
+    # Probe inside the test body (not at module-import time). If Ollama is
+    # not reachable or the configured Gemma model is not installed, skip
+    # cleanly. Using Settings() here reads the same env the running app
+    # would, so a developer who set OLLAMA_BASE_URL=http://localhost:11434
+    # in their .env probes the right endpoint.
+    probe_settings: Settings = Settings()  # type: ignore[reportCallIssue]  # pydantic-settings loads fields from env
+    ollama_ready, ollama_skip_reason = _ollama_reachable(probe_settings)
+    if not ollama_ready:
+        pytest.skip(ollama_skip_reason)
+
     _write_invoice_skill(tmp_path)
-    # Use whatever Settings pydantic-settings produces from the environment,
-    # only overriding ``skills_dir`` to point at the ephemeral skill we just
-    # wrote and ``app_env`` so ``/openapi.json`` and dev-mode behaviour stay
-    # stable. This preserves the user's ``OLLAMA_BASE_URL`` / ``OLLAMA_MODEL``
-    # so the probed-reachable endpoint is the same endpoint the app will
-    # hit during extraction.
+    # Preserve the user's OLLAMA_BASE_URL / OLLAMA_MODEL but override the
+    # Ollama client timeout so slower CPUs / first-run model loads (where
+    # Gemma can easily exceed the 30s default) don't 504 the inference.
+    # extraction_timeout_seconds wraps the whole pipeline including Docling
+    # + LangExtract retries, so it needs to be >= ollama_timeout_seconds.
     settings = Settings(  # type: ignore[reportCallIssue]  # pydantic-settings loads fields from env
         skills_dir=tmp_path,
         app_env="development",
+        ollama_timeout_seconds=120.0,
+        extraction_timeout_seconds=180.0,
     )
     app = create_app(settings)
 
