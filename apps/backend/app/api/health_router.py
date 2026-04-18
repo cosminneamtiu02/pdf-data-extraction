@@ -1,32 +1,19 @@
 """Health and readiness endpoints — mounted at root, outside /api/v1/."""
 
-from typing import Annotated, Literal
+from typing import Annotated
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
 
 from app.api.deps import get_probe_cache, get_skill_manifest
 from app.api.probe_cache import (
     ProbeCache,  # runtime: FastAPI resolves Annotated[..., Depends()]
 )
+from app.api.schemas.not_ready_response import NotReadyResponse
+from app.api.schemas.ready_response import ReadyResponse
 from app.features.extraction.skills import SkillManifest
 
 router = APIRouter(tags=["health"])
-
-
-class _ReadyResponse(BaseModel):
-    status: Literal["ready"]
-
-
-class _NotReadyResponse(BaseModel):
-    status: Literal["not_ready"]
-    # ``no_skills_loaded`` covers the production-container scenario where the
-    # image ships ``apps/backend/skills/`` holding only ``.gitkeep`` and the
-    # operator has not mounted a real skills directory over it. Without this
-    # dimension, ``/ready`` would report green and every extraction request
-    # would 404 on skill lookup (issue #108).
-    reason: Literal["ollama_unreachable", "no_skills_loaded"]
 
 
 @router.get("/health")
@@ -40,11 +27,11 @@ async def health() -> dict[str, str]:
     responses={
         200: {
             "description": ("Ollama is reachable and the skill manifest is populated."),
-            "model": _ReadyResponse,
+            "model": ReadyResponse,
         },
         503: {
             "description": ("Ollama is unreachable or no skills are loaded; service is not ready."),
-            "model": _NotReadyResponse,
+            "model": NotReadyResponse,
         },
     },
 )
