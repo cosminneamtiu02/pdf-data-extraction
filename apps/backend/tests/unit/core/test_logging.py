@@ -7,7 +7,7 @@ import logging
 import structlog
 
 from app.core.log_redaction_filter import LogRedactionFilter
-from app.core.logging import configure_logging
+from app.core.logging import configure_logging, silence_stdlib_logger
 
 
 def test_configure_logging_inserts_redaction_filter_into_chain() -> None:
@@ -63,6 +63,112 @@ def test_format_exc_info_runs_before_redaction_filter() -> None:
     fmt_idx = next(i for i, p in enumerate(processors) if p is structlog.processors.format_exc_info)
     redact_idx = next(i for i, p in enumerate(processors) if isinstance(p, LogRedactionFilter))
     assert fmt_idx < redact_idx
+
+
+def test_silence_stdlib_logger_sets_level_on_named_logger() -> None:
+    """Helper sets the level of the named stdlib logger (issue #210).
+
+    Uses a dedicated test-only logger name so the assertion does not interfere
+    with any production logger that other tests rely on.
+    """
+    logger_name = "issue_210_silence_helper_fixture_alpha"
+    # Reset to a known baseline before the helper runs.
+    logging.getLogger(logger_name).setLevel(logging.DEBUG)
+
+    silence_stdlib_logger(logger_name, logging.WARNING)
+
+    assert logging.getLogger(logger_name).level == logging.WARNING
+
+
+def test_silence_stdlib_logger_accepts_arbitrary_level_and_name() -> None:
+    """Helper must be generic: any name + any int level, not hardcoded to docling/WARNING."""
+    logger_name = "issue_210_silence_helper_fixture_beta"
+    logging.getLogger(logger_name).setLevel(logging.DEBUG)
+
+    silence_stdlib_logger(logger_name, logging.ERROR)
+
+    assert logging.getLogger(logger_name).level == logging.ERROR
+
+
+def test_silence_stdlib_logger_does_not_reduce_a_stricter_existing_level() -> None:
+    """Cap semantics: never lower a logger that is already stricter than the cap.
+
+    Earlier the helper unconditionally called ``setLevel(level)``, which
+    would *reduce* an already-stricter level (e.g. ERROR -> WARNING) and
+    silently increase log volume. The new implementation only raises the
+    floor; it leaves stricter explicit levels untouched.
+    """
+    logger_name = "issue_210_silence_helper_fixture_gamma"
+    # Pre-configure the logger to ERROR, which is stricter (numerically
+    # higher) than the WARNING cap we are about to request.
+    logging.getLogger(logger_name).setLevel(logging.ERROR)
+
+    silence_stdlib_logger(logger_name, logging.WARNING)
+
+    # The helper must NOT have walked ERROR back down to WARNING.
+    assert logging.getLogger(logger_name).level == logging.ERROR, (
+        "silence_stdlib_logger reduced an existing stricter level "
+        "(ERROR -> WARNING). It must only raise the floor, never lower it."
+    )
+
+
+def test_silence_stdlib_logger_does_not_reduce_an_inherited_stricter_level() -> None:
+    """Cap semantics extend to INHERITED effective levels, not just explicit ones.
+
+    Copilot-review feedback on PR #224: the previous implementation compared
+    ``logger.level`` (explicit only), so a NOTSET child whose effective
+    level is inherited from a stricter ancestor (e.g. root at ERROR) would
+    have its explicit level forced to WARNING, silently *lowering* the
+    effective threshold from ERROR to WARNING.
+
+    The fix reads ``logger.getEffectiveLevel()`` instead, so inheritance
+    counts as a pre-existing stricter level.
+    """
+    target_name = "issue_210_silence_helper_fixture_delta"
+    # Clean slate: target must be at NOTSET so its effective level comes
+    # entirely from the ancestor chain.
+    logging.getLogger(target_name).setLevel(logging.NOTSET)
+    # Save and restore the root logger's explicit level so this test does
+    # not leak state into sibling tests in the same pytest session.
+    root_logger = logging.getLogger()
+    original_root_level = root_logger.level
+    root_logger.setLevel(logging.ERROR)
+    try:
+        silence_stdlib_logger(target_name, logging.WARNING)
+
+        target = logging.getLogger(target_name)
+        # Target's explicit level must stay NOTSET — had the helper called
+        # setLevel(WARNING), NOTSET would have been overwritten to WARNING.
+        assert target.level == logging.NOTSET, (
+            "silence_stdlib_logger set an explicit level on a target whose "
+            "effective level was already stricter (inherited ERROR). The cap "
+            f"contract is 'never lower effective threshold'; target.level = {target.level}."
+        )
+        # And the effective level must still reflect the ancestor's ERROR,
+        # not the would-be-lower WARNING.
+        assert target.getEffectiveLevel() == logging.ERROR, (
+            "Effective level was lowered from ERROR (inherited) to something else; "
+            f"got {target.getEffectiveLevel()}."
+        )
+    finally:
+        root_logger.setLevel(original_root_level)
+
+
+def test_configure_logging_silences_docling_via_helper() -> None:
+    """Docling silencing must be driven from configure_logging, not from the parser module.
+
+    Before issue #210, `docling_document_parser.py` called
+    `logging.getLogger("docling").setLevel(WARNING)` at module import time.
+    That violated the "no `logging.getLogger` outside `app/core/logging.py`"
+    rule. The fix moves the call inside `configure_logging(...)` via the
+    `silence_stdlib_logger` helper so the containment invariant holds.
+    """
+    # Reset first so we are not observing a leftover from a prior test.
+    logging.getLogger("docling").setLevel(logging.DEBUG)
+
+    configure_logging(log_level="info", json_output=False)
+
+    assert logging.getLogger("docling").level == logging.WARNING
 
 
 def test_configure_logging_is_idempotent_across_two_calls_with_different_settings() -> None:
