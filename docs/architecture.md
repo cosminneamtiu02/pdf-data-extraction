@@ -47,17 +47,24 @@ apps/backend/app/
 ```
 
 The extraction feature is built out during feature-dev per the graph tree in
-[`docs/graphs/PDFX/`](graphs/PDFX/). Each Epic maps to one or more subpackages
-inside `features/extraction/`:
+[`docs/graphs/PDFX/`](graphs/PDFX/). Epics E002–E006 each map to one or more
+subpackages inside `app/features/extraction/`. Epic E007 is cross-cutting —
+its sub-features land in supporting locations (`app/api/*`, `app/core/*`,
+`apps/backend/architecture/`, `apps/backend/scripts/`) rather than inside the
+extraction feature. The table below reflects this:
 
-| Epic | Subpackage | Responsibility |
+| Epic | Files / subpackages | Responsibility |
 |---|---|---|
-| PDFX-E002 | `skills/` | Skill YAML loader, manifest, validation |
-| PDFX-E003 | `parsing/` | Docling wrapper, `TextBlock` abstraction |
-| PDFX-E004 | `intelligence/` + `extraction/` | LangExtract + Ollama provider + structured output validator |
-| PDFX-E005 | `coordinates/` | Offset index, sub-block matcher, span resolver |
-| PDFX-E006 | `schemas/`, `service.py`, `router.py`, `annotation/` | API surface + annotation |
-| PDFX-E007 | `app/api/health_router.py` + `middleware.py` + `import-linter-contracts.ini` | Platform, observability, quality gates |
+| PDFX-E002 | `app/features/extraction/skills/` | Skill YAML loader, manifest, validation |
+| PDFX-E003 | `app/features/extraction/parsing/` | Docling wrapper, `TextBlock` abstraction |
+| PDFX-E004 | `app/features/extraction/intelligence/` + `app/features/extraction/extraction/` | LangExtract + Ollama provider + structured output validator |
+| PDFX-E005 | `app/features/extraction/coordinates/` | Offset index, sub-block matcher, span resolver |
+| PDFX-E006 | `app/features/extraction/schemas/`, `app/features/extraction/service.py`, `app/features/extraction/router.py`, `app/features/extraction/annotation/` | API surface + annotation |
+| PDFX-E007-F001 | `app/features/extraction/intelligence/ollama_health_probe.py` + `app/api/health_router.py` | Ollama readiness probe wired into `GET /ready` |
+| PDFX-E007-F002 | `app/api/middleware.py` | Request-ID + access-log + CORS middleware stack |
+| PDFX-E007-F003 | `app/core/logging.py` | Structlog pipeline (contextvars, ISO timestamps, JSON/console) |
+| PDFX-E007-F004 | `apps/backend/architecture/import-linter-contracts.ini` + AST-scan tests | Architectural quality gates (C1-C6 + dynamic-import scan) |
+| PDFX-E007-F005 | `apps/backend/scripts/benchmark.py` | Extraction pipeline benchmarking harness |
 
 ### Layer Flow
 
