@@ -3,8 +3,9 @@
 The node files under `docs/graphs/<SLUG>/` (for this repo, `docs/graphs/PDFX/`)
 each carry a `status:` field in their YAML frontmatter. The status is the graph's
 answer to the question "where is this node in its build pipeline?" It is read by
-humans skimming the tree and by scripts that roll up progress, so the values are
-a closed vocabulary — not free text.
+humans skimming the tree and may be consumed by scripts that roll up progress, so
+the values are a closed vocabulary — not free text. (No such script exists in
+this repo today; the closed vocabulary is future-proofing.)
 
 This file is the contract for what each status means and what triggers the
 transition into it. If you want to change a node's status, check the criterion
