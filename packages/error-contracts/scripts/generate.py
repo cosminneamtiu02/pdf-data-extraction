@@ -136,6 +136,22 @@ def load_and_validate(errors_path: Path) -> ErrorsYaml:
             raise ValueError(msg)
         params = cast("dict[str, str]", params_raw)
         for param_name, param_type in params.items():
+            # Param names become kwargs on generated __init__ signatures and
+            # field names on TS interfaces. YAML keys that aren't valid
+            # identifiers ("max-length", "1x", "a.b") would emit code that
+            # fails to parse; reject them at load time with a clear error.
+            if not isinstance(param_name, str):  # pyright: ignore[reportUnnecessaryIsInstance]
+                msg = (
+                    f"param name for {code} must be a string, got "
+                    f"{type(param_name).__name__}: {param_name!r}"
+                )
+                raise ValueError(msg)
+            if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", param_name):
+                msg = (
+                    f"Invalid param name {param_name!r} for {code}: "
+                    f"must be a valid identifier (^[a-zA-Z_][a-zA-Z0-9_]*$)"
+                )
+                raise ValueError(msg)
             if param_type not in VALID_PARAM_TYPES:
                 msg = (
                     f"Invalid param type '{param_type}' for {code}.{param_name}. "
