@@ -112,6 +112,48 @@ def test_silence_stdlib_logger_does_not_reduce_a_stricter_existing_level() -> No
     )
 
 
+def test_silence_stdlib_logger_does_not_reduce_an_inherited_stricter_level() -> None:
+    """Cap semantics extend to INHERITED effective levels, not just explicit ones.
+
+    Copilot-review feedback on PR #224: the previous implementation compared
+    ``logger.level`` (explicit only), so a NOTSET child whose effective
+    level is inherited from a stricter ancestor (e.g. root at ERROR) would
+    have its explicit level forced to WARNING, silently *lowering* the
+    effective threshold from ERROR to WARNING.
+
+    The fix reads ``logger.getEffectiveLevel()`` instead, so inheritance
+    counts as a pre-existing stricter level.
+    """
+    target_name = "issue_210_silence_helper_fixture_delta"
+    # Clean slate: target must be at NOTSET so its effective level comes
+    # entirely from the ancestor chain.
+    logging.getLogger(target_name).setLevel(logging.NOTSET)
+    # Save and restore the root logger's explicit level so this test does
+    # not leak state into sibling tests in the same pytest session.
+    root_logger = logging.getLogger()
+    original_root_level = root_logger.level
+    root_logger.setLevel(logging.ERROR)
+    try:
+        silence_stdlib_logger(target_name, logging.WARNING)
+
+        target = logging.getLogger(target_name)
+        # Target's explicit level must stay NOTSET — had the helper called
+        # setLevel(WARNING), NOTSET would have been overwritten to WARNING.
+        assert target.level == logging.NOTSET, (
+            "silence_stdlib_logger set an explicit level on a target whose "
+            "effective level was already stricter (inherited ERROR). The cap "
+            f"contract is 'never lower effective threshold'; target.level = {target.level}."
+        )
+        # And the effective level must still reflect the ancestor's ERROR,
+        # not the would-be-lower WARNING.
+        assert target.getEffectiveLevel() == logging.ERROR, (
+            "Effective level was lowered from ERROR (inherited) to something else; "
+            f"got {target.getEffectiveLevel()}."
+        )
+    finally:
+        root_logger.setLevel(original_root_level)
+
+
 def test_configure_logging_silences_docling_via_helper() -> None:
     """Docling silencing must be driven from configure_logging, not from the parser module.
 

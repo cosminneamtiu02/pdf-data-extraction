@@ -39,14 +39,19 @@ def silence_stdlib_logger(logger_name: str, level: int) -> None:
        module (the pattern the parser used to have at import time before
        issue #210).
 
-    Cap semantics: this never *reduces* an existing stricter explicit level.
-    If the logger has already been configured to a higher numeric level than
-    ``level`` (i.e. emits less, e.g. ``ERROR`` when ``level`` is ``WARNING``),
-    we leave it alone. We only raise the floor when the logger is at NOTSET
-    (the default for a fresh logger) or at a lower numeric level than the
-    requested cap. This guards against the silent-volume-increase failure
-    mode where a noisy third party was already aggressively suppressed by
-    something earlier in startup and our default cap would walk it back.
+    Cap semantics: this never *reduces* the EFFECTIVE log threshold of the
+    target logger. If the effective level is already numerically higher than
+    ``level`` (stricter — emits less) — whether explicitly set on the target
+    or inherited from an ancestor — we leave the logger alone. We only raise
+    the floor when the effective level is below ``level``.
+
+    The check runs against ``logger.getEffectiveLevel()`` rather than the
+    raw ``logger.level``. Example of why this matters: if the root logger
+    is at ERROR and the target is NOTSET (so its effective level is ERROR
+    inherited), naïvely calling ``setLevel(WARNING)`` on the target would
+    *lower* the effective threshold (ERROR → WARNING) and increase log
+    volume, contradicting the cap intent. Reading the effective level
+    catches both explicit and inherited state in one check.
 
     Args:
         logger_name: The stdlib logger name to suppress
@@ -55,11 +60,11 @@ def silence_stdlib_logger(logger_name: str, level: int) -> None:
             (e.g. ``logging.WARNING``, ``logging.ERROR``).
     """
     logger = logging.getLogger(logger_name)
-    # `logger.level` is the explicitly-set level (NOTSET = 0 if unset). We
-    # use it (not `getEffectiveLevel`) so an unset child whose *effective*
-    # level is inherited from a parent still gets capped — the parent's
-    # level was meant for the parent's tree, not as a per-child override.
-    if logger.level < level:
+    # Use `getEffectiveLevel()` so inheritance from ancestors counts as a
+    # pre-existing stricter level — otherwise setting an explicit level on
+    # a NOTSET child could silently lower the effective threshold inherited
+    # from the root/ancestor (Copilot-review feedback on PR #224).
+    if logger.getEffectiveLevel() < level:
         logger.setLevel(level)
 
 
