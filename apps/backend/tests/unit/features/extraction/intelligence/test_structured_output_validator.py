@@ -449,14 +449,50 @@ async def test_structured_output_retry_log_uses_sanitized_cause_field() -> None:
 async def test_draft7_validator_is_built_once_across_retries_for_same_schema() -> None:
     """Regression guard for issue #233: Draft7Validator must be compiled once per schema.
 
-    Under default settings the validator runs 4 total attempts; each one previously
-    constructed a fresh Draft7Validator over the same schema. This test patches
-    Draft7Validator's __init__ and asserts the constructor is invoked at most once
-    across all retry attempts within a single `validate_and_retry` call for the
-    same `output_schema` object identity.
+    Under default settings the validator runs 4 total attempts. This test
+    scripts valid JSON that violates the schema so every attempt reaches
+    ``_validate`` (i.e. genuinely exercises the schema-validation retry path
+    the cache is meant to amortize). It patches ``Draft7Validator`` and
+    asserts the constructor is invoked exactly once across all retries within
+    a single ``validate_and_retry`` call for the same ``output_schema``
+    identity.
     """
     validator = _build_validator()
-    # Four attempts: three scripted invalid, loop exhausts attempts on input.
+    # Four attempts: all valid JSON, all violating `_FOO_STRING_SCHEMA` (foo
+    # must be a string). Each attempt reaches `_validate` → exercises the
+    # schema-validation retry path, which is exactly what the cache amortizes.
+    call, _prompts = _scripted_callable(['{"foo": 2}', '{"foo": 3}', '{"foo": 4}'])
+
+    with (
+        patch.object(
+            sov_module,
+            "Draft7Validator",
+            wraps=sov_module.Draft7Validator,
+        ) as mock_validator,
+        pytest.raises(StructuredOutputFailedError),
+    ):
+        await validator.validate_and_retry(
+            raw_text='{"foo": 1}',
+            output_schema=_FOO_STRING_SCHEMA,
+            regeneration_callable=call,
+        )
+
+    # Four attempts over the same schema identity → exactly ONE constructor call.
+    assert mock_validator.call_count == 1
+
+
+async def test_draft7_validator_is_not_built_when_every_attempt_fails_json_parsing() -> None:
+    """Lazy-compile guarantee: no Draft7Validator is built when parsing never succeeds.
+
+    Building ``Draft7Validator`` walks the schema to normalise refs and
+    precompile per-keyword validators — a real cost. Paying that cost for a
+    call whose every attempt fails JSON parsing (so ``_validate`` is never
+    reached) would be a pointless performance regression. This test scripts
+    outputs that all fail parsing and asserts the constructor is never
+    invoked.
+    """
+    validator = _build_validator()
+    # Four attempts, all pure parse-failures (not JSON at all).
     call, _prompts = _scripted_callable(["not json", "still not json", "never valid"])
 
     with (
@@ -473,8 +509,8 @@ async def test_draft7_validator_is_built_once_across_retries_for_same_schema() -
             regeneration_callable=call,
         )
 
-    # Four attempts over the same schema identity → exactly ONE constructor call.
-    assert mock_validator.call_count == 1
+    # Parsing never succeeds → _validate is never called → no Draft7Validator built.
+    assert mock_validator.call_count == 0
 
 
 async def test_draft7_validator_is_reused_across_separate_validate_calls() -> None:

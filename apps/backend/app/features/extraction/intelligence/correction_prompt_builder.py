@@ -7,6 +7,7 @@ tuned empirically during PDFX-E004-F002's integration tests against Gemma 4.
 """
 
 import json
+from collections.abc import Mapping
 from typing import Any
 
 
@@ -15,10 +16,13 @@ class CorrectionPromptBuilder:
         self,
         original_prompt: str,
         malformed_output: str,
-        output_schema: dict[str, Any],
+        output_schema: Mapping[str, Any],
         failure_reason: str,
     ) -> str:
-        schema_json = json.dumps(output_schema, indent=2, sort_keys=True)
+        # ``json.dumps`` accepts any ``Mapping`` via its default encoder path,
+        # so widening beyond ``dict`` costs nothing at runtime and lets us
+        # accept the ``MappingProxyType`` that ``Skill.output_schema`` uses.
+        schema_json = json.dumps(dict(output_schema), indent=2, sort_keys=True)
         return (
             f"{original_prompt}\n\n"
             "The previous response was not valid JSON matching the required schema.\n"

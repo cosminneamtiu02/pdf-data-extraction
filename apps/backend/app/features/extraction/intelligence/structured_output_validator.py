@@ -28,7 +28,7 @@ from app.exceptions import StructuredOutputFailedError
 from app.features.extraction.intelligence.generation_result import GenerationResult
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Mapping
 
     from jsonschema.exceptions import ValidationError
 
@@ -40,6 +40,14 @@ if TYPE_CHECKING:
 _logger = structlog.get_logger(__name__)
 
 _FENCE_LANGUAGE_PREFIXES: tuple[str, ...] = ("```json", "```JSON", "```")
+
+# Soft cap on the compiled-validator cache. Real call sites pass process-
+# lifetime schemas (``LANGEXTRACT_WRAPPER_SCHEMA`` + one ``Skill.output_schema``
+# per installed skill), so cache size is bounded by the skills manifest. The
+# cap is a canary: crossing it means a caller is passing per-request dicts,
+# violating the cache's identity-stability contract, and we want an operator-
+# visible warning rather than silent memory growth.
+_COMPILED_VALIDATOR_CACHE_SOFT_CAP: int = 128
 
 
 # Each parse/validate helper returns either a successful parse, or a failure
@@ -70,28 +78,44 @@ class StructuredOutputValidator:
         # ``Skill`` instance) — have process-lifetime stability, so id-keying is
         # safe. We keep the schema object itself in the cache value so the id
         # cannot be recycled onto a different object while the cache is live.
-        self._compiled_validators: dict[int, tuple[Any, Draft7Validator]] = {}
+        # The cache is expected to stay small (one entry per distinct schema,
+        # i.e. one per skill plus the LangExtract wrapper). We soft-cap and
+        # warn if ever exceeded, as a canary for a caller that violates the
+        # "process-lifetime schema identity" contract with per-request dicts.
+        self._compiled_validators: dict[int, tuple[Mapping[str, Any], Draft7Validator]] = {}
 
-    def _get_compiled_validator(self, output_schema: dict[str, Any]) -> Draft7Validator:
+    def _get_compiled_validator(self, output_schema: Mapping[str, Any]) -> Draft7Validator:
         schema_id = id(output_schema)
         cached = self._compiled_validators.get(schema_id)
         if cached is not None:
             return cached[1]
         compiled = Draft7Validator(output_schema)
         self._compiled_validators[schema_id] = (output_schema, compiled)
+        if len(self._compiled_validators) > _COMPILED_VALIDATOR_CACHE_SOFT_CAP:
+            _logger.warning(
+                "structured_output_validator_cache_soft_cap_exceeded",
+                cache_size=len(self._compiled_validators),
+                soft_cap=_COMPILED_VALIDATOR_CACHE_SOFT_CAP,
+            )
         return compiled
 
     async def validate_and_retry(
         self,
         raw_text: str,
-        output_schema: dict[str, Any],
+        output_schema: Mapping[str, Any],
         regeneration_callable: Callable[[str], Awaitable[str]],
         original_prompt: str = "",
     ) -> GenerationResult:
         max_total_attempts = self._settings.structured_output_max_retries + 1
         current_text = raw_text
         log_causes: list[str] = []
-        compiled_validator = self._get_compiled_validator(output_schema)
+        # Lazily compile the Draft7Validator only on the first attempt that
+        # yields a parsed object — parsing can fail for every attempt (e.g. the
+        # model never emits JSON), in which case we should not pay the
+        # compilation cost at all. Once compiled, the instance is cached for
+        # reuse across subsequent schema-validation retries within this call
+        # AND across future `validate_and_retry` invocations.
+        compiled_validator: Draft7Validator | None = None
 
         for attempt in range(1, max_total_attempts + 1):
             cleaned = _clean(current_text)
@@ -100,6 +124,8 @@ class StructuredOutputValidator:
             if parse_failure is not None:
                 failure = parse_failure
             else:
+                if compiled_validator is None:
+                    compiled_validator = self._get_compiled_validator(output_schema)
                 failure = _validate(parsed, compiled_validator)
                 if failure is None:
                     return GenerationResult(
