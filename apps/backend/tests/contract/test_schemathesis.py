@@ -41,14 +41,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 import schemathesis
-import yaml
 from httpx import ASGITransport, AsyncClient
 from starlette.testclient import TestClient
 
 from app.api.deps import get_extraction_service
-from app.core.config import Settings
 from app.exceptions import (
     IntelligenceTimeoutError,
     IntelligenceUnavailableError,
@@ -59,14 +58,17 @@ from app.exceptions import (
     SkillNotFoundError,
     StructuredOutputFailedError,
 )
-from app.features.extraction.extraction_result import ExtractionResult
-from app.features.extraction.schemas.bounding_box_ref import BoundingBoxRef
-from app.features.extraction.schemas.extract_response import ExtractResponse
-from app.features.extraction.schemas.extracted_field import ExtractedField
-from app.features.extraction.schemas.extraction_metadata import ExtractionMetadata
-from app.features.extraction.schemas.field_status import FieldStatus
 from app.features.extraction.service import ExtractionService
 from app.main import app, create_app
+from tests.contract._helpers import (
+    make_canned_result as _make_canned_result,
+)
+from tests.contract._helpers import (
+    settings as _settings,
+)
+from tests.contract._helpers import (
+    write_valid_skill as _write_valid_skill,
+)
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -109,54 +111,6 @@ def test_health_endpoint_conforms_to_spec() -> None:
 _FIXTURE_PDF = Path(__file__).resolve().parent.parent / "fixtures" / "pdfs" / "native_two_page.pdf"
 
 
-def _write_valid_skill(base: Path) -> None:
-    body = {
-        "name": "invoice",
-        "version": 1,
-        "prompt": "Extract header fields.",
-        "examples": [{"input": "INV-1", "output": {"number": "INV-1"}}],
-        "output_schema": {
-            "type": "object",
-            "properties": {"number": {"type": "string"}},
-            "required": ["number"],
-        },
-    }
-    target = base / "invoice"
-    target.mkdir(parents=True, exist_ok=True)
-    (target / "1.yaml").write_text(yaml.safe_dump(body), encoding="utf-8")
-
-
-def _settings(skills_dir: Path, **overrides: object) -> Settings:
-    return Settings(  # type: ignore[reportCallIssue]
-        skills_dir=skills_dir,
-        app_env="development",
-        **overrides,
-    )
-
-
-def _make_canned_result() -> ExtractionResult:
-    field = ExtractedField(
-        name="number",
-        value="INV-001",
-        status=FieldStatus.extracted,
-        source="document",
-        grounded=True,
-        bbox_refs=[BoundingBoxRef(page=1, x0=10.0, y0=20.0, x1=100.0, y1=30.0)],
-    )
-    metadata = ExtractionMetadata(
-        page_count=1,
-        duration_ms=500,
-        attempts_per_field={"number": 1},
-    )
-    response = ExtractResponse(
-        skill_name="invoice",
-        skill_version=1,
-        fields={"number": field},
-        metadata=metadata,
-    )
-    return ExtractionResult(response=response, annotated_pdf_bytes=None)
-
-
 def _load_pdf_bytes() -> bytes:
     """Load the fixture PDF used by every /extract contract case."""
     return _FIXTURE_PDF.read_bytes()
@@ -183,7 +137,7 @@ async def _post_extract(  # noqa: PLR0913 — kwargs-only test helper with per-c
     pdf_bytes: bytes | None = None,
     pdf_filename: str = "fixture.pdf",
     include_output_mode: bool = True,
-) -> object:
+) -> httpx.Response:
     """POST /api/v1/extract against ``app_under_test`` via ASGITransport.
 
     The multipart request body is eagerly read into memory before the
@@ -214,32 +168,42 @@ async def _post_extract(  # noqa: PLR0913 — kwargs-only test helper with per-c
 
 
 @pytest.fixture(scope="module")
-def extract_schema() -> schemathesis.BaseSchema:
+def extract_schema(tmp_path_factory: pytest.TempPathFactory) -> schemathesis.BaseSchema:
     """Load the schemathesis schema once for the whole module.
 
-    ``schemathesis.openapi.from_asgi`` uses ``starlette_testclient.TestClient``
+    Build the schema against a dedicated `create_app(Settings(...))` rather
+    than the module-level `app` (which is created from env-derived
+    settings): if the test runner has `APP_ENV=production` in the
+    environment, `create_app` disables `/openapi.json` and this fixture
+    would 404 — breaking every contract test that depends on it. Giving
+    the fixture its own `app_env="development"` Settings makes it robust
+    to ambient environment variables.
+
+    `schemathesis.openapi.from_asgi` uses `starlette_testclient.TestClient`
     under the hood, which is synchronous. Loading the schema inside an
-    ``async def`` test would run ``TestClient`` against its own event-loop
+    `async def` test would run `TestClient` against its own event-loop
     portal and deadlock against the outer pytest-asyncio loop. The OpenAPI
-    contract for ``POST /api/v1/extract`` is identical across every
-    ``Settings`` variation the per-test apps use (the declared response
+    contract for `POST /api/v1/extract` is identical across every
+    `Settings` variation the per-test apps use (the declared response
     shapes don't depend on runtime config), so loading the schema once
-    module-scope from the module-level ``app`` is correct and avoids the
-    event-loop collision.
+    module-scope with a clean app is correct and avoids the collision.
     """
-    # ``openapi.from_asgi`` returns a ``BaseSchema`` (the public type
-    # re-exported by ``schemathesis``). The returned schema exposes
-    # operations via ``schema[path][method]`` with
-    # ``.validate_response(response)`` that raises on contract drift —
-    # this is the load-bearing assertion in every test below.
-    # ``APIOperation.validate_response`` accepts ``httpx.Response`` directly
-    # per v4's type signature, so no adaptation is needed at call sites.
-    return schemathesis.openapi.from_asgi("/openapi.json", app)
+    # Module-scoped temporary skills dir: the skill YAML only needs to be
+    # present for `create_app` to pass validation at startup; no test
+    # actually hits the extraction pipeline via this fixture's app.
+    skills_dir = tmp_path_factory.mktemp("extract_schema_skills")
+    _write_valid_skill(skills_dir)
+    schema_app = create_app(_settings(skills_dir))
+    # `openapi.from_asgi` returns a `BaseSchema`; the returned schema
+    # exposes operations via `schema[path][method]` with
+    # `.validate_response(response)` that raises on contract drift — this
+    # is the load-bearing assertion in every test below.
+    return schemathesis.openapi.from_asgi("/openapi.json", schema_app)
 
 
 def _validate(
     schema: schemathesis.BaseSchema,
-    response: object,
+    response: httpx.Response,
 ) -> None:
     """Assert ``response`` conforms to the schemathesis contract for /extract."""
     # ``validate_response`` raises ``FailureGroup`` (or ``AssertionError``)
@@ -247,7 +211,9 @@ def _validate(
     # declared schema, wrong media type, etc. Letting it raise surfaces
     # the first failure directly in pytest output, which is the intended
     # UX for a contract test.
-    schema["/api/v1/extract"]["POST"].validate_response(response)  # type: ignore[arg-type]
+    # `APIOperation.validate_response` accepts `httpx.Response` directly
+    # per schemathesis v4's type signature, so no adapter is needed.
+    schema["/api/v1/extract"]["POST"].validate_response(response)
 
 
 @pytest.fixture
@@ -266,7 +232,7 @@ async def test_extract_200_conforms_to_openapi_schema(
     app_under_test = _build_app_with_stub(tmp_path, canned_success_stub)
     response = await _post_extract(app_under_test)
 
-    assert response.status_code == 200  # type: ignore[attr-defined]
+    assert response.status_code == 200
     _validate(extract_schema, response)
 
 
@@ -281,7 +247,7 @@ async def test_extract_400_pdf_invalid_conforms_to_openapi_schema(
 
     response = await _post_extract(app_under_test)
 
-    assert response.status_code == 400  # type: ignore[attr-defined]
+    assert response.status_code == 400
     _validate(extract_schema, response)
 
 
@@ -296,7 +262,7 @@ async def test_extract_400_pdf_password_protected_conforms_to_openapi_schema(
 
     response = await _post_extract(app_under_test)
 
-    assert response.status_code == 400  # type: ignore[attr-defined]
+    assert response.status_code == 400
     _validate(extract_schema, response)
 
 
@@ -311,7 +277,7 @@ async def test_extract_404_skill_not_found_conforms_to_openapi_schema(
 
     response = await _post_extract(app_under_test, skill_name="nonexistent")
 
-    assert response.status_code == 404  # type: ignore[attr-defined]
+    assert response.status_code == 404
     _validate(extract_schema, response)
 
 
@@ -329,7 +295,7 @@ async def test_extract_413_pdf_too_large_conforms_to_openapi_schema(
 
     response = await _post_extract(app_under_test)
 
-    assert response.status_code == 413  # type: ignore[attr-defined]
+    assert response.status_code == 413
     _validate(extract_schema, response)
 
 
@@ -344,7 +310,7 @@ async def test_extract_413_pdf_too_many_pages_conforms_to_openapi_schema(
 
     response = await _post_extract(app_under_test)
 
-    assert response.status_code == 413  # type: ignore[attr-defined]
+    assert response.status_code == 413
     _validate(extract_schema, response)
 
 
@@ -360,7 +326,7 @@ async def test_extract_422_request_validation_conforms_to_openapi_schema(
     # the custom handler serializes through the ValidationFailedError envelope.
     response = await _post_extract(app_under_test, include_output_mode=False)
 
-    assert response.status_code == 422  # type: ignore[attr-defined]
+    assert response.status_code == 422
     _validate(extract_schema, response)
 
 
@@ -375,7 +341,7 @@ async def test_extract_422_no_extractable_text_conforms_to_openapi_schema(
 
     response = await _post_extract(app_under_test)
 
-    assert response.status_code == 422  # type: ignore[attr-defined]
+    assert response.status_code == 422
     _validate(extract_schema, response)
 
 
@@ -390,7 +356,7 @@ async def test_extract_502_structured_output_failed_conforms_to_openapi_schema(
 
     response = await _post_extract(app_under_test)
 
-    assert response.status_code == 502  # type: ignore[attr-defined]
+    assert response.status_code == 502
     _validate(extract_schema, response)
 
 
@@ -405,7 +371,7 @@ async def test_extract_503_intelligence_unavailable_conforms_to_openapi_schema(
 
     response = await _post_extract(app_under_test)
 
-    assert response.status_code == 503  # type: ignore[attr-defined]
+    assert response.status_code == 503
     _validate(extract_schema, response)
 
 
@@ -420,5 +386,5 @@ async def test_extract_504_intelligence_timeout_conforms_to_openapi_schema(
 
     response = await _post_extract(app_under_test)
 
-    assert response.status_code == 504  # type: ignore[attr-defined]
+    assert response.status_code == 504
     _validate(extract_schema, response)
