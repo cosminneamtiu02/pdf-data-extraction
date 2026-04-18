@@ -1,7 +1,7 @@
 """AST-scan enforcement for rules that import-linter cannot express.
 
 import-linter only sees static imports via AST analysis. This module covers
-two gaps:
+three gaps:
 
 1. **C1 real enforcement** - extraction must not import from sibling
    features. The independence contract with one module is vacuously true,
@@ -15,6 +15,17 @@ two gaps:
    static graph. This test walks every .py file under `app/` and asserts
    that dynamic imports of contained third-party packages only appear in
    their designated files.
+
+3. **Composition-root containment for `app/api/`** (issue #229) - the
+   `shared-no-features` import-linter contract covers `app.shared`,
+   `app.core`, and `app.schemas` but not `app.api`, because `app.api` is
+   the composition root and two files (`deps.py`, `health_router.py`)
+   legitimately import from `app.features.extraction.*` to wire DI
+   factories. Without a mechanical gate, any future file under `app/api/`
+   could silently acquire feature-internal imports and erode the
+   "composition root is an exception, not a free pass" invariant. This
+   AST scan asserts feature imports only appear in the authorized
+   composition-root files.
 """
 
 from __future__ import annotations
@@ -29,6 +40,29 @@ from ._linter_subprocess import BACKEND_DIR
 
 _APP_ROOT: Final[Path] = BACKEND_DIR / "app"
 _EXTRACTION_ROOT: Final[Path] = _APP_ROOT / "features" / "extraction"
+_API_ROOT: Final[Path] = _APP_ROOT / "api"
+
+# Composition-root allowlist (issue #229). Only these files under `app/api/`
+# may statically or dynamically import from `app.features.*`. They wire the DI
+# graph from features into the FastAPI app and are the ONE documented exception
+# to the "modules outside features do not reach into features" invariant. Every
+# other file under `app/api/` (middleware, request-id, schemas, exception
+# handlers, ...) must stay feature-agnostic.
+#
+# `probe_cache.py` is included because it type-annotates against
+# `OllamaHealthProbe` (a feature type) under a `TYPE_CHECKING` guard. The AST
+# collector does not distinguish TYPE_CHECKING-guarded from runtime imports
+# (by design, to match the existing C1 sibling-feature scan), so the cache's
+# feature-type coupling shows up as a feature import. Semantically the cache
+# is composition-root-adjacent wiring (it wraps a feature object and
+# delegates `.check()` calls), so allowlisting it is correct.
+_API_COMPOSITION_ROOT_FILES: Final[frozenset[str]] = frozenset(
+    {
+        "deps.py",
+        "health_router.py",
+        "probe_cache.py",
+    },
+)
 
 _CONTAINED_PACKAGES: Final[dict[str, frozenset[str]]] = {
     # Docling containment expanded from a single file to the set of
@@ -206,6 +240,85 @@ def test_static_imports_of_contained_packages_are_allowlisted(
     assert not offenders, (
         f"Static import of '{package}' found outside allowed files "
         f"{sorted(allowed_files)}:\n" + "\n".join(f"  - {o}" for o in offenders)
+    )
+
+
+def test_api_feature_imports_are_confined_to_composition_root() -> None:
+    """Issue #229: feature imports under `app/api/` are allowed only in the composition-root files.
+
+    The import-linter `shared-no-features` contract lists `app.shared`,
+    `app.core`, and `app.schemas` but deliberately omits `app.api` because
+    `app/api/deps.py` and `app/api/health_router.py` are the composition root
+    and must reach into features to wire the DI graph. Adding `app.api` to
+    that contract's `source_modules` would break `task check` immediately,
+    but leaving it off with no replacement gate lets a future refactor
+    silently introduce feature imports into, for example, `app/api/middleware.py`
+    or `app/api/request_id_middleware.py` — eroding the composition-root
+    exception into a free pass.
+
+    This test walks every .py file under `app/api/`, and for every file
+    NOT in the composition-root allowlist, asserts that it contains no
+    static or dynamic import of `app.features.*`. Adding a new file to
+    `app/api/` that needs feature imports requires a PR that expands
+    `_API_COMPOSITION_ROOT_FILES` above, which is a code-review signal
+    that the composition-root boundary is being widened deliberately.
+    """
+    offenders: list[str] = []
+    for py_file in _API_ROOT.rglob("*.py"):
+        if py_file.name in _API_COMPOSITION_ROOT_FILES:
+            continue
+        source = py_file.read_text()
+        for dotted in _collect_static_dotted_imports(source):
+            if dotted.startswith("app.features."):
+                rel = str(py_file.relative_to(_API_ROOT))
+                offenders.append(f"{rel} statically imports {dotted}")
+        for target in _collect_dynamic_import_targets(source):
+            if target.startswith("app.features."):
+                rel = str(py_file.relative_to(_API_ROOT))
+                offenders.append(f"{rel} dynamically imports {target}")
+
+    assert not offenders, (
+        "Feature imports outside the `app/api/` composition root are forbidden. "
+        f"Allowed files: {sorted(_API_COMPOSITION_ROOT_FILES)}. Offenders:\n"
+        + "\n".join(f"  - {o}" for o in offenders)
+    )
+
+
+def test_api_composition_root_predicate_flags_a_synthetic_offender() -> None:
+    """Issue #229: the predicate must fire on a synthetic non-allowlisted source that imports features.
+
+    Companion to ``test_api_feature_imports_are_confined_to_composition_root``.
+    The filesystem-walking test passes vacuously if every file under
+    ``app/api/`` today happens to avoid feature imports (either because it
+    is allowlisted or because it genuinely has none), which would mask a
+    broken predicate. This test feeds the collectors a synthetic source
+    string that models ``app/api/middleware.py`` gaining a feature import
+    and asserts the same predicates used above would flag both the static
+    and the dynamic form. Red-fail if someone weakens the collectors or
+    the startswith check to the point where the real walk could not
+    detect a regression.
+    """
+    source = (
+        "from app.features.extraction.skills import SkillManifest  # noqa: F401\n"
+        'import importlib\nimportlib.import_module("app.features.extraction.service")\n'
+    )
+
+    static_offenders = [
+        dotted
+        for dotted in _collect_static_dotted_imports(source)
+        if dotted.startswith("app.features.")
+    ]
+    dynamic_offenders = [
+        target
+        for target in _collect_dynamic_import_targets(source)
+        if target.startswith("app.features.")
+    ]
+
+    assert "app.features.extraction.skills" in static_offenders, (
+        f"static-import predicate did not fire on synthetic offender: {static_offenders!r}"
+    )
+    assert "app.features.extraction.service" in dynamic_offenders, (
+        f"dynamic-import predicate did not fire on synthetic offender: {dynamic_offenders!r}"
     )
 
 

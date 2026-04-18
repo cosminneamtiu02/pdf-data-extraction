@@ -219,6 +219,60 @@ parser configuration does not change per language today because
 against fixture PDFs and replaced the EasyOCR-failure blocker that motivated
 this ADR.
 
+## ADR-014: `app.api` as the Composition Root (2026-04-18)
+
+**Status:** Accepted
+**Date:** 2026-04-18
+
+`app.api` is the composition root — the ONE module outside `app/features/` that
+is authorized to import from `app.features.*`. `app/api/deps.py` wires every
+pipeline component into the FastAPI DI graph via `Depends()` factories, and
+`app/api/health_router.py` imports `SkillManifest` for the `/ready` endpoint's
+empty-manifest check. `app/api/probe_cache.py` type-annotates against
+`OllamaHealthProbe` under a `TYPE_CHECKING` guard. These three files are the
+exception; every other file under `app/api/` (middleware stack, request-id,
+access-log, upload-size-limit, error handlers, response schemas) must stay
+feature-agnostic.
+
+**Rationale.** `docs/architecture.md` lists `app/api/` at the same foundational
+tier as `app/shared/`, `app/core/`, and `app/schemas/`, but unlike those three
+`app.api` cannot be feature-agnostic in practice: somewhere in the code the DI
+graph has to cross from neutral infrastructure into the feature package, and
+FastAPI's idiomatic pattern is for that to happen in a `deps.py` module co-
+located with the routers. Inventing a separate "composition-root" package
+would only rename the problem. Issue #229 surfaced that the `shared-no-features`
+import-linter contract lists `app.shared`, `app.core`, and `app.schemas` in
+`source_modules` but deliberately omits `app.api` — leaving the composition
+root's boundary implicit and undocumented.
+
+**Rejected alternative (Option B in issue #229).** Refactoring all feature-DI
+factories out of `app/api/deps.py` into `app/features/extraction/deps.py` and
+having the router consume them via a thin re-export facade. Rejected because
+the composition root must exist somewhere, and moving it into the feature
+package breaks the "feature is a self-contained vertical slice" invariant in
+the opposite direction — the router would become the composition root, and
+`deps.py` would degenerate into an import shim. Option A (document the
+existing composition root and gate it mechanically) is simpler.
+
+**Mechanical gate.** Two layers work together:
+
+1. The `shared-no-features` import-linter contract in
+   `apps/backend/architecture/import-linter-contracts.ini` carries a comment
+   block naming `app.api` as the composition-root exception and pointing at
+   the AST scan.
+2. The AST scan at
+   `apps/backend/tests/unit/architecture/test_dynamic_import_containment.py::test_api_feature_imports_are_confined_to_composition_root`
+   walks every `.py` file under `app/api/`, and for every file NOT in the
+   composition-root allowlist (`deps.py`, `health_router.py`, `probe_cache.py`)
+   asserts no static or dynamic import of `app.features.*`. Adding a new
+   file under `app/api/` that legitimately needs feature imports requires a
+   PR that expands the allowlist — a code-review signal that the composition-
+   root boundary is being widened deliberately.
+
+Both layers exist because import-linter cannot express "module X may import
+Y only if X is in this narrow allowlist" without listing every other file in
+`source_modules` (which is unwieldy and brittle).
+
 ## Superseded ADRs
 
 - **ADR-002 (offset pagination)** — superseded. There are no paginated

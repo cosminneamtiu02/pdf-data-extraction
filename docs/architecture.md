@@ -109,6 +109,17 @@ entire app, not just the extraction feature) so that `app.api`, `app.core`,
 and every other module are also forbidden from importing Docling, PyMuPDF,
 LangExtract, or httpx outside the designated files.
 
+`app.api` is the composition root — the ONE module outside `app/features/`
+authorized to import from `app.features.*`. Only `app/api/deps.py`,
+`app/api/health_router.py`, and `app/api/probe_cache.py` may reach into
+features; every other file under `app/api/` must stay feature-agnostic. The
+`shared-no-features` contract therefore deliberately omits `app.api` from its
+`source_modules` list, and the composition-root boundary is instead gated by
+the AST scan at
+`tests/unit/architecture/test_dynamic_import_containment.py::test_api_feature_imports_are_confined_to_composition_root`.
+See [ADR-014](decisions.md#adr-014-appapi-as-the-composition-root-2026-04-18)
+for the rationale and enforcement details.
+
 C3 (Docling) permits three files inside `app/features/extraction/parsing/`:
 `docling_document_parser.py` (the public coordinator),
 `_real_docling_converter_adapter.py` (lazy-imports Docling to build the real
