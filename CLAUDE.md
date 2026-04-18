@@ -33,6 +33,11 @@ and the epic + feature graph tree at [`docs/graphs/PDFX/`](docs/graphs/PDFX/).
 3. No paradigm drift. One way to do each thing. If you think a second way is
    needed, stop and ask.
 4. Run `task check` before declaring any work done. Never use `--no-verify`.
+   Every required gate (lint, types, arch, skills, tests, errors) is enumerated
+   directly in the `check` task's `cmds:` list in `Taskfile.yml` — never reach a
+   gate only via a sibling task (issue #215). A meta-test in
+   `apps/backend/tests/unit/architecture/test_taskfile_check_hygiene.py` pins
+   this invariant.
 
 ## Architecture
 
