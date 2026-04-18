@@ -311,6 +311,39 @@ def test_duplicate_output_schema_property_keys_raise_skill_validation_error(
     assert "'amount_due'" in reason
 
 
+def test_merge_key_still_applied_by_duplicate_key_detecting_loader(
+    tmp_path: Path,
+) -> None:
+    """YAML merge keys (``<<: *anchor``) must still flatten into the mapping.
+
+    Parity guard for the custom loader: our constructor replaces only the
+    duplicate-detection step of PyYAML's default ``SafeConstructor.construct_mapping``,
+    not the ``flatten_mapping`` call that applies YAML merge keys. Without
+    ``loader.flatten_mapping(node)`` the merge-key syntax would silently
+    disappear from the loaded dict — a behavior change vs. plain
+    ``yaml.safe_load`` that would be a footgun for skill authors.
+    """
+    path = tmp_path / "1.yaml"
+    path.write_text(
+        "name: invoice\n"
+        "version: 1\n"
+        'prompt: "Extract."\n'
+        'examples:\n  - input: "x"\n    output: {a: "1"}\n'
+        "output_schema:\n"
+        "  type: object\n"
+        "  properties:\n"
+        "    defaults: &defaults\n"
+        "      type: string\n"
+        "    a:\n"
+        "      <<: *defaults\n",
+        encoding="utf-8",
+    )
+
+    schema = SkillYamlSchema.load_from_file(path)
+
+    assert schema.output_schema["properties"]["a"]["type"] == "string"
+
+
 def test_optional_docling_defaults_to_none(
     write_skill_yaml: SkillYamlFactory,
 ) -> None:

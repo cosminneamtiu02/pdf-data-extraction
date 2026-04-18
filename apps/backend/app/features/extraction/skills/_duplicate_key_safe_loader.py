@@ -28,6 +28,12 @@ def _construct_mapping_rejecting_duplicates(
     overwrite the first value with the second. The raised error carries the
     duplicate key's source location so the author can jump straight to it.
     """
+    # Parity with PyYAML's default ``SafeConstructor.construct_mapping``:
+    # flatten the node first so YAML merge keys (``<<: *anchor``) and related
+    # normalization are applied before we walk ``node.value``. Our contract
+    # only replaces the duplicate-detection step — everything else about
+    # mapping construction must behave exactly like the upstream loader.
+    loader.flatten_mapping(node)
     mapping: dict[Any, Any] = {}
     context = "while constructing a mapping"
     # PyYAML's stubs expose ``construct_object`` with an ``Unknown`` return,
@@ -54,7 +60,7 @@ class DuplicateKeyDetectingSafeLoader(yaml.SafeLoader):
     """``yaml.SafeLoader`` subclass that fails on duplicate mapping keys.
 
     Use instead of ``yaml.safe_load`` wherever a YAML author's intent would
-    be silently erased by the stdlib behavior. Raises
+    be silently erased by PyYAML's default-loader behavior. Raises
     ``yaml.constructor.ConstructorError`` (a ``yaml.YAMLError`` subclass),
     so existing ``except yaml.YAMLError`` handlers catch it unchanged.
     """
