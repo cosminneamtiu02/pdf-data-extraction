@@ -315,6 +315,19 @@ class _RealDoclingDocumentAdapter:
     convention (origin bottom-left, `y0 <= y1`) and matches PyMuPDF, which
     the annotator uses downstream without further transformation. (GH issue
     #133.)
+
+    Reading order (GH issue #150): the traversal delegates to Docling's
+    public `DoclingDocument.iterate_items()` API, which walks the document
+    hierarchy in visual READING order (top-to-bottom, left-to-right per
+    page, respecting column and table structure). Iterating `.texts`
+    directly — as an earlier revision did — returns items in Docling's
+    implementation-dependent STORAGE order, which on multi-column / table-
+    heavy layouts interleaves columns incorrectly and causes downstream
+    span-resolution failures (LangExtract reports `hallucinated_offsets`
+    for values that are in fact present in the source PDF). The fallback
+    to `.texts` is retained only for documents whose shape predates
+    `iterate_items()` (e.g., minimal test doubles in other features' fakes);
+    real Docling-produced documents always expose `iterate_items()`.
     """
 
     def __init__(self, docling_document: Any) -> None:
@@ -326,9 +339,8 @@ class _RealDoclingDocumentAdapter:
         return len(pages)
 
     def iter_text_items(self) -> Iterable[_DoclingTextItemLike]:
-        texts: Any = getattr(self._docling_document, "texts", None) or []
         pages: Any = getattr(self._docling_document, "pages", None) or {}
-        for text_item in texts:
+        for text_item in self._iter_reading_order():
             item: Any = text_item
             text_value: Any = getattr(item, "text", None)
             provs: Any = getattr(item, "prov", None) or []
@@ -361,6 +373,34 @@ class _RealDoclingDocumentAdapter:
                 bbox_x1=float(bbox.r),
                 bbox_y1=float(bbox.t),
             )
+
+    def _iter_reading_order(self) -> Iterable[Any]:
+        """Yield every Docling node item in visual reading order.
+
+        Uses `DoclingDocument.iterate_items()` when available — this is
+        Docling's public reading-order traversal API (Docling >= 2.x) and
+        yields `(item, level)` tuples for every node in the document tree,
+        in top-to-bottom / left-to-right / per-column visual order. The
+        caller filters down to text-bearing items by testing `.text` and
+        `.prov` attributes, so non-text nodes (tables, pictures) are
+        ignored without a type check against Docling's own class hierarchy
+        — preserving this file's containment of Docling's public types.
+
+        When `iterate_items()` is not available (legacy documents or test
+        doubles that predate this API), the adapter falls back to iterating
+        `.texts` directly, which is Docling's internal storage order. That
+        fallback is imperfect on multi-column layouts but keeps the adapter
+        robust against shape drift. Real Docling-produced documents always
+        expose `iterate_items()`.
+        """
+        iterate_items: Any = getattr(self._docling_document, "iterate_items", None)
+        if callable(iterate_items):
+            iterator: Any = iterate_items()
+            for pair in iterator:
+                item: Any = pair[0]
+                yield item
+            return
+        yield from getattr(self._docling_document, "texts", None) or []
 
 
 @dataclass(frozen=True)
