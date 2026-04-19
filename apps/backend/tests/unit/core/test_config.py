@@ -129,16 +129,30 @@ def test_settings_ollama_base_url_credentials_not_in_repr() -> None:
     Operators running Ollama behind an authenticated proxy embed the password
     in the URL (``http://user:pass@proxy:11434``). Any ``repr(settings)`` that
     surfaces in an exception traceback, a debug dump, or a structlog payload
-    would then leak the credential. ``Field(repr=False)`` on the field prevents
-    Pydantic from including the value in the model's ``repr`` — issue #284.
+    would then leak the credential. ``Field(repr=False)`` on the field tells
+    Pydantic to omit the field entirely from the model's ``repr`` — both the
+    name and the value — see issue #284.
+
+    The sentinel-value assertion is robust against env-bleed: the test owns
+    the value it greps for, so other settings populated from ``.env`` or
+    process env cannot accidentally satisfy or break it. ``_env_file=None``
+    keeps the rest of the repr deterministic.
     """
-    s = Settings(ollama_base_url="http://user:secret@proxy.internal:11434")
+    sentinel = "PUD7HRfAlzrhN-Sentinel-284"
+    credentialed_url = f"http://operator:{sentinel}@proxy.internal:11434"
+    s = Settings(  # type: ignore[call-arg]
+        _env_file=None,
+        ollama_base_url=credentialed_url,
+    )
     rendered = repr(s)
-    assert "secret" not in rendered
-    assert "user" not in rendered
-    # The field name itself is fine to appear; only the *value* must be
-    # redacted. If a future pydantic release changes how ``repr=False`` is
-    # implemented, this assertion fails loudly.
+    # Primary contract: the credential value must never leak.
+    assert sentinel not in rendered
+    assert credentialed_url not in rendered
+    # ``Field(repr=False)`` omits the field entirely, so the field name
+    # must also be absent. If a future pydantic release weakens that
+    # contract (e.g. renders ``ollama_base_url=<hidden>``), this assertion
+    # fails loudly — the credential value check above remains the
+    # load-bearing security guarantee.
     assert "ollama_base_url" not in rendered
 
 
