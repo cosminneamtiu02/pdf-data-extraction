@@ -18,14 +18,18 @@ three gaps:
 
 3. **Composition-root containment for `app/api/`** (issue #229) - the
    `shared-no-features` import-linter contract covers `app.shared`,
-   `app.core`, and `app.schemas` but not `app.api`, because `app.api` is
-   the composition root and three files (`deps.py`, `health_router.py`,
-   `probe_cache.py`) legitimately import from `app.features.extraction.*`
-   to wire DI factories and type-annotate feature handles. Without a
-   mechanical gate, any future file under `app/api/` could silently
-   acquire feature-internal imports and erode the "composition root is an
-   exception, not a free pass" invariant. This AST scan asserts feature
-   imports only appear in the authorized composition-root files.
+   `app.core`, and `app.schemas` but not `app.api`, because `app.api`
+   contains composition-root files (`deps.py`, `health_router.py`,
+   `probe_cache.py`) that legitimately import from `app.features.extraction.*`
+   to wire DI factories and type-annotate feature handles. `app/main.py`
+   is the other composition point (the FastAPI app factory: builds the
+   startup probe, loads skills, and includes the extraction router) and
+   is therefore also outside the scope of the `app/api/` gate. Without
+   a mechanical gate on `app/api/`, any future file under that package
+   could silently acquire feature-internal imports and erode the
+   "composition root is an exception, not a free pass" invariant. This
+   AST scan asserts feature imports only appear in the authorized
+   composition-root files under `app/api/`.
 """
 
 from __future__ import annotations
@@ -44,10 +48,12 @@ _API_ROOT: Final[Path] = _APP_ROOT / "api"
 
 # Composition-root allowlist (issue #229). Only these files under `app/api/`
 # may statically or dynamically import from `app.features.*`. They wire the DI
-# graph from features into the FastAPI app and are the ONE documented exception
-# to the "modules outside features do not reach into features" invariant. Every
-# other file under `app/api/` (middleware, request-id, schemas, exception
-# handlers, ...) must stay feature-agnostic.
+# graph from features into the FastAPI app and are the `app/api/`-scoped
+# exception to the "modules outside features do not reach into features"
+# invariant. `app/main.py` (the FastAPI app factory) is the other composition
+# point outside `app/features/` and is out of scope of this gate because this
+# scan only walks `app/api/`. Every other file under `app/api/` (middleware,
+# request-id, schemas, exception handlers, ...) must stay feature-agnostic.
 #
 # `probe_cache.py` is included because it type-annotates against
 # `OllamaHealthProbe` (a feature type) under a `TYPE_CHECKING` guard. The AST
@@ -155,6 +161,26 @@ def _target_matches_package(target: str, package: str) -> bool:
     return target == package or target.startswith(package + ".")
 
 
+def _is_api_composition_root_file(py_file: Path, api_root: Path) -> bool:
+    """Return True iff `py_file` is an allowlisted composition-root file.
+
+    Extracted so both the filesystem walk
+    (``test_api_feature_imports_are_confined_to_composition_root``) and the
+    synthetic subdir-namesake regression test
+    (``test_api_composition_root_allowlist_rejects_subdir_namesake``) invoke the
+    SAME predicate. Keeping the real walk and the synthetic test coupled to one
+    helper means any regression to basename-keyed allowlisting fails both at
+    once; a prior draft used a locally-defined ``allowlist`` in the synthetic
+    test that could stay green even if the production scan regressed.
+
+    The allowlist is keyed on the RELATIVE POSIX path from ``api_root`` (not
+    the basename) so a file at ``app/api/schemas/deps.py`` cannot evade the
+    gate by colliding basenames with the top-level ``app/api/deps.py``.
+    """
+    rel = py_file.relative_to(api_root).as_posix()
+    return rel in _API_COMPOSITION_ROOT_FILES
+
+
 def test_extraction_does_not_import_from_sibling_features() -> None:
     """C1 real enforcement: no file under extraction/ may import app.features.<non-extraction>.
 
@@ -163,7 +189,7 @@ def test_extraction_does_not_import_from_sibling_features() -> None:
     """
     offenders: list[str] = []
     for py_file in _EXTRACTION_ROOT.rglob("*.py"):
-        source = py_file.read_text()
+        source = py_file.read_text(encoding="utf-8")
         for dotted in _collect_static_dotted_imports(source):
             if dotted.startswith("app.features.") and not dotted.startswith(
                 "app.features.extraction"
@@ -206,7 +232,7 @@ def test_dynamic_imports_of_contained_packages_are_allowlisted(
     for py_file in _APP_ROOT.rglob("*.py"):
         if py_file.name in allowed_files:
             continue
-        targets = _collect_dynamic_import_targets(py_file.read_text())
+        targets = _collect_dynamic_import_targets(py_file.read_text(encoding="utf-8"))
         if any(_target_matches_package(target, package) for target in targets):
             rel = str(py_file.relative_to(_APP_ROOT))
             offenders.append(rel)
@@ -237,7 +263,7 @@ def test_static_imports_of_contained_packages_are_allowlisted(
     for py_file in _APP_ROOT.rglob("*.py"):
         if py_file.name in allowed_files:
             continue
-        roots = _collect_static_root_imports(py_file.read_text())
+        roots = _collect_static_root_imports(py_file.read_text(encoding="utf-8"))
         if package in roots:
             rel = str(py_file.relative_to(_APP_ROOT))
             offenders.append(rel)
@@ -280,10 +306,10 @@ def test_api_feature_imports_are_confined_to_composition_root() -> None:
     """
     offenders: list[str] = []
     for py_file in _API_ROOT.rglob("*.py"):
-        rel = py_file.relative_to(_API_ROOT).as_posix()
-        if rel in _API_COMPOSITION_ROOT_FILES:
+        if _is_api_composition_root_file(py_file, _API_ROOT):
             continue
-        source = py_file.read_text()
+        rel = py_file.relative_to(_API_ROOT).as_posix()
+        source = py_file.read_text(encoding="utf-8")
         offenders.extend(
             f"{rel} statically imports {dotted}"
             for dotted in _collect_static_dotted_imports(source)
@@ -419,7 +445,7 @@ def test_collect_dynamic_import_targets_records_builtin___import___with_dotted_p
 
 
 def test_api_composition_root_predicate_flags_bare_app_features_package_import() -> None:
-    """Copilot PR #247: the predicate must also fire on bare-package feature imports.
+    """Issue #229: the predicate must also fire on bare-package feature imports.
 
     A plain ``import app.features`` or ``from app.features import extraction``
     gets collected as the dotted target ``"app.features"`` (no trailing dot),
@@ -464,40 +490,52 @@ def test_api_composition_root_predicate_flags_bare_app_features_package_import()
 
 
 def test_api_composition_root_allowlist_rejects_subdir_namesake(tmp_path: Path) -> None:
-    """Copilot PR #247: a subdir file with an allowlisted basename must NOT bypass the gate.
+    """Issue #229: a subdir file with an allowlisted basename must NOT bypass the gate.
 
     The original implementation keyed the allowlist on ``py_file.name``, so a
     file at ``app/api/schemas/deps.py`` would evade enforcement by sharing the
     basename ``deps.py`` with the composition-root ``app/api/deps.py``. The
-    fix keys the allowlist on the relative path from ``_API_ROOT``
+    fix keys the allowlist on the relative path from the api-root
     (``as_posix()``), so only ``deps.py``, ``health_router.py``, and
     ``probe_cache.py`` at the top of ``app/api/`` are allowed to reach into
     features.
 
-    Builds a synthetic ``api`` tree under ``tmp_path`` to exercise the
-    allowlist predicate in isolation (avoids depending on the real tree).
+    Asserts the REAL production predicate ``_is_api_composition_root_file``
+    (the same helper used by
+    ``test_api_feature_imports_are_confined_to_composition_root``) classifies
+    these synthetic files correctly. If someone regresses the production walk
+    back to ``py_file.name`` membership, this test fails alongside the real
+    walk, instead of passing vacuously against a locally-defined allowlist.
     """
     api_root = tmp_path / "api"
     (api_root / "schemas").mkdir(parents=True)
     top_level_deps = api_root / "deps.py"
     nested_deps = api_root / "schemas" / "deps.py"
-    top_level_deps.write_text("# composition root — feature imports allowed\n")
+    top_level_deps.write_text("# composition root - feature imports allowed\n", encoding="utf-8")
     nested_deps.write_text(
-        "from app.features.extraction.skills import SkillManifest  # noqa: F401\n"
+        "from app.features.extraction.skills import SkillManifest  # noqa: F401\n",
+        encoding="utf-8",
     )
 
-    allowlist = frozenset({"deps.py", "health_router.py", "probe_cache.py"})
+    # Sanity: both files share the same basename, so any basename-keyed
+    # predicate would accept both.
+    assert top_level_deps.name == nested_deps.name == "deps.py"
 
-    # Basename-keyed allowlist (the OLD broken behavior) — accepts both files.
-    assert top_level_deps.name in allowlist
-    assert nested_deps.name in allowlist, "sanity: both files share the same basename"
+    # The REAL predicate used by the production walk must accept the top-level
+    # file and reject the nested namesake. Coupling the regression test to
+    # `_is_api_composition_root_file` means a basename-regression fails this
+    # test alongside the filesystem walk rather than staying green against a
+    # divergent locally-defined allowlist.
+    assert _is_api_composition_root_file(top_level_deps, api_root), (
+        "top-level deps.py must be allowlisted by the production predicate"
+    )
+    assert not _is_api_composition_root_file(nested_deps, api_root), (
+        "schemas/deps.py must NOT be allowlisted by the production predicate via basename collision"
+    )
 
-    # Relative-path-keyed allowlist (the NEW correct behavior) — only the top-level file.
-    top_rel = top_level_deps.relative_to(api_root).as_posix()
-    nested_rel = nested_deps.relative_to(api_root).as_posix()
-    assert top_rel == "deps.py"
-    assert nested_rel == "schemas/deps.py"
-    assert top_rel in allowlist, "top-level deps.py must still be allowlisted"
-    assert nested_rel not in allowlist, (
-        "schemas/deps.py must NOT be treated as allowlisted via basename collision"
+    # Belt-and-braces: the allowlist constant itself must contain only the
+    # expected relative-POSIX keys, so an accidental basename entry would
+    # also be caught here.
+    assert _API_COMPOSITION_ROOT_FILES == frozenset(  # noqa: SIM300 - assertion pairs the constant on the left for readability
+        {"deps.py", "health_router.py", "probe_cache.py"}
     )

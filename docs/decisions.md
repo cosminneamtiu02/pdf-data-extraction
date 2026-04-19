@@ -224,15 +224,19 @@ this ADR.
 **Status:** Accepted
 **Date:** 2026-04-18
 
-`app.api` is the composition root — the ONE module outside `app/features/` that
-is authorized to import from `app.features.*`. `app/api/deps.py` wires every
-pipeline component into the FastAPI DI graph via `Depends()` factories, and
-`app/api/health_router.py` imports `SkillManifest` for the `/ready` endpoint's
-empty-manifest check. `app/api/probe_cache.py` type-annotates against
-`OllamaHealthProbe` under a `TYPE_CHECKING` guard. These three files are the
-exception; every other file under `app/api/` (middleware stack, request-id,
-access-log, upload-size-limit, error handlers, response schemas) must stay
-feature-agnostic.
+The composition root — the set of modules outside `app/features/` authorized
+to import from `app.features.*` — is split across two locations: three files
+under `app/api/` and `app/main.py`. Under `app/api/`, `deps.py` wires every
+pipeline component into the FastAPI DI graph via `Depends()` factories,
+`health_router.py` imports `SkillManifest` for the `/ready` endpoint's
+empty-manifest check, and `probe_cache.py` type-annotates against
+`OllamaHealthProbe` under a `TYPE_CHECKING` guard. `app/main.py` (the FastAPI
+app factory) imports `OllamaHealthProbe`, `SkillLoader` / `SkillManifest` /
+`SkillDoclingConfig`, the extraction router, and `build_tags_url` from the
+intelligence provider to assemble the ASGI application and run the startup
+probe. These four files are the exception; every other file under `app/api/`
+(middleware stack, request-id, access-log, upload-size-limit, error handlers,
+response schemas) must stay feature-agnostic.
 
 **Rationale.** `docs/architecture.md` lists `app/api/` at the same foundational
 tier as `app/shared/`, `app/core/`, and `app/schemas/`, but unlike those three
@@ -262,12 +266,19 @@ existing composition root and gate it mechanically) is simpler.
    the AST scan.
 2. The AST scan at
    `apps/backend/tests/unit/architecture/test_dynamic_import_containment.py::test_api_feature_imports_are_confined_to_composition_root`
-   walks every `.py` file under `app/api/`, and for every file NOT in the
-   composition-root allowlist (`deps.py`, `health_router.py`, `probe_cache.py`)
-   asserts no static or dynamic import of `app.features.*`. Adding a new
-   file under `app/api/` that legitimately needs feature imports requires a
-   PR that expands the allowlist — a code-review signal that the composition-
-   root boundary is being widened deliberately.
+   walks every `.py` file under `app/api/` recursively (`rglob("*.py")`),
+   and for every file NOT in the composition-root allowlist (`deps.py`,
+   `health_router.py`, `probe_cache.py`) asserts no static or dynamic
+   import of `app.features.*`. Adding a new file under `app/api/` that
+   legitimately needs feature imports requires a PR that expands the
+   allowlist — a code-review signal that the composition-root boundary is
+   being widened deliberately.
+
+`app/main.py` is out of scope of the `app/api/` AST gate because it is not
+under that package; it is the app factory and a natural composition point.
+The gate above specifically protects against feature imports drifting into
+middleware, request-id helpers, error handlers, and other non-wiring files
+under `app/api/` — not against adding legitimate wiring to `app/main.py`.
 
 Both layers exist because import-linter cannot express "module X may import
 Y only if X is in this narrow allowlist" without listing every other file in
