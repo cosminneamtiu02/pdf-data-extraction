@@ -20,7 +20,7 @@ from pathlib import Path
 from pydantic_settings import BaseSettings
 
 from app.core.config import Settings
-from scripts._benchmark_settings import BenchmarkSettings
+from scripts import BenchmarkSettings
 
 # Fields that intentionally do NOT appear in ``.env.example``. Empty today;
 # add entries with an inline comment explaining the waiver if the need ever
