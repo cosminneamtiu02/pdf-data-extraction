@@ -111,8 +111,8 @@ def test_deploy_job_is_gated_on_deploy_enabled_variable() -> None:
     )
 
 
-def test_deploy_job_has_no_unconditional_exit_one() -> None:
-    """No step in the `deploy` job may carry a raw `exit 1`.
+def test_deploy_job_has_no_literal_exit_one() -> None:
+    """No step in the `deploy` job may carry a literal `exit 1` statement.
 
     The pre-#270 workflow shipped a ``Push to registry`` step whose body
     was ``echo "::error::..."; exit 1`` — a permanent red annotation that
@@ -121,6 +121,14 @@ def test_deploy_job_has_no_unconditional_exit_one() -> None:
     job runs, a forgotten ``exit 1`` in the body would reintroduce the
     red. Keep the body a descriptive placeholder that exits cleanly until
     the real registry push replaces it.
+
+    The check is a literal-match detector, not a conditional-awareness
+    parser: once issue #121 wires up a real push that legitimately exits
+    non-zero on failure, adjust the invariant (e.g. scope to placeholder
+    steps only) rather than trying to teach the static test about bash
+    control flow. Similarly, the regex does not attempt to strip quoted
+    strings, so a contrived ``echo "exit 1"`` inside a ``run:`` block
+    would false-positive — reword the message if it ever happens.
     """
     workflow = _load_deploy_workflow()
     deploy_job = (workflow.get("jobs") or {}).get("deploy")
