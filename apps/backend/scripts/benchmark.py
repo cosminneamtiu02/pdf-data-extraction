@@ -36,7 +36,7 @@ import httpx
 import structlog
 from pydantic import ValidationError
 
-from app.core.benchmark_settings import BenchmarkSettings
+from scripts._benchmark_settings import BenchmarkSettings
 
 _logger = structlog.get_logger(__name__)
 
@@ -504,7 +504,7 @@ def _format_bench_error_source(loc: str, cli_overrides: dict[str, Any]) -> str:
 def parse_args(argv: list[str]) -> BenchConfig:
     """Parse CLI arguments and return a ``BenchConfig``.
 
-    Defaults come from :class:`app.core.benchmark_settings.BenchmarkSettings`,
+    Defaults come from :class:`scripts._benchmark_settings.BenchmarkSettings`,
     so ``BENCH_*`` environment variables flow through pydantic-settings
     rather than ``os.environ`` (CLAUDE.md forbidden pattern; issue #237).
     Explicit CLI flags still win over env vars.
