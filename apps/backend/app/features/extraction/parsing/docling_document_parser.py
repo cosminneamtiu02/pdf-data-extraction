@@ -130,7 +130,9 @@ def _default_pdf_preflight(pdf_bytes: bytes) -> int:
         # symbol resolves to an exception type) maps to ``PdfInvalidError``.
         # Anything else — ``ValueError`` (programmer error), ``MemoryError``,
         # ``OSError``, arbitrary ``RuntimeError`` — propagates as 500.
-        if not invalid_exception_classes or not isinstance(exc, invalid_exception_classes):
+        # ``isinstance(x, ())`` is valid and always False, so the degraded
+        # (empty-tuple) case is handled by this single check.
+        if not isinstance(exc, invalid_exception_classes):
             raise
         _log.info("pdf_invalid", reason=type(exc).__name__)
         raise PdfInvalidError from exc

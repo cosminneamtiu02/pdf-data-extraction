@@ -605,13 +605,14 @@ def test_default_preflight_passes_through_memory_error(
         _default_pdf_preflight(b"%PDF-fake")
 
 
-def test_default_preflight_propagates_value_error_from_open_as_500(
+def test_default_preflight_propagates_value_error_from_open_unchanged(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """PyMuPDF raises ``ValueError`` for argument-shape bugs (e.g. ``stream=str``
     instead of ``bytes``). Those are programmer errors in the calling code,
-    not malformed PDF bytes, so they must propagate as 500 rather than being
-    misclassified as ``PdfInvalidError`` (400).
+    not malformed PDF bytes, so the preflight must propagate the ``ValueError``
+    unchanged rather than wrapping it as ``PdfInvalidError``. At the API
+    boundary this becomes a 500 via the DomainError handler chain.
 
     Regression guard for #278.
     """
@@ -754,12 +755,13 @@ def test_default_preflight_propagates_value_error_when_file_data_error_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Even when ``FileDataError`` is missing, ``ValueError`` from ``pymupdf.open``
-    must propagate unchanged (500), not be reclassified as ``PdfInvalidError``
-    (400).
+    must propagate unchanged rather than being reclassified as
+    ``PdfInvalidError``.
 
     ``ValueError`` is a programmer-error signal (wrong argument shape); the
     caller has a bug, not the PDF bytes. Reclassifying it as 400 would hide
-    real bugs behind a user-facing "malformed PDF" response. See #278.
+    real bugs behind a user-facing "malformed PDF" response. At the API
+    boundary the propagated ``ValueError`` becomes a 500. See #278.
     """
     fake_mod = _build_fake_pymupdf_module_without_file_data_error()
     _set_open_raises(fake_mod, ValueError("bad stream"))
