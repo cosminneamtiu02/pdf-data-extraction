@@ -77,9 +77,14 @@ def load_and_validate(errors_path: Path) -> ErrorsYaml:
     tabs, trailing whitespace before the colon, quoted form, flow-style
     mappings, or any mapping nested deeper than the baked-in two-space
     indent. The loader subclass overrides mapping construction so every
-    duplicate fires a ``ConstructorError`` at parse time. We re-raise
-    the constructor error as ``ValueError`` to preserve this module's
-    existing raise contract.
+    duplicate fires a ``ConstructorError`` at parse time.
+
+    Every ``yaml.YAMLError`` (the superclass of ``ConstructorError``,
+    ``ParserError``, ``ScannerError``, …) is re-raised as ``ValueError``
+    with the source path prepended so callers keep a single
+    ``except ValueError`` handler regardless of which sub-failure YAML
+    raised. Duplicate-key detection is only one of several YAML-layer
+    failures that now surface through the same contract.
     """
     raw_text = errors_path.read_text()
 
@@ -88,11 +93,9 @@ def load_and_validate(errors_path: Path) -> ErrorsYaml:
             raw_text,
             Loader=DuplicateKeyDetectingSafeLoader,
         )
-    except yaml.constructor.ConstructorError as exc:
-        if "duplicate key" in str(exc):
-            msg = f"Duplicate key in {errors_path}: {exc}"
-            raise ValueError(msg) from exc
-        raise
+    except yaml.YAMLError as exc:
+        msg = f"YAML error in {errors_path}: {exc}"
+        raise ValueError(msg) from exc
     if not isinstance(loaded, dict):
         msg = f"errors.yaml top-level must be a mapping, got {type(loaded).__name__}"
         raise ValueError(msg)

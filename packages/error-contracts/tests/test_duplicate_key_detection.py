@@ -88,6 +88,19 @@ NESTED_DUPLICATE_PARAMS_YAML = (
     "      widget_id: integer\n"
 )
 
+# Leading tab indentation on a flow-style mapping (PR #314 review follow-up).
+# The regex's ``^  (\w+):$`` pattern required exactly two spaces before the
+# key; a flow-style block with tab-separated duplicate keys sailed past it
+# because the key line started with a non-space prefix. YAML's scanner
+# accepts flow-style mappings with tab whitespace between tokens, so the
+# loader subclass is the only backstop.
+TAB_INDENTED_DUPLICATE_YAML = (
+    "version: 1\n"
+    "errors:\n"
+    "\t{ MY_KEY: {http_status: 404, params: {}}, "
+    "MY_KEY: {http_status: 500, params: {}} }\n"
+)
+
 
 @pytest.mark.parametrize(
     ("name", "yaml_text"),
@@ -96,6 +109,7 @@ NESTED_DUPLICATE_PARAMS_YAML = (
         ("trailing_whitespace", TRAILING_WHITESPACE_DUPLICATE_YAML),
         ("quoted_form", QUOTED_FORM_DUPLICATE_YAML),
         ("nested_params_mapping", NESTED_DUPLICATE_PARAMS_YAML),
+        ("tab_indented_flow", TAB_INDENTED_DUPLICATE_YAML),
     ],
 )
 def test_duplicate_keys_are_rejected(tmp_path: Path, name: str, yaml_text: str) -> None:
