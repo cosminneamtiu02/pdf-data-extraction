@@ -155,7 +155,7 @@ def _collect_dynamic_import_targets(source: str) -> set[str]:
         func = node.func
         is_dynamic_import = False
         if (isinstance(func, ast.Attribute) and func.attr in {"import_module", "find_spec"}) or (
-            isinstance(func, ast.Name) and func.id in {"import_module", "__import__"}
+            isinstance(func, ast.Name) and func.id in {"import_module", "__import__", "find_spec"}
         ):
             is_dynamic_import = True
         if is_dynamic_import and node.args:
@@ -485,6 +485,32 @@ def test_collect_dynamic_import_targets_records_util_find_spec_with_dotted_path(
     predicate uses a dotted-prefix check.
     """
     source = 'import importlib.util\nimportlib.util.find_spec("app.features.billing.foo")\n'
+    targets = _collect_dynamic_import_targets(source)
+    assert targets == {"app.features.billing.foo"}
+
+
+def test_collect_dynamic_import_targets_records_direct_find_spec_import() -> None:
+    """The collector must also catch the direct-import form of ``find_spec``.
+
+    ``from importlib.util import find_spec`` followed by a bare
+    ``find_spec("langextract")`` call reaches the symbol by ``ast.Name`` rather
+    than ``ast.Attribute``; treating the attribute form alone leaves an easy
+    containment-gate bypass. Mirrors the ``__import__`` / bare ``import_module``
+    branch already handled by the same walker. (PR #310 review follow-up.)
+    """
+    source = 'from importlib.util import find_spec\nfind_spec("langextract")\n'
+    targets = _collect_dynamic_import_targets(source)
+    assert "langextract" in targets
+
+
+def test_collect_dynamic_import_targets_records_direct_find_spec_with_dotted_path() -> None:
+    """Direct-import ``find_spec`` must also store the FULL dotted target.
+
+    Same invariant as the attribute form — storing only the package root would
+    let a containment rule whose predicate checks for ``app.features.<X>``
+    silently pass a probe against a sibling feature's submodule.
+    """
+    source = 'from importlib.util import find_spec\nfind_spec("app.features.billing.foo")\n'
     targets = _collect_dynamic_import_targets(source)
     assert targets == {"app.features.billing.foo"}
 
