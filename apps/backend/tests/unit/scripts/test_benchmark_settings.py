@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from app.core.benchmark_settings import BenchmarkSettings
+from scripts._benchmark_settings import BenchmarkSettings
 
 
 def test_benchmark_settings_defaults() -> None:
