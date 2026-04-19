@@ -72,6 +72,18 @@ class SkillYamlSchema(BaseModel):
             # known path; inner-validator raises never escape unwrapped.
             raise SkillValidationFailedError(file="", reason="\n".join(problems)) from exc
 
+        if _uses_unsupported_composition_root(self.output_schema):
+            problems.append(
+                "output_schema uses composition (anyOf/oneOf/allOf) or $ref at "
+                "the root, which is not yet supported for extraction skills: "
+                "the engine derives field names strictly from top-level "
+                "'properties' (see declared_field_names in extraction_engine), "
+                "so composition-rooted schemas would load successfully but "
+                "silently produce zero-field extractions at runtime. Declare "
+                "explicit 'properties' at the root instead. Issue #289.",
+            )
+            raise SkillValidationFailedError(file="", reason="\n".join(problems))
+
         if _is_empty_object_schema(self.output_schema):
             problems.append(
                 "output_schema must declare at least one entry in 'properties' "
@@ -192,6 +204,22 @@ def _format_pydantic_errors(exc: ValidationError) -> str:
     return "; ".join(parts)
 
 
+_UNSUPPORTED_COMPOSITION_KEYS: tuple[str, ...] = ("anyOf", "oneOf", "allOf", "$ref")
+
+
+def _uses_unsupported_composition_root(schema: dict[str, Any]) -> bool:
+    """Return True when the root schema delegates shape via composition or $ref.
+
+    Draft 7 permits these keys as valid schema roots, but the extraction
+    engine's ``declared_field_names`` derives fields strictly from top-level
+    ``properties``. A composition-rooted schema would load successfully and
+    then silently produce zero-field extractions at runtime. Reject at load
+    time with a clearer error than the generic "empty object" branch would
+    emit (issue #289).
+    """
+    return any(key in schema for key in _UNSUPPORTED_COMPOSITION_KEYS)
+
+
 def _is_empty_object_schema(schema: dict[str, Any]) -> bool:
     """Return True when `schema` permits object output but declares zero properties.
 
@@ -212,15 +240,11 @@ def _is_empty_object_schema(schema: dict[str, Any]) -> bool:
     `{"type": ["string", "null"]}`) are outside the scope of this invariant —
     they would fail elsewhere if ever used for an extraction skill.
 
-    A schema that delegates its shape via composition (`anyOf`, `oneOf`,
-    `allOf`) or reference (`$ref`) is never empty regardless of absent
-    `type` or `properties`. Draft 7 permits these as valid root shapes
-    (issue #289); the prior heuristic mis-classified them as empty when
-    `type` happened to be omitted.
+    Composition (`anyOf`/`oneOf`/`allOf`) and `$ref` roots are rejected
+    by a separate guard in the model validator because the extraction
+    engine only knows how to derive field names from top-level
+    `properties`. See `_uses_unsupported_composition_root`.
     """
-    if any(key in schema for key in ("anyOf", "oneOf", "allOf", "$ref")):
-        return False
-
     declared_type = schema.get("type")
     if declared_type is None:
         allows_object = True

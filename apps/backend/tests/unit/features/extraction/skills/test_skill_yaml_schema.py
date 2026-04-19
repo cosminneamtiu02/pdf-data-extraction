@@ -551,15 +551,6 @@ def test_output_schema_with_zero_declared_properties_rejected_at_load_time(
         ({"type": "string"}, False),
         ({"type": ["string", "null"]}, False),
         ({"type": ["integer", "number"]}, False),
-        # Root-shape delegation (#289): anyOf/oneOf/allOf/$ref are always non-empty.
-        ({"anyOf": [{"type": "string"}, {"type": "number"}]}, False),
-        ({"oneOf": [{"type": "string"}, {"type": "object"}]}, False),
-        ({"allOf": [{"type": "object", "properties": {"x": {"type": "string"}}}]}, False),
-        ({"$ref": "#/definitions/Foo"}, False),
-        # Array root: type=array already returns False via allows_object branch.
-        ({"type": "array", "items": {"type": "string"}}, False),
-        # anyOf combined with no properties at root must still be recognised.
-        ({"anyOf": [{"type": "string"}]}, False),
     ],
 )
 def test_is_empty_object_schema_classifies_draft7_type_variants(
@@ -580,6 +571,85 @@ def test_is_empty_object_schema_classifies_draft7_type_variants(
     )
 
     assert _is_empty_object_schema(schema) is expected
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        pytest.param({"anyOf": [{"type": "string"}, {"type": "number"}]}, id="anyOf"),
+        pytest.param({"oneOf": [{"type": "string"}, {"type": "object"}]}, id="oneOf"),
+        pytest.param(
+            {"allOf": [{"type": "object", "properties": {"x": {"type": "string"}}}]},
+            id="allOf",
+        ),
+        pytest.param({"$ref": "#/definitions/Foo"}, id="ref"),
+    ],
+)
+def test_uses_unsupported_composition_root_detects_each_root_shape(
+    schema: dict[str, object],
+) -> None:
+    """`_uses_unsupported_composition_root` returns True for every root key
+    that the extraction engine's `declared_field_names` cannot traverse
+    (issue #289, addressing PR #315 review).
+    """
+    from app.features.extraction.skills.skill_yaml_schema import (
+        _uses_unsupported_composition_root,
+    )
+
+    assert _uses_unsupported_composition_root(schema) is True
+
+
+def test_uses_unsupported_composition_root_returns_false_for_plain_object_schema() -> None:
+    """Plain object schemas with explicit `properties` must not be mistaken
+    for composition roots. The guard fires only on the delegation keys.
+    """
+    from app.features.extraction.skills.skill_yaml_schema import (
+        _uses_unsupported_composition_root,
+    )
+
+    assert (
+        _uses_unsupported_composition_root(
+            {"type": "object", "properties": {"a": {"type": "string"}}}
+        )
+        is False
+    )
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        pytest.param({"anyOf": [{"type": "object"}, {"type": "object"}]}, id="anyOf"),
+        pytest.param({"oneOf": [{"type": "object"}, {"type": "object"}]}, id="oneOf"),
+        pytest.param(
+            {"allOf": [{"type": "object", "properties": {"x": {"type": "string"}}}]},
+            id="allOf",
+        ),
+        pytest.param({"$ref": "#/definitions/Foo"}, id="ref"),
+    ],
+)
+def test_composition_root_schema_fails_with_clearer_error_not_empty_object(
+    write_skill_yaml: SkillYamlFactory,
+    schema: dict[str, object],
+) -> None:
+    """Composition/$ref-rooted output_schemas must fail load with a specific
+    error that names the root shape and the `declared_field_names` constraint
+    — NOT the generic "must declare at least one entry in 'properties'"
+    message, which was misleading to skill authors using these valid Draft 7
+    root shapes (PR #315 review follow-up).
+    """
+    path = write_skill_yaml(
+        output_schema=schema,
+        examples=[{"input": "x", "output": {}}],
+    )
+
+    with pytest.raises(SkillValidationFailedError) as exc_info:
+        SkillYamlSchema.load_from_file(path)
+
+    reason = _reason(exc_info.value)
+    assert "composition" in reason.lower() or "$ref" in reason
+    assert "declared_field_names" in reason or "top-level 'properties'" in reason
+    # Must NOT fall into the generic "empty object" branch for these roots.
+    assert "at least one entry in 'properties'" not in reason
 
 
 def test_output_schema_with_one_property_still_loads_successfully(
