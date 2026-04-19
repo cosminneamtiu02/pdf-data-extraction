@@ -1,4 +1,4 @@
-"""BenchmarkSettings — pydantic-settings model for ``scripts/benchmark`` (issue #237).
+"""BenchmarkSettings — pydantic-settings model for ``scripts/benchmark`` (issues #237, #272).
 
 The benchmark script is a CLI operator tool that reads its own ``BENCH_*``
 environment variables. CLAUDE.md forbids ``os.environ`` / ``os.getenv``
@@ -7,6 +7,12 @@ categorically, so those env vars flow through a dedicated
 the benchmark knobs off the main :class:`app.core.config.Settings`
 preserves the "application config vs operator-script config" separation
 while still satisfying the pydantic-settings-everywhere invariant.
+
+This module lives next to its sole consumer (``scripts/benchmark.py``)
+rather than under ``app/core/`` because ``app/core/`` is scoped to
+runtime service config and logging (CLAUDE.md). The leading underscore
+marks it as module-private to the ``scripts`` package — no code outside
+``scripts/`` should import it (issue #272).
 
 CLI flags on the script still win over env vars — ``parse_args`` uses
 the ``BenchmarkSettings`` defaults as the argparse ``default=`` values.
