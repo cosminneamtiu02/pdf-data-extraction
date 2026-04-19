@@ -551,6 +551,15 @@ def test_output_schema_with_zero_declared_properties_rejected_at_load_time(
         ({"type": "string"}, False),
         ({"type": ["string", "null"]}, False),
         ({"type": ["integer", "number"]}, False),
+        # Root-shape delegation (#289): anyOf/oneOf/allOf/$ref are always non-empty.
+        ({"anyOf": [{"type": "string"}, {"type": "number"}]}, False),
+        ({"oneOf": [{"type": "string"}, {"type": "object"}]}, False),
+        ({"allOf": [{"type": "object", "properties": {"x": {"type": "string"}}}]}, False),
+        ({"$ref": "#/definitions/Foo"}, False),
+        # Array root: type=array already returns False via allows_object branch.
+        ({"type": "array", "items": {"type": "string"}}, False),
+        # anyOf combined with no properties at root must still be recognised.
+        ({"anyOf": [{"type": "string"}]}, False),
     ],
 )
 def test_is_empty_object_schema_classifies_draft7_type_variants(

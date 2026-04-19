@@ -211,7 +211,16 @@ def _is_empty_object_schema(schema: dict[str, Any]) -> bool:
     Schemas whose `type` does not permit `object` (e.g. `{"type": "string"}`,
     `{"type": ["string", "null"]}`) are outside the scope of this invariant —
     they would fail elsewhere if ever used for an extraction skill.
+
+    A schema that delegates its shape via composition (`anyOf`, `oneOf`,
+    `allOf`) or reference (`$ref`) is never empty regardless of absent
+    `type` or `properties`. Draft 7 permits these as valid root shapes
+    (issue #289); the prior heuristic mis-classified them as empty when
+    `type` happened to be omitted.
     """
+    if any(key in schema for key in ("anyOf", "oneOf", "allOf", "$ref")):
+        return False
+
     declared_type = schema.get("type")
     if declared_type is None:
         allows_object = True
