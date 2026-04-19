@@ -56,3 +56,5 @@ class BenchmarkSettings(BaseSettings):
     skill_name: str = "invoice"
     skill_version: str = "1"
     service_pid: Annotated[int | None, BeforeValidator(_empty_string_to_none)] = None
+    warmup: Annotated[int, Field(ge=0)] = 1
+    timeout: Annotated[float, Field(gt=0)] = 300.0
