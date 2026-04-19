@@ -106,6 +106,7 @@ apps/backend/app/features/extraction/
 ├── parsing/                            # Docling abstraction
 │   ├── document_parser.py              # DocumentParser protocol
 │   ├── docling_document_parser.py      # DoclingDocumentParser — concrete impl
+│   ├── pdf_preflight.py                # PdfPreflight Protocol — pre-Docling validation hook (page count, password/invalid detection) and test seam
 │   ├── parsed_document.py              # ParsedDocument (list[TextBlock])
 │   ├── text_block.py                   # TextBlock (text, page_number, bbox, block_id)
 │   └── bounding_box.py                 # BoundingBox internal value object
@@ -125,7 +126,8 @@ apps/backend/app/features/extraction/
 │   ├── skill.py                        # Skill domain object
 │   ├── skill_loader.py                 # SkillLoader — load by name+version
 │   ├── skill_manifest.py               # SkillManifest — startup-validated registry
-│   └── skill_yaml_schema.py            # SkillYamlSchema — pydantic validator
+│   ├── skill_yaml_schema.py            # SkillYamlSchema — pydantic validator
+│   └── _duplicate_key_safe_loader.py   # DuplicateKeyDetectingSafeLoader — PyYAML SafeLoader subclass rejecting duplicate mapping keys (closes #208 partial, PR #221)
 │
 ├── coordinates/                        # Coordinate matching layer
 │   ├── offset_index.py                 # OffsetIndex — char offset → block
