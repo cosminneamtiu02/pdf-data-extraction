@@ -53,7 +53,7 @@ def _imports_langextract(source: str) -> bool:
     return False
 
 
-def test_langextract_imports_are_contained_to_extraction_engine() -> None:
+def test_langextract_imports_are_contained_to_allowlisted_files() -> None:
     offenders: list[str] = []
     for py_file in _EXTRACTION_ROOT.rglob("*.py"):
         rel = py_file.relative_to(_EXTRACTION_ROOT)
@@ -62,4 +62,7 @@ def test_langextract_imports_are_contained_to_extraction_engine() -> None:
         if _imports_langextract(py_file.read_text()):
             offenders.append(str(rel))
 
-    assert not offenders, f"files outside of extraction_engine.py import langextract: {offenders}"
+    allowed = sorted(str(p) for p in _ALLOWED_FILES)
+    assert not offenders, (
+        f"files outside the LangExtract allowlist {allowed} import langextract: {offenders}"
+    )

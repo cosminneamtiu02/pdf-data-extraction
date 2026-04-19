@@ -4,10 +4,15 @@ through the project's `IntelligenceProvider.generate`, so
 
 Lives alongside `extraction_engine.py` inside
 `app.features.extraction.extraction`. The C5 LangExtract-containment
-contract authorises this subpackage to import `langextract`; splitting
-the adapter into its own file satisfies Sacred Rule #1 (one class per
-file) without breaking containment — both files are still inside the
-designated orchestration package.
+contract is file-level (see `import-linter-contracts.ini` C5 and the
+AST-scan allowlist in `tests/unit/features/extraction/extraction/
+test_no_third_party_imports.py`): it enumerates exactly this file, the
+engine, and `intelligence/ollama_gemma_provider.py`, and no other file
+in the subpackage may `import langextract`. Splitting the adapter out
+of `extraction_engine.py` to satisfy Sacred Rule #1 (one class per
+file) required adding this file to the allowlist explicitly — being
+co-located with the engine does not, on its own, authorise the
+import.
 
 **Event-loop bridging.** `ExtractionEngine.extract` runs
 `langextract.extract` inside `asyncio.to_thread`, so this adapter's
