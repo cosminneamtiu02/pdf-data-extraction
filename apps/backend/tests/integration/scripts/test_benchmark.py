@@ -7,10 +7,12 @@ connections (not in-process ASGI transport).
 
 Marked ``slow`` (module-level ``pytestmark``) because each test spins up a
 real ``uvicorn`` server on a background thread with a 10-second startup
-timeout. CLAUDE.md mandates the default ``task check`` loop run in <10s of
-wall-clock; these tests therefore live under the ``slow`` marker and are
-excluded from ``task check`` via the ``-m "not slow"`` filter (issue #283).
-Run them explicitly with ``uv run pytest -m slow tests/integration/scripts/``.
+timeout. CLAUDE.md's explicit <10s budget applies to the *unit test suite*
+(``Testing Rules`` -> Unit), not to ``task check`` as a whole; these tests
+still need to stay out of the fast loop so they live under the ``slow``
+marker and are excluded from ``task check`` via the ``-m "not slow"`` filter
+(issue #283). Run them explicitly with
+``uv run pytest -m slow tests/integration/scripts/``.
 """
 
 from __future__ import annotations
