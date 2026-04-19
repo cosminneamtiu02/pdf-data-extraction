@@ -29,7 +29,7 @@ COPY apps/backend/app ./app
 COPY apps/backend/skills ./skills
 
 # Install the project. `pyproject.toml` is already present in the image
-# from the earlier layer-cached COPY (line 15), so there is no need to
+# from the earlier dependency-file COPY above, so there is no need to
 # copy it again — `uv sync` consumes it in place.
 RUN uv sync --frozen --no-dev
 
