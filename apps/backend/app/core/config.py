@@ -29,14 +29,29 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
-        # Reject unknown fields loaded from ``.env`` / constructor kwargs so
-        # typos (``OLAMA_MODEL=gemma4:e2b``) raise ``ValidationError`` at
-        # startup instead of silently falling back to the default. Arbitrary
-        # shell env vars unrelated to ``Settings`` fields remain ignored —
-        # pydantic-settings only consults names that match declared fields
-        # (issue #271). Declared explicitly so the contract is part of this
-        # file's source of truth and does not depend on the pydantic-settings
-        # upstream default staying ``"forbid"`` across upgrades.
+        # Belt-and-braces rejection of unknown inputs at ``Settings``
+        # construction. What this catches and what it does NOT catch:
+        #
+        #   * CAUGHT — unknown constructor kwargs (e.g. a future
+        #     ``Settings(olama_model=...)`` site in code) raise
+        #     ``ValidationError``.
+        #   * CAUGHT — unknown keys in ``.env``. pydantic-settings reads
+        #     every key from the dotenv file regardless of whether it
+        #     matches a declared field, so a typo like ``OLLMA_MODEL=x``
+        #     in ``.env`` surfaces as an extra input and fails startup.
+        #   * NOT CAUGHT — typoed shell env var names. pydantic-settings
+        #     resolves env vars by name-lookup: it only reads names that
+        #     match declared fields. A misspelled shell env var like
+        #     ``OLAMA_MODEL=x`` (one ``L``) is never read, so ``extra``
+        #     has nothing to forbid. The real defence against shell
+        #     env-name typos would be an explicit allowlist + deploy-
+        #     time lint — tracked separately if the project adopts it.
+        #
+        # Declared explicitly so the contract is part of this file's
+        # source of truth and does not depend on the pydantic-settings
+        # upstream default staying ``"forbid"`` across upgrades (issue
+        # #271). See ``tests/unit/core/test_settings_extra_forbid.py``
+        # for the full matrix of catches-vs-does-not-catch cases.
         extra="forbid",
     )
 
