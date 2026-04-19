@@ -108,26 +108,29 @@ def _default_pdf_preflight(pdf_bytes: bytes) -> int:
     # reclassify every ``RuntimeError`` ``pymupdf.open`` can raise (orphaned
     # object state, transient backend crashes, …) as a 400 ``PdfInvalidError``
     # — which violates the "no silent fallbacks" constraint per
-    # PDFX-E003-F004. In the degraded case, only ``ValueError`` remains as
-    # the narrow wrap.
+    # PDFX-E003-F004. In the degraded case, the tuple is empty and every
+    # ``pymupdf.open`` exception propagates as a 500.
     #
-    # ``ValueError`` stays in the tuple unconditionally because ``pymupdf.open``
-    # has historically raised bare ``ValueError`` for a handful of bad-input
-    # shapes, and that branch is independent of the PyMuPDF-specific
-    # hierarchy.
+    # ``ValueError`` is deliberately NOT in the tuple (#278): PyMuPDF raises
+    # bare ``ValueError`` for argument-shape bugs (wrong ``stream`` type,
+    # bad ``filetype``), which are programmer errors in the caller, not
+    # malformed PDF bytes. Mapping those to 400 would hide real bugs behind
+    # a user-facing "malformed PDF" response. The CLAUDE.md carve-out for
+    # ``ValueError`` only covers value-object ``__post_init__`` invariants,
+    # not pipeline operations.
     file_data_error_attr: object = getattr(pymupdf, "FileDataError", None)
-    invalid_exception_classes: tuple[type[BaseException], ...] = (ValueError,)
+    invalid_exception_classes: tuple[type[BaseException], ...] = ()
     if isinstance(file_data_error_attr, type) and issubclass(file_data_error_attr, BaseException):
-        invalid_exception_classes = (file_data_error_attr, ValueError)
+        invalid_exception_classes = (file_data_error_attr,)
 
     try:
         doc: Any = pymupdf.open(stream=pdf_bytes, filetype="pdf")
     except Exception as exc:
         # Narrow catch: only PyMuPDF's own data-error hierarchy (when the
-        # symbol resolves to an exception type) and plain ``ValueError`` map
-        # to ``PdfInvalidError``. Anything else (``MemoryError``, ``OSError``,
-        # arbitrary ``RuntimeError``) propagates as a 500.
-        if not isinstance(exc, invalid_exception_classes):
+        # symbol resolves to an exception type) maps to ``PdfInvalidError``.
+        # Anything else — ``ValueError`` (programmer error), ``MemoryError``,
+        # ``OSError``, arbitrary ``RuntimeError`` — propagates as 500.
+        if not invalid_exception_classes or not isinstance(exc, invalid_exception_classes):
             raise
         _log.info("pdf_invalid", reason=type(exc).__name__)
         raise PdfInvalidError from exc

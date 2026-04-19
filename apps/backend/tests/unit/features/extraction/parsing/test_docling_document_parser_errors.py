@@ -605,17 +605,21 @@ def test_default_preflight_passes_through_memory_error(
         _default_pdf_preflight(b"%PDF-fake")
 
 
-def test_default_preflight_wraps_value_error_from_open_as_pdf_invalid(
+def test_default_preflight_propagates_value_error_from_open_as_500(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """PyMuPDF's ``open`` is known to raise bare ``ValueError`` on some bad
-    inputs (observed historically). Preserve the existing behaviour of
-    surfacing those as ``PdfInvalidError`` rather than 500."""
+    """PyMuPDF raises ``ValueError`` for argument-shape bugs (e.g. ``stream=str``
+    instead of ``bytes``). Those are programmer errors in the calling code,
+    not malformed PDF bytes, so they must propagate as 500 rather than being
+    misclassified as ``PdfInvalidError`` (400).
+
+    Regression guard for #278.
+    """
     fake_mod = _build_fake_pymupdf_module()
     _set_open_raises(fake_mod, ValueError("bad stream"))
     _install_fake_pymupdf(monkeypatch, fake_mod)
 
-    with pytest.raises(PdfInvalidError):
+    with pytest.raises(ValueError, match="bad stream"):
         _default_pdf_preflight(b"?")
 
 
@@ -746,22 +750,22 @@ def test_default_preflight_does_not_wrap_runtime_error_when_file_data_error_miss
         _default_pdf_preflight(b"%PDF-fake")
 
 
-def test_default_preflight_still_wraps_value_error_when_file_data_error_missing(
+def test_default_preflight_propagates_value_error_when_file_data_error_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Even when ``FileDataError`` is missing, ``ValueError`` from ``pymupdf.open``
-    must still wrap as ``PdfInvalidError``.
+    must propagate unchanged (500), not be reclassified as ``PdfInvalidError``
+    (400).
 
-    ``ValueError`` is a narrow, historically-observed pymupdf raise for a
-    handful of bad-input shapes and is classified independent of the
-    ``FileDataError`` subtree. Losing the ``FileDataError`` attribute must not
-    accidentally change the ``ValueError`` branch.
+    ``ValueError`` is a programmer-error signal (wrong argument shape); the
+    caller has a bug, not the PDF bytes. Reclassifying it as 400 would hide
+    real bugs behind a user-facing "malformed PDF" response. See #278.
     """
     fake_mod = _build_fake_pymupdf_module_without_file_data_error()
     _set_open_raises(fake_mod, ValueError("bad stream"))
     _install_fake_pymupdf(monkeypatch, fake_mod)
 
-    with pytest.raises(PdfInvalidError):
+    with pytest.raises(ValueError, match="bad stream"):
         _default_pdf_preflight(b"?")
 
 
