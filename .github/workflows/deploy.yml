@@ -20,6 +20,14 @@ permissions:
 
 jobs:
   deploy:
+    # Kill switch (#270): the deploy path is not wired up yet — the rollout
+    # story is tracked in issue #121. Until then, skip the job cleanly
+    # (neutral grey in the Actions UI) rather than failing it (red), so
+    # on-call does not habituate to a permanently-red Deploy job and miss
+    # real regressions once the registry push goes live. Operators flip
+    # the repo variable `DEPLOY_ENABLED` to the literal string "true" to
+    # enable. Any other value (unset, "false", "1", empty) skips.
+    if: vars.DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -29,6 +37,10 @@ jobs:
         run: docker build -f infra/docker/backend.Dockerfile -t pdf-data-extraction-backend:${{ github.sha }} .
 
       - name: Push to registry
+        # Placeholder body until issue #121 wires up the registry push.
+        # Exits 0 so that once an operator flips `DEPLOY_ENABLED=true` to
+        # exercise the rest of the pipeline, this step does not re-red the
+        # job. Replace this whole step body with the real push when #121
+        # lands; do not keep the placeholder AND the real push side by side.
         run: |
-          echo "::error::Push to registry not yet implemented — see issue #121 for tracking."
-          exit 1
+          echo "Deploy not yet wired — tracked in #121. Set DEPLOY_ENABLED=true when the registry push is ready, and replace this placeholder with the real push commands."
