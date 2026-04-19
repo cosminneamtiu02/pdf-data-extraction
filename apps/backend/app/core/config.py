@@ -29,6 +29,15 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
+        # Reject unknown fields loaded from ``.env`` / constructor kwargs so
+        # typos (``OLAMA_MODEL=gemma4:e2b``) raise ``ValidationError`` at
+        # startup instead of silently falling back to the default. Arbitrary
+        # shell env vars unrelated to ``Settings`` fields remain ignored —
+        # pydantic-settings only consults names that match declared fields
+        # (issue #271). Declared explicitly so the contract is part of this
+        # file's source of truth and does not depend on the pydantic-settings
+        # upstream default staying ``"forbid"`` across upgrades.
+        extra="forbid",
     )
 
     app_env: str = "development"
