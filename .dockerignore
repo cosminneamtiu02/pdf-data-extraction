@@ -26,7 +26,7 @@
 
 # Claude Code / superpowers tooling — can reach tens of gigabytes of
 # generated parallel-agent workspaces. Parallel with the `.gitignore`
-# entry added in #267.
+# entry discussed in issue #267 and added in PR #274.
 .claude/
 
 # Python bytecode, caches, build artifacts
