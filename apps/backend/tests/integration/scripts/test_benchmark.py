@@ -10,8 +10,7 @@ real ``uvicorn`` server on a background thread with a 10-second startup
 timeout. CLAUDE.md mandates the default ``task check`` loop run in <10s of
 wall-clock; these tests therefore live under the ``slow`` marker and are
 excluded from ``task check`` via the ``-m "not slow"`` filter (issue #283).
-Run them explicitly with ``uv run pytest -m slow
-tests/integration/scripts/``.
+Run them explicitly with ``uv run pytest -m slow tests/integration/scripts/``.
 """
 
 from __future__ import annotations
