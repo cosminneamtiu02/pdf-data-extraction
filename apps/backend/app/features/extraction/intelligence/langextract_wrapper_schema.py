@@ -4,11 +4,15 @@ LangExtract's `model.infer` path returns a top-level wrapper of shape
 `{"extractions": [...]}`, regardless of the skill's actual field schema.
 Two code sites pass this wrapper schema to the StructuredOutputValidator:
 
-    1. `OllamaGemmaProvider.infer` — when LangExtract's plugin path goes
+    1. `app.features.extraction.intelligence.ollama_gemma_provider
+       .OllamaGemmaProvider.infer` — when LangExtract's plugin path goes
        through the registered Ollama provider directly.
-    2. `ExtractionEngine._ValidatingLangExtractAdapter.infer` — when the
-       engine wraps the configured IntelligenceProvider before handing
-       LangExtract a model.
+    2. `app.features.extraction.extraction._validating_langextract_adapter
+       ._ValidatingLangExtractAdapter.infer` — the standalone adapter
+       class (split out of `extraction_engine.py` under issue #228 to
+       satisfy Sacred Rule #1) that `ExtractionEngine` wraps the
+       configured IntelligenceProvider in before handing LangExtract a
+       model.
 
 Both must validate the same envelope shape, otherwise the two entry
 paths run different validator contracts. Centralizing the schema here

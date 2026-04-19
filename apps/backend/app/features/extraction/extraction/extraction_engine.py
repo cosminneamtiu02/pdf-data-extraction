@@ -1,12 +1,16 @@
 """ExtractionEngine — thin async wrapper around `langextract.extract`.
 
 Within the `features/extraction/` subtree, the only files permitted to
-import `langextract` are this module and
+import `langextract` are this module, the adjacent
+`_validating_langextract_adapter.py` (which hosts the
+`_ValidatingLangExtractAdapter` class split out for Sacred Rule #1,
+issue #228), and
 `app/features/extraction/intelligence/ollama_gemma_provider.py` (the
 registered LangExtract community plugin from PDFX-E004-F002). The
 containment rule is enforced mechanically by the AST-scan test
 `tests/unit/features/extraction/extraction/test_no_third_party_imports.py`
-until the full `import-linter` contract arrives in PDFX-E007-F004.
+and by the C5 `import-linter` contract in
+`apps/backend/architecture/import-linter-contracts.ini` (PDFX-E007-F004).
 
 The engine takes a `Skill`, a pre-concatenated document text, and an
 `IntelligenceProvider`, and returns a list of `RawExtraction` — exactly
@@ -23,12 +27,13 @@ within LangExtract's output are deduped first-wins.
 `model.infer(...)` directly, which would bypass the project's validator /
 retry path (the fence-stripping + JSON-parse-with-retry loop that gives the
 service its structured-output success rate). To keep that invariant intact,
-the engine wraps the caller-supplied `IntelligenceProvider` in a private
-`_ValidatingLangExtractAdapter(BaseLanguageModel)`. The adapter's `infer`
-runs the entire batch under ONE `asyncio.run` (so every prompt shares one
-event loop, matching providers that hold loop-bound connection pools) and
-routes each prompt through `provider.generate(prompt, wrapper_schema)` —
-which exercises `StructuredOutputValidator` — then yields the re-serialized
+the engine wraps the caller-supplied `IntelligenceProvider` in the
+`_ValidatingLangExtractAdapter(BaseLanguageModel)` class defined in the
+adjacent module. The adapter's `infer` runs the entire batch under ONE
+`asyncio.run_coroutine_threadsafe` bridge (so every prompt shares the main
+event loop that holds loop-bound httpx connection pools) and routes each
+prompt through `provider.generate(prompt, wrapper_schema)` — which
+exercises `StructuredOutputValidator` — then yields the re-serialized
 cleaned JSON text for LangExtract's resolver to parse. The wrapper schema
 is not `skill.output_schema` (which describes extraction CONTENT and would
 always fail against LangExtract's wrapper format) but the LangExtract
@@ -41,159 +46,30 @@ into field-level semantics.
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
-import json
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, cast
 
 import langextract
-from langextract.core.base_model import BaseLanguageModel
 from langextract.core.data import AnnotatedDocument, ExampleData, Extraction
-from langextract.core.types import ScoredOutput
 
 from app.core.config import Settings
-from app.exceptions import IntelligenceTimeoutError
-from app.features.extraction.extraction.raw_extraction import RawExtraction
-from app.features.extraction.intelligence.langextract_wrapper_schema import (
-    LANGEXTRACT_WRAPPER_SCHEMA,
+from app.features.extraction.extraction._validating_langextract_adapter import (
+    _ValidatingLangExtractAdapter,  # pyright: ignore[reportPrivateUsage]
+    # ^ The adapter and this module are co-owners of the LangExtract
+    # orchestration boundary; the leading underscore signals intra-
+    # subpackage-private, not module-private, so crossing this module
+    # boundary is by design (issue #228 Sacred Rule #1 split).
 )
+from app.features.extraction.extraction.raw_extraction import RawExtraction
 from app.features.extraction.skills.deep_freeze import thaw
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
-
+    from langextract.core.base_model import BaseLanguageModel
     from langextract.core.data import CharInterval
 
     from app.features.extraction.intelligence.intelligence_provider import IntelligenceProvider
     from app.features.extraction.skills.skill import Skill
     from app.features.extraction.skills.skill_example import SkillExample
-
-
-class _ValidatingLangExtractAdapter(BaseLanguageModel):
-    """BaseLanguageModel that routes each LangExtract call through the
-    caller's `IntelligenceProvider.generate`, so the project's
-    `StructuredOutputValidator` (cleanup + retry) runs on every model call.
-
-    Lives inside `extraction_engine.py` so LangExtract containment stays
-    at one file. Not a public export.
-
-    **Event-loop bridging.** `ExtractionEngine.extract` runs
-    `langextract.extract` inside `asyncio.to_thread`, so this adapter's
-    `infer` executes on a worker thread with no running loop of its own.
-    `provider.generate` must still run on the application's main event
-    loop — `get_intelligence_provider()` is `@lru_cache`d, returning a
-    single `OllamaGemmaProvider` whose `httpx.AsyncClient` connection
-    pool is bound to that one loop. Calling `generate` from a fresh
-    loop (e.g., `asyncio.run` inside the worker thread) would trigger
-    "Event loop is closed" or "Future attached to a different loop"
-    errors on the second invocation. The adapter therefore captures
-    the caller's main loop in `__init__` and schedules each generate
-    coroutine back onto it via `asyncio.run_coroutine_threadsafe`,
-    blocking on the returned `concurrent.futures.Future` from the
-    worker thread — LangExtract's own orchestration is synchronous,
-    so the blocking call is expected.
-
-    **Bounded blocking (issue #152).** The blocking `future.result()` call
-    is always bounded by `timeout_seconds` (sourced from
-    `Settings.ollama_timeout_seconds`). Without a timeout, an unresponsive
-    Ollama pins the worker thread indefinitely; sustained hangs exhaust
-    the thread pool, queue new requests, and degrade the service silently.
-    On `concurrent.futures.TimeoutError` we cancel the pending future
-    (best-effort — a coroutine that has already started awaiting a blocking
-    primitive may still run to completion on the main loop, but any pending
-    result is discarded when this adapter's caller returns) and raise
-    `IntelligenceTimeoutError`, which the global exception handler maps to
-    504. The adapter does NOT own the main loop's executor, so there is
-    nothing to shut down here. Note: `concurrent.futures.TimeoutError` is
-    aliased to the builtin `TimeoutError` in CPython 3.11+, so the `except`
-    clause must distinguish an adapter timeout (future still pending) from
-    an inner `TimeoutError` raised by the coroutine (future already done)
-    via `future.done()` — otherwise inner failures would be silently
-    remapped to `IntelligenceTimeoutError` and lose their cause.
-    """
-
-    def __init__(
-        self,
-        inner: IntelligenceProvider,
-        main_loop: asyncio.AbstractEventLoop,
-        *,
-        timeout_seconds: float,
-    ) -> None:
-        super().__init__()
-        self._inner = inner
-        self._main_loop = main_loop
-        self._timeout_seconds = timeout_seconds
-        # Side-channel for propagating the validator's retry count out to
-        # `_to_raw_extractions` (issue #135). LangExtract's `ScoredOutput`
-        # is a frozen dataclass with only `score` and `output` fields, so
-        # `GenerationResult.attempts` cannot ride along in-band. We instead
-        # record the MAX attempts observed across every prompt this adapter
-        # drove. `ExtractionEngine.extract` invokes LangExtract with
-        # `batch_length=1, max_workers=1` and a single concatenated text,
-        # so in normal operation this is effectively "attempts for this
-        # extraction call". Max (rather than last or sum) is conservative:
-        # if any prompt in the batch retried N times, every field in the
-        # resulting `RawExtraction` list reflects N attempts. 0 means no
-        # prompt was driven (short-circuit paths), in which case the
-        # engine keeps the legacy 1 default.
-        self._max_observed_attempts: int = 0
-
-    @property
-    def max_observed_attempts(self) -> int:
-        """MAX `GenerationResult.attempts` seen across this adapter's prompts.
-
-        Zero until `infer` processes at least one prompt. After that, the
-        engine reads this attribute to stamp every declared field in the
-        resulting `RawExtraction` list with the validator's retry count.
-        """
-        return self._max_observed_attempts
-
-    def infer(
-        self,
-        batch_prompts: Sequence[str],
-        **kwargs: Any,  # noqa: ARG002 - LangExtract passes orchestrator kwargs that we do not consume
-    ) -> Iterator[Sequence[ScoredOutput]]:
-        for prompt in batch_prompts:
-            future = asyncio.run_coroutine_threadsafe(
-                self._inner.generate(prompt, LANGEXTRACT_WRAPPER_SCHEMA),
-                self._main_loop,
-            )
-            try:
-                result = future.result(timeout=self._timeout_seconds)
-            except concurrent.futures.TimeoutError:
-                # In CPython 3.11+, `concurrent.futures.TimeoutError is
-                # TimeoutError is asyncio.TimeoutError`. A bare `except`
-                # on the class would also catch an inner `TimeoutError`
-                # raised by the coroutine body, conflating a hung Ollama
-                # (this adapter's concern) with an inner-provider timeout
-                # (not our concern). There is also a boundary race:
-                # `future.result(timeout=...)` may time out and THEN the
-                # future may settle before we inspect it. We distinguish
-                # by `future.done()`: a done future means the coroutine
-                # settled (success or exception) — call `future.result()`
-                # with no timeout so a just-completed success continues
-                # normally and a coroutine-raised `TimeoutError` still
-                # propagates unchanged. Only a still-pending future
-                # should be cancelled and remapped to our domain error.
-                if future.done():
-                    result = future.result()
-                else:
-                    # Best-effort cancel — a coroutine already blocked in a
-                    # syscall on the main loop may still complete, but we stop
-                    # caring about its result. Without this bound, a hung
-                    # Ollama would pin this worker thread forever (issue #152).
-                    future.cancel()
-                    raise IntelligenceTimeoutError(
-                        budget_seconds=self._timeout_seconds,
-                    ) from None
-            # Capture the validator retry count BEFORE yielding (issue #135).
-            # Max across the batch so a single retried prompt is visible
-            # even when other prompts succeeded on the first try.
-            self._max_observed_attempts = max(
-                self._max_observed_attempts,
-                result.attempts,
-            )
-            yield [ScoredOutput(score=1.0, output=json.dumps(result.data))]
 
 
 class ExtractionEngine:

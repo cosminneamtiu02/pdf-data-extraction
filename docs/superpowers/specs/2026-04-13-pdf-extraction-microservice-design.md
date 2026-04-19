@@ -120,6 +120,7 @@ apps/backend/app/features/extraction/
 │
 ├── extraction/                         # LangExtract orchestration
 │   ├── extraction_engine.py            # ExtractionEngine — wraps LangExtract call
+│   ├── _validating_langextract_adapter.py # _ValidatingLangExtractAdapter — routes LangExtract infer through the project's validator (issue #228 split)
 │   └── raw_extraction.py               # RawExtraction (value, char offsets, grounded flag)
 │
 ├── skills/                             # Skill loader
@@ -412,7 +413,7 @@ Added to `apps/backend/architecture/import-linter-contracts.ini`:
 - **Third-party containment:**
   - `docling` may only be imported inside `parsing/docling_document_parser.py`.
   - `pymupdf` (`fitz`) may only be imported inside `annotation/pdf_annotator.py` and `parsing/docling_document_parser.py` (if needed for password-detection preflight).
-  - `langextract` may only be imported inside `extraction/extraction_engine.py` and the custom LangExtract community provider plugin file.
+  - `langextract` may only be imported inside `extraction/extraction_engine.py`, the adjacent `extraction/_validating_langextract_adapter.py` (the `BaseLanguageModel` subclass split out under issue #228 to satisfy Sacred Rule #1), and the custom LangExtract community provider plugin file.
   - The Ollama HTTP client may only be imported inside `intelligence/ollama_gemma_provider.py`.
 
 Contracts are enforced by `task lint` (already wired).
