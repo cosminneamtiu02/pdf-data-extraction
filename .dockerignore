@@ -1,0 +1,64 @@
+# Docker build context — repo root.
+#
+# Both `.github/workflows/deploy.yml` and `task docker:build` use `.`
+# (repo root) as the Docker build context, so the `.dockerignore` must
+# live HERE to take effect (Docker only consults the one adjacent to
+# the context root — issue #269). The previous location at
+# `apps/backend/.dockerignore` was silently inactive: without this
+# file the daemon received the entire monorepo, including
+# `.claude/worktrees/` (tens of gigabytes of generated AI-agent
+# workspaces), every cache directory, and all test fixtures —
+# ballooning the context and invalidating the build cache on any
+# repo-wide file change.
+#
+# The Dockerfile itself (`infra/docker/backend.Dockerfile`) COPYs only
+# `apps/backend/pyproject.toml`, `apps/backend/uv.lock`,
+# `apps/backend/app/`, and `apps/backend/skills/`. Everything else in
+# the context is wasted bytes at best and a leak surface at worst.
+
+# VCS & editor metadata
+.git/
+.github/
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Claude Code / superpowers tooling — can reach tens of gigabytes of
+# generated parallel-agent workspaces. Parallel with the `.gitignore`
+# entry discussed in issue #267 and added in PR #274.
+.claude/
+
+# Python bytecode, caches, build artifacts
+**/__pycache__/
+**/*.py[cod]
+**/*.egg-info/
+**/*.egg
+**/.venv/
+**/.pytest_cache/
+**/.ruff_cache/
+**/.mypy_cache/
+**/.import_linter_cache/
+**/.hypothesis/
+**/.coverage
+**/coverage.xml
+**/htmlcov/
+
+# Node / tooling (error-contracts package uses these when operated on
+# in dev but never during the backend image build)
+**/node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Repo-level artefacts the backend image does NOT need. The Dockerfile
+# explicitly COPYs only `apps/backend/app/` and `apps/backend/skills/`,
+# so anything outside those paths only bloats the context.
+docs/
+packages/
+apps/backend/tests/
+apps/backend/architecture/
+apps/backend/fixtures/
+apps/backend/scripts/
+*.md
