@@ -184,6 +184,49 @@ def test_no_contract_references_a_non_extraction_feature_package(
     )
 
 
+def test_third_party_containment_contracts_alert_on_unmatched_ignores(
+    contracts_parser: configparser.ConfigParser,
+) -> None:
+    """C3-C6 (third-party containment) must set alerting on unmatched ignores.
+
+    Rationale (issue #273): `ignore_imports` on a containment contract is a
+    carve-out list saying "these specific files are allowed to import the
+    forbidden third-party module." If the codebase later drops one of those
+    edges (e.g. a refactor switches from static `import langextract` to a
+    lazy `importlib.import_module` wrapper), the ignore becomes "unmatched"
+    — it references an import that no longer exists — and import-linter
+    silently accepts that, shrinking the contract's enforcement surface
+    with no warning.
+
+    `unmatched_ignore_imports_alerting = warn` turns that silent drift into
+    a visible warning in `lint-imports` output. C3 (docling), C4 (pymupdf),
+    and C6 (httpx) already set it. C5 (langextract) did not, until #273.
+    This test enforces the parity across all four third-party containment
+    contracts.
+    """
+    third_party_keywords = ("docling", "pymupdf", "langextract", "httpx")
+    offenders: list[str] = []
+    for section in contracts_parser.sections():
+        if not section.startswith("importlinter:contract:"):
+            continue
+        if not any(keyword in section.lower() for keyword in third_party_keywords):
+            continue
+        if not contracts_parser.has_option(section, "ignore_imports"):
+            continue
+        alerting = contracts_parser.get(
+            section, "unmatched_ignore_imports_alerting", fallback=""
+        ).strip()
+        if alerting != "warn":
+            offenders.append(f"{section} (alerting={alerting!r})")
+
+    assert not offenders, (
+        "Every third-party containment contract (C3-C6) with `ignore_imports` "
+        "must also set `unmatched_ignore_imports_alerting = warn` so stale "
+        "carve-outs surface as warnings instead of silently shrinking "
+        f"enforcement. Offenders: {offenders}"
+    )
+
+
 def test_taskfile_wires_lint_imports_into_task_check() -> None:
     """U6: AC2/AC3 - `task check` reaches import-linter as a direct dependency.
 
