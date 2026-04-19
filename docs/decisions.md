@@ -284,6 +284,38 @@ Both layers exist because import-linter cannot express "module X may import
 Y only if X is in this narrow allowlist" without listing every other file in
 `source_modules` (which is unwieldy and brittle).
 
+## ADR-015: Deploy Job Gated on `DEPLOY_ENABLED` Variable (2026-04-19)
+
+**Status:** Accepted
+**Date:** 2026-04-19
+
+The `deploy` job in `.github/workflows/deploy.yml` is gated on
+`if: vars.DEPLOY_ENABLED == 'true'` (a repository variable, not a secret).
+While the registry-push rollout from issue #121 is not yet wired up, the
+job is **skipped** (neutral) rather than **failed** (red) on every push to
+`main`. Operators flip the variable to the literal string `"true"` via
+**Settings → Secrets and variables → Actions → Variables** to enable the
+job without editing the workflow.
+
+**Rationale.** The prior shape — an unconditional `exit 1` in the "Push to
+registry" step — habituated on-call to a permanently-red Deploy badge.
+That pattern silently hides real regressions the moment the push flow
+lands. A skipped job is visually distinct from a failed one in the
+Actions UI and in branch-status checks, so re-enabling the job produces
+actionable red (a legitimate deploy failure) rather than more noise.
+
+**Rejected alternative.** Removing the deploy workflow entirely until #121
+is ready. Rejected because the scaffolding (checkout, image build, the
+job skeleton) is stable; deleting and re-adding it invites copy-paste
+drift when the push step is finally wired. Keeping the job present but
+gated preserves the structure.
+
+**Enforcement.** Two assertions in
+`apps/backend/tests/unit/architecture/test_deploy_workflow_hygiene.py`
+pin the guard and forbid any step in the `deploy` job from containing a
+raw `exit 1`, so a future "temporary" hack-in cannot silently reintroduce
+the regression.
+
 ## Superseded ADRs
 
 - **ADR-002 (offset pagination)** — superseded. There are no paginated
