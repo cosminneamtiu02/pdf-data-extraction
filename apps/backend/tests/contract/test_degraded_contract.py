@@ -43,7 +43,7 @@ def test_degraded_ready_503_conforms_to_openapi_schema(tmp_path: Path) -> None:
     """GET /ready 503 response shape matches the declared OpenAPI 503 schema."""
     _write_valid_skill(tmp_path)
     app = create_app(
-        Settings(  # type: ignore[reportCallIssue]
+        Settings(  # type: ignore[reportCallIssue]  # pydantic-settings loads fields from env
             skills_dir=tmp_path,
             app_env="development",
         ),
@@ -95,7 +95,7 @@ def test_degraded_health_200_conforms_to_openapi_schema(tmp_path: Path) -> None:
     """GET /health returns 200 even in degraded mode — liveness is unaffected."""
     _write_valid_skill(tmp_path)
     app = create_app(
-        Settings(  # type: ignore[reportCallIssue]
+        Settings(  # type: ignore[reportCallIssue]  # pydantic-settings loads fields from env
             skills_dir=tmp_path,
             app_env="development",
         ),
