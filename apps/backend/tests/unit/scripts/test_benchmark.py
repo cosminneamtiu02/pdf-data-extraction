@@ -260,7 +260,7 @@ def test_parse_args_reads_bench_env_vars_via_pydantic_settings(
 
     Regression guard for issue #237: the script previously read env vars via
     ``os.environ.get`` (CLAUDE.md-forbidden). After the refactor they flow
-    through :class:`app.core.benchmark_settings.BenchmarkSettings`, so this
+    through :class:`scripts._benchmark_settings.BenchmarkSettings`, so this
     test pins the wiring by exercising every BENCH_* variable at once.
 
     Extended for issue #275 to also cover ``BENCH_WARMUP`` / ``BENCH_TIMEOUT``.
