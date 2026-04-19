@@ -28,8 +28,9 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY apps/backend/app ./app
 COPY apps/backend/skills ./skills
 
-# Install the project
-COPY apps/backend/pyproject.toml ./
+# Install the project. `pyproject.toml` is already present in the image
+# from the earlier layer-cached COPY (line 15), so there is no need to
+# copy it again — `uv sync` consumes it in place.
 RUN uv sync --frozen --no-dev
 
 # ── Runtime stage ────────────────────────────────────────────
