@@ -22,6 +22,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Final
 
+import pytest
+
 # parents[5] walks: this file -> docker/ -> unit/ -> tests/ -> backend/ ->
 # apps/ -> repo root. This mirrors the convention used by
 # `tests/unit/architecture/_linter_subprocess.REPO_ROOT`.
@@ -33,6 +35,10 @@ _MISPLACED_DOCKERIGNORE: Final[Path] = _REPO_ROOT / "apps" / "backend" / ".docke
 # directories/globs whose inclusion in the build context either bloats the
 # daemon upload, poisons the build cache, or leaks local-only state into
 # the image. Each entry is expressed exactly as it must appear in the file.
+# The large non-runtime trees (`apps/backend/tests/`, `apps/backend/architecture/`,
+# `apps/backend/fixtures/`, `.github/`) are not COPYd by
+# `infra/docker/backend.Dockerfile` but would otherwise be tarballed into the
+# build context, which is the regression issue #269 set out to fix.
 _REQUIRED_EXCLUSIONS: Final[tuple[str, ...]] = (
     ".git/",
     ".claude/",
@@ -42,17 +48,53 @@ _REQUIRED_EXCLUSIONS: Final[tuple[str, ...]] = (
     "**/.ruff_cache/",
     "**/.import_linter_cache/",
     "docs/",
+    "apps/backend/tests/",
+    "apps/backend/architecture/",
+    "apps/backend/fixtures/",
+    ".github/",
 )
 
 
 def _read_root_dockerignore_lines() -> list[str]:
-    """Return the non-comment, non-blank lines of the root `.dockerignore`."""
+    """Return the non-comment, non-blank lines of the root `.dockerignore`.
+
+    Fails the calling test with a clear message if the file is missing,
+    instead of letting `read_text()` raise a bare `FileNotFoundError`. This
+    keeps the error surface consistent with `test_root_dockerignore_exists`
+    even if a future test-collection order runs the exclusion assertion
+    first, or if someone deletes `.dockerignore` while iterating.
+    """
+    if not _ROOT_DOCKERIGNORE.is_file():
+        pytest.fail(
+            f"expected repo-root .dockerignore at {_ROOT_DOCKERIGNORE} — see "
+            "`test_root_dockerignore_exists` for the root-cause diagnostic. "
+            "Issue #269."
+        )
     text = _ROOT_DOCKERIGNORE.read_text(encoding="utf-8")
     return [
         stripped
         for raw_line in text.splitlines()
         if (stripped := raw_line.strip()) and not stripped.startswith("#")
     ]
+
+
+def test_read_helper_fails_cleanly_when_file_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_read_root_dockerignore_lines` must raise `Failed`, not `FileNotFoundError`.
+
+    Point `_ROOT_DOCKERIGNORE` at a non-existent path under `tmp_path` and
+    assert the helper surfaces a `pytest.fail(...)` with a clear diagnostic
+    instead of propagating a raw `FileNotFoundError` from `read_text()`.
+    """
+    missing = tmp_path / ".dockerignore-does-not-exist"
+    monkeypatch.setattr(
+        "tests.unit.docker.test_dockerignore_at_repo_root._ROOT_DOCKERIGNORE",
+        missing,
+    )
+    with pytest.raises(pytest.fail.Exception) as excinfo:
+        _read_root_dockerignore_lines()
+    assert "expected repo-root .dockerignore" in str(excinfo.value)
 
 
 def test_root_dockerignore_exists() -> None:

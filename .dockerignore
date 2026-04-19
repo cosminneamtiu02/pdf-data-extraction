@@ -9,9 +9,14 @@
 # apps/backend/.dockerignore is silently ignored. See issue #269.
 #
 # Entries below follow Docker's .dockerignore syntax (gitignore-like but
-# NOT identical): `**/foo/` matches `foo/` at any depth, leading slash is
-# NOT supported for absolute paths (all patterns are relative to the
-# context root). A leading `!` re-includes an otherwise-excluded path.
+# NOT identical). All patterns are matched relative to the build-context
+# root; a leading `/` anchors the pattern to the root (it does NOT mean an
+# absolute filesystem path — Docker strips it and treats the remainder as
+# a repo-root-relative match). Without a leading slash the pattern also
+# matches against the path relative to the context root, but `**/foo/`
+# makes "at any depth" explicit. A leading `!` re-includes an otherwise-
+# excluded path. See Docker's `.dockerignore` reference:
+# https://docs.docker.com/reference/dockerfile/#dockerignore-file
 
 # ── Version control ──────────────────────────────────────────
 .git/
@@ -66,3 +71,28 @@ Thumbs.db
 .env.*
 !.env.example
 !**/.env.example
+
+# ── Non-runtime trees in the backend slice ───────────────────
+# The Dockerfile (`infra/docker/backend.Dockerfile`) only COPYs
+# `apps/backend/pyproject.toml`, `apps/backend/uv.lock`,
+# `apps/backend/app/`, and `apps/backend/skills/`. Everything else under
+# `apps/backend/` would still be uploaded to the daemon as build context
+# without these exclusions, which was the regression issue #269 set out
+# to fix. Adding each tree explicitly so a newcomer can see, at a glance,
+# what the image does NOT need.
+apps/backend/tests/
+apps/backend/architecture/
+apps/backend/fixtures/
+apps/backend/scripts/
+
+# ── CI / workflow metadata ───────────────────────────────────
+# `.github/` (Actions workflows, Dependabot config, issue templates) is
+# repo-management only and is never COPYd into the image.
+.github/
+
+# ── Non-backend monorepo packages ────────────────────────────
+# `packages/error-contracts/` is a codegen input; the generated Python
+# files live under `apps/backend/app/exceptions/_generated/` (already
+# bundled via `apps/backend/app/`), so the source package itself is not
+# needed in the runtime image.
+packages/
