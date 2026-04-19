@@ -30,6 +30,13 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
+# Claude Code / superpowers tooling — worktrees are generated workspace
+# state (can reach tens of gigabytes) and must never be tracked. Tracked
+# files under .claude/ (settings, hooks) stay tracked; only the worktrees/
+# subtree is excluded. A stray `git add .` otherwise drags the entire
+# generated tree into the index (issue #267).
+.claude/worktrees/
+
 # Docker
 *.log
 infra/compose/docker-compose.override.yml
