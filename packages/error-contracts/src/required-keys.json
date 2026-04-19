@@ -2,62 +2,62 @@
   "version": 1,
   "namespace": "errors",
   "keys": [
-    "NOT_FOUND",
-    "VALIDATION_FAILED",
-    "INTERNAL_ERROR",
-    "SKILL_VALIDATION_FAILED",
-    "SKILL_NOT_FOUND",
-    "PDF_INVALID",
-    "PDF_PASSWORD_PROTECTED",
-    "PDF_TOO_MANY_PAGES",
-    "PDF_NO_TEXT_EXTRACTABLE",
-    "INTELLIGENCE_UNAVAILABLE",
-    "STRUCTURED_OUTPUT_FAILED",
-    "INTELLIGENCE_TIMEOUT",
     "EXTRACTION_BUDGET_EXCEEDED",
-    "PDF_TOO_LARGE",
+    "EXTRACTION_OVERLOADED",
+    "INTELLIGENCE_TIMEOUT",
+    "INTELLIGENCE_UNAVAILABLE",
+    "INTERNAL_ERROR",
+    "NOT_FOUND",
+    "PDF_INVALID",
+    "PDF_NO_TEXT_EXTRACTABLE",
     "PDF_PARSER_UNAVAILABLE",
-    "EXTRACTION_OVERLOADED"
+    "PDF_PASSWORD_PROTECTED",
+    "PDF_TOO_LARGE",
+    "PDF_TOO_MANY_PAGES",
+    "SKILL_NOT_FOUND",
+    "SKILL_VALIDATION_FAILED",
+    "STRUCTURED_OUTPUT_FAILED",
+    "VALIDATION_FAILED"
   ],
   "params_by_key": {
-    "NOT_FOUND": [],
-    "VALIDATION_FAILED": [
-      "field",
-      "reason"
+    "EXTRACTION_BUDGET_EXCEEDED": [
+      "budget_seconds"
     ],
+    "EXTRACTION_OVERLOADED": [
+      "max_concurrent"
+    ],
+    "INTELLIGENCE_TIMEOUT": [
+      "budget_seconds"
+    ],
+    "INTELLIGENCE_UNAVAILABLE": [],
     "INTERNAL_ERROR": [],
-    "SKILL_VALIDATION_FAILED": [
-      "file",
-      "reason"
+    "NOT_FOUND": [],
+    "PDF_INVALID": [],
+    "PDF_NO_TEXT_EXTRACTABLE": [],
+    "PDF_PARSER_UNAVAILABLE": [
+      "dependency"
+    ],
+    "PDF_PASSWORD_PROTECTED": [],
+    "PDF_TOO_LARGE": [
+      "max_bytes",
+      "actual_bytes"
+    ],
+    "PDF_TOO_MANY_PAGES": [
+      "limit",
+      "actual"
     ],
     "SKILL_NOT_FOUND": [
       "name",
       "version"
     ],
-    "PDF_INVALID": [],
-    "PDF_PASSWORD_PROTECTED": [],
-    "PDF_TOO_MANY_PAGES": [
-      "limit",
-      "actual"
+    "SKILL_VALIDATION_FAILED": [
+      "file",
+      "reason"
     ],
-    "PDF_NO_TEXT_EXTRACTABLE": [],
-    "INTELLIGENCE_UNAVAILABLE": [],
     "STRUCTURED_OUTPUT_FAILED": [],
-    "INTELLIGENCE_TIMEOUT": [
-      "budget_seconds"
-    ],
-    "EXTRACTION_BUDGET_EXCEEDED": [
-      "budget_seconds"
-    ],
-    "PDF_TOO_LARGE": [
-      "max_bytes",
-      "actual_bytes"
-    ],
-    "PDF_PARSER_UNAVAILABLE": [
-      "dependency"
-    ],
-    "EXTRACTION_OVERLOADED": [
-      "max_concurrent"
+    "VALIDATION_FAILED": [
+      "field",
+      "reason"
     ]
   }
 }

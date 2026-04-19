@@ -314,3 +314,131 @@ def test_codegen_rejects_non_string_param_name(tmp_path: Path):
 
     with pytest.raises(ValueError, match="param name"):
         load_and_validate(path)
+
+
+# Determinism regression test for issue #286 / PR #309.
+#
+# The bug: reordering top-level keys in `errors.yaml` produced byte-different
+# generated outputs. CI's `task errors:check` gate diffs ALL THREE artifacts
+# (Python `_registry.py`, TS `generated.ts`, JSON `required-keys.json`); any
+# YAML-key-order change therefore drifted CI even though the semantic content
+# was identical. The fix sorts entries by error code in every generator before
+# emission, so the produced files are byte-identical regardless of input order.
+_DETERMINISM_YAML_FORWARD = """
+version: 1
+errors:
+  ALPHA_ERROR:
+    http_status: 400
+    description: First alphabetic
+    params: {}
+  BRAVO_ERROR:
+    http_status: 404
+    description: Second alphabetic
+    params:
+      thing_id: string
+  CHARLIE_ERROR:
+    http_status: 422
+    description: Third alphabetic
+    params:
+      reason: string
+      attempts: integer
+"""
+
+_DETERMINISM_YAML_REVERSED = """
+version: 1
+errors:
+  CHARLIE_ERROR:
+    http_status: 422
+    description: Third alphabetic
+    params:
+      reason: string
+      attempts: integer
+  BRAVO_ERROR:
+    http_status: 404
+    description: Second alphabetic
+    params:
+      thing_id: string
+  ALPHA_ERROR:
+    http_status: 400
+    description: First alphabetic
+    params: {}
+"""
+
+
+def _write_yaml(tmp_path: Path, name: str, content: str) -> Path:
+    """Helper: write a YAML string to a temp file and return its path."""
+    path = tmp_path / name
+    path.write_text(content)
+    return path
+
+
+def test_generate_python_is_deterministic_across_yaml_key_order(tmp_path: Path):
+    """`generate_python` must emit byte-identical `_registry.py` and
+    `__init__.py` regardless of YAML key order. Without this, reordering
+    keys in `errors.yaml` causes false-positive drift in `task errors:check`.
+    """
+    from scripts.generate import generate_python
+
+    out_forward = tmp_path / "out_forward"
+    out_reversed = tmp_path / "out_reversed"
+    out_forward.mkdir()
+    out_reversed.mkdir()
+
+    generate_python(
+        _write_yaml(tmp_path, "forward.yaml", _DETERMINISM_YAML_FORWARD),
+        out_forward,
+    )
+    generate_python(
+        _write_yaml(tmp_path, "reversed.yaml", _DETERMINISM_YAML_REVERSED),
+        out_reversed,
+    )
+
+    # Registry and __init__ are the load-bearing aggregate files; per-error
+    # files have content keyed only by their own code so are trivially stable.
+    assert (out_forward / "_registry.py").read_bytes() == (
+        out_reversed / "_registry.py"
+    ).read_bytes()
+    assert (out_forward / "__init__.py").read_bytes() == (
+        out_reversed / "__init__.py"
+    ).read_bytes()
+
+
+def test_generate_typescript_is_deterministic_across_yaml_key_order(tmp_path: Path):
+    """`generate_typescript` must emit a byte-identical `generated.ts`
+    regardless of YAML key order. The TS output participates in
+    `task errors:check`, so non-determinism here also causes false drift.
+    """
+    from scripts.generate import generate_typescript
+
+    ts_forward = generate_typescript(
+        _write_yaml(tmp_path, "forward.yaml", _DETERMINISM_YAML_FORWARD),
+        tmp_path / "forward.ts",
+    )
+    ts_reversed = generate_typescript(
+        _write_yaml(tmp_path, "reversed.yaml", _DETERMINISM_YAML_REVERSED),
+        tmp_path / "reversed.ts",
+    )
+
+    assert ts_forward.read_bytes() == ts_reversed.read_bytes()
+
+
+def test_generate_required_keys_is_deterministic_across_yaml_key_order(
+    tmp_path: Path,
+):
+    """`generate_required_keys` must emit a byte-identical
+    `required-keys.json` regardless of YAML key order. The JSON output
+    participates in `task errors:check`, so non-determinism here also causes
+    false drift.
+    """
+    from scripts.generate import generate_required_keys
+
+    json_forward = generate_required_keys(
+        _write_yaml(tmp_path, "forward.yaml", _DETERMINISM_YAML_FORWARD),
+        tmp_path / "forward.json",
+    )
+    json_reversed = generate_required_keys(
+        _write_yaml(tmp_path, "reversed.yaml", _DETERMINISM_YAML_REVERSED),
+        tmp_path / "reversed.json",
+    )
+
+    assert json_forward.read_bytes() == json_reversed.read_bytes()

@@ -308,7 +308,12 @@ def generate_python(errors_path: Path, output_dir: Path) -> list[Path]:
     # diverging _registry.py diffs that CI's "regenerated content matches"
     # check then flagged as drift (issue #286). Each entry starts with four
     # spaces + `"<CODE>":`, so string sort gives alphabetical order by error
-    # code — matching the imports' sort key.
+    # code in the generated dict body. Note: this is a different sort key
+    # than `error_imports` above, which sorts by `(module, name)` tuple
+    # (default tuple ordering); both are alphabetical, but on different
+    # fields. The two sorts are deliberately independent — the imports'
+    # order only affects `from ... import ...` line layout, while this sort
+    # affects the user-visible dict-key order.
     sorted_registry_entries = sorted(registry_entries)
     registry_content = (
         '"""Generated error registry. Do not edit."""\n\n'
@@ -333,11 +338,19 @@ def generate_typescript(errors_path: Path, output_path: Path) -> Path:
     data = load_and_validate(errors_path)
     errors = cast("dict[str, ErrorSpec]", data["errors"])
 
-    codes_array = ", ".join(f'"{code}"' for code in errors)
+    # Sort by error code for deterministic output regardless of YAML key
+    # order. Drives the ErrorCode union, ErrorParamsByCode interface,
+    # ERROR_CODES tuple, and HTTP_STATUS_BY_CODE map — all four would
+    # otherwise drift in `task errors:check` whenever YAML keys are
+    # reordered (issue #286).
+    sorted_codes = sorted(errors.keys())
+
+    codes_array = ", ".join(f'"{code}"' for code in sorted_codes)
 
     params_entries: list[str] = []
     status_entries: list[str] = []
-    for code, spec in errors.items():
+    for code in sorted_codes:
+        spec = errors[code]
         params = cast("dict[str, str]", spec.get("params", {}))
         if params:
             fields = "; ".join(
@@ -351,7 +364,7 @@ def generate_typescript(errors_path: Path, output_path: Path) -> Path:
     content = (
         "// THIS FILE IS GENERATED FROM errors.yaml\n"
         "// DO NOT EDIT BY HAND. Run `task errors:generate` to regenerate.\n\n"
-        f"export type ErrorCode =\n  | {'\n  | '.join(f'"{code}"' for code in errors)};\n\n"
+        f"export type ErrorCode =\n  | {'\n  | '.join(f'"{code}"' for code in sorted_codes)};\n\n"
         "export interface ErrorParamsByCode {\n" + "\n".join(params_entries) + "\n}\n\n"
         "export interface ApiErrorPayload<C extends ErrorCode = ErrorCode> {\n"
         "  code: C;\n"
@@ -375,10 +388,15 @@ def generate_required_keys(errors_path: Path, output_path: Path) -> Path:
     data = load_and_validate(errors_path)
     errors = cast("dict[str, ErrorSpec]", data["errors"])
 
-    keys = list(errors.keys())
+    # Sort by error code so the JSON output is byte-stable regardless of
+    # YAML key order. Without this, reordering keys in errors.yaml would
+    # drift `required-keys.json` and trip `task errors:check` (issue #286).
+    sorted_codes = sorted(errors.keys())
+
+    keys = list(sorted_codes)
     params_by_key: dict[str, list[str]] = {
-        code: list(cast("dict[str, str]", spec.get("params", {})).keys())
-        for code, spec in errors.items()
+        code: list(cast("dict[str, str]", errors[code].get("params", {})).keys())
+        for code in sorted_codes
     }
 
     result = {
