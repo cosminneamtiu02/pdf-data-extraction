@@ -28,7 +28,14 @@ jobs:
       - name: Build backend Docker image
         run: docker build -f infra/docker/backend.Dockerfile -t pdf-data-extraction-backend:${{ github.sha }} .
 
+      # Registry push is wired behind the DEPLOY_ENABLED repo variable so
+      # the Deploy job stays green (Build step still verifies the Dockerfile
+      # on every merge, push step is SKIPPED) until #121 lands the actual
+      # registry credentials + push command. An unconditional `exit 1` here
+      # would habituate on-call to a permanently-red Deploy job and mask a
+      # real failure once the push is wired (issue #270).
       - name: Push to registry
+        if: ${{ vars.DEPLOY_ENABLED == 'true' }}
         run: |
           echo "::error::Push to registry not yet implemented — see issue #121 for tracking."
           exit 1
