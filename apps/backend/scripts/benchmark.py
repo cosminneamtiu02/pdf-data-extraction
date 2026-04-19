@@ -473,8 +473,9 @@ def run_benchmark(config: BenchConfig) -> BenchResults:
 
 
 # Argparse-name -> BenchmarkSettings-field mapping for the CLI flags that are
-# backed by a ``BENCH_*`` env var. Flags not in this set (``--warmup`` /
-# ``--timeout``) are script-local and keep concrete argparse defaults.
+# backed by a ``BENCH_*`` env var. Every CLI knob the benchmark script exposes
+# flows through :class:`BenchmarkSettings` so the env-CLI parity claim in the
+# module docstring holds (issue #275).
 _BENCH_FIELD_BY_ARG: dict[str, str] = {
     "url": "url",
     "iterations": "iterations",
@@ -482,6 +483,8 @@ _BENCH_FIELD_BY_ARG: dict[str, str] = {
     "skill_name": "skill_name",
     "skill_version": "skill_version",
     "service_pid": "service_pid",
+    "warmup": "warmup",
+    "timeout": "timeout",
 }
 
 
@@ -538,6 +541,8 @@ def parse_args(argv: list[str]) -> BenchConfig:
             "  BENCH_SKILL_NAME     Override --skill-name (default: invoice)\n"
             "  BENCH_SKILL_VERSION  Override --skill-version (default: 1)\n"
             "  BENCH_SERVICE_PID    Override --service-pid (default: none)\n"
+            "  BENCH_WARMUP         Override --warmup (default: 1)\n"
+            "  BENCH_TIMEOUT        Override --timeout (default: 300)\n"
         ),
     )
     # BenchmarkSettings-backed flags: SUPPRESS so only explicit CLI flags populate
@@ -575,17 +580,16 @@ def parse_args(argv: list[str]) -> BenchConfig:
         default=argparse.SUPPRESS,
         help="PID of the running service process for RSS measurement (NFR-008)",
     )
-    # Script-local flags: not env-backed, keep concrete argparse defaults.
     parser.add_argument(
         "--warmup",
         type=int,
-        default=1,
+        default=argparse.SUPPRESS,
         help="Number of warm-up requests to discard per batch (default: 1)",
     )
     parser.add_argument(
         "--timeout",
         type=float,
-        default=300.0,
+        default=argparse.SUPPRESS,
         help="HTTP request timeout in seconds (default: 300)",
     )
 
@@ -610,12 +614,6 @@ def parse_args(argv: list[str]) -> BenchConfig:
             sys.stderr.write(f"Error: {source}: {error['msg']}\n")
         raise SystemExit(2) from None  # operator-facing message, not a domain error
 
-    if args.warmup < 0:
-        parser.error("--warmup must be a non-negative integer")
-
-    if args.timeout <= 0:
-        parser.error("--timeout must be a positive number")
-
     # Normalize service_pid=0 -> None. PID 0 is never a valid target process
     # (POSIX reserves it for the current process group in signal semantics),
     # and ``ps -p 0`` produces no output. Matches the pre-refactor
@@ -628,8 +626,8 @@ def parse_args(argv: list[str]) -> BenchConfig:
         fixtures_dir=settings.fixtures_dir,
         skill_name=settings.skill_name,
         skill_version=settings.skill_version,
-        warmup=args.warmup,
-        timeout=args.timeout,
+        warmup=settings.warmup,
+        timeout=settings.timeout,
         service_pid=service_pid,
     )
 
