@@ -721,6 +721,193 @@ async def test_extraction_service_rejects_when_at_capacity() -> None:
     assert isinstance(result, ExtractionResult)
 
 
+async def test_extraction_service_overloaded_error_suppresses_timeout_cause() -> None:
+    """Over-cap rejection must not chain the signalling ``TimeoutError``.
+
+    Admission uses ``asyncio.timeout(0)`` as a non-blocking try-acquire
+    primitive: the inner ``TimeoutError`` is a pure signalling mechanism
+    for "would block", not a real timeout carrying diagnostic value.
+    Chaining it into ``ExtractionOverloadedError.__cause__`` produces
+    noisy, low-signal "During handling of the above exception, another
+    exception occurred" traces in logs and error responses.
+
+    The rest of the codebase already uses ``from None`` when remapping
+    timeouts to DomainError subclasses (see the ``except TimeoutError``
+    remap to ``ExtractionBudgetExceededError`` in
+    ``ExtractionService._run_pipeline`` and the one to
+    ``IntelligenceTimeoutError`` in ``extraction_engine.py``). This test
+    pins the same invariant for the admission-path remap so the file
+    speaks one way, not two.
+    """
+    settings = _build_settings(max_concurrent_extractions=1)
+    service = _build_service(settings=settings)
+
+    # Exhaust the cap by taking the permit directly, so the next
+    # ``extract`` call's non-blocking acquire fires the TimeoutError
+    # path without needing a gated engine.
+    await service._semaphore.acquire()  # noqa: SLF001 — test probes the admission remap
+    try:
+        with pytest.raises(ExtractionOverloadedError) as excinfo:
+            await service.extract(_PDF_BYTES, "invoice", "1", OutputMode.JSON_ONLY)
+    finally:
+        service._semaphore.release()  # noqa: SLF001 — matched with the acquire above
+
+    # ``raise ... from None`` suppresses the ``__cause__`` link AND sets
+    # ``__suppress_context__ = True`` so Python's traceback renderer omits
+    # the "During handling ..." chain for the signalling TimeoutError.
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__suppress_context__ is True
+
+
+class _LyingLockedSemaphore:
+    """Semaphore whose ``locked()`` always lies (returns ``False``).
+
+    Models the worst-case TOCTOU outcome described in issue #230: every
+    admission-time ``locked()`` check sees the semaphore as free even
+    when permits are exhausted — the exact state a coroutine would
+    observe if a sibling coroutine snuck past the check during an
+    inserted ``await`` between ``if sem.locked(): raise`` and
+    ``async with sem: ...``. The underlying acquire/release counter is
+    a real ``asyncio.Semaphore``, so the permit cap is still enforced;
+    code relying on ``locked()`` alone as a fail-fast gate may queue
+    instead of rejecting immediately, whereas code using a non-blocking
+    acquire as the atomic gate will not.
+    """
+
+    def __init__(self, value: int) -> None:
+        self._inner = asyncio.Semaphore(value)
+
+    def locked(self) -> bool:
+        return False
+
+    async def acquire(self) -> bool:
+        return await self._inner.acquire()
+
+    def release(self) -> None:
+        self._inner.release()
+
+    async def __aenter__(self) -> None:
+        await self._inner.acquire()
+
+    async def __aexit__(self, *_: object) -> None:
+        self._inner.release()
+
+
+class _GatedInFlightEngine:
+    """Engine that blocks on a gate event while tracking concurrent callers.
+
+    In this test, ``max_in_flight`` records how many callers actually
+    make it into ``extract`` at once, while the key admission observable
+    is whether an over-cap caller fails fast or instead blocks/queues on
+    the semaphore. Under the old check-then-acquire pattern, a stale
+    ``locked()`` result can let an over-cap caller slip past the check
+    and wait for a permit; under an atomic try-acquire pattern, that
+    caller is rejected before entering the pipeline.
+    """
+
+    def __init__(self, gate: asyncio.Event) -> None:
+        self._gate = gate
+        self.in_flight = 0
+        self.max_in_flight = 0
+
+    async def extract(
+        self,
+        _text: str,
+        _skill: Any,
+        _provider: Any,
+    ) -> list[RawExtraction]:
+        self.in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self.in_flight)
+        try:
+            await self._gate.wait()
+            return _build_raw_extractions()
+        finally:
+            self.in_flight -= 1
+
+
+async def _attempt_admission(service: ExtractionService) -> BaseException | None:
+    """Run one admission attempt with a short wall-clock cap.
+
+    Returns ``None`` on success (result discarded — the cap is what
+    matters), the ``ExtractionOverloadedError`` for a correct rejection,
+    or a built-in ``TimeoutError`` for the failure mode where an over-cap
+    caller queues on the semaphore instead of failing fast.
+    """
+    try:
+        await asyncio.wait_for(
+            service.extract(_PDF_BYTES, "invoice", "1", OutputMode.JSON_ONLY),
+            timeout=0.2,
+        )
+    except ExtractionOverloadedError as err:
+        return err
+    except TimeoutError as err:
+        return err
+    return None
+
+
+async def test_extraction_service_admission_is_atomic_not_check_then_acquire() -> None:
+    """Regression guard for issue #230: admission must be atomic try-acquire.
+
+    The original check-then-acquire pattern (``if sem.locked(): raise;
+    async with sem: ...``) is atomic today only because no ``await``
+    sits between the two operations on a single-loop scheduler. Any
+    future refactor inserting an ``await`` there — a metrics call, a
+    structured log, an eager validation step — silently opens a TOCTOU
+    window where N concurrent coroutines can all observe
+    ``locked() == False`` and proceed past the overload check, after
+    which over-cap callers block in the real semaphore acquire instead
+    of failing fast with ``ExtractionOverloadedError``.
+
+    This test directly probes the admission path by substituting the
+    service's semaphore for a wrapper that lies via ``locked()``. Under
+    check-then-acquire, the lie lets both overflow callers past the gate
+    and they block on the real ``async with`` acquire — violating the
+    fail-fast contract. Under atomic try-acquire, ``locked()`` is never
+    consulted, so the lie has no effect.
+    """
+    gate = asyncio.Event()
+    engine = _GatedInFlightEngine(gate)
+    settings = _build_settings(max_concurrent_extractions=1)
+    service = _build_service(engine=engine, settings=settings)
+    service._semaphore = _LyingLockedSemaphore(1)  # type: ignore[assignment]  # noqa: SLF001 — test probes the admission-control invariant against a lying semaphore
+
+    # Seed the first call to hold the permit.
+    first = asyncio.create_task(
+        service.extract(_PDF_BYTES, "invoice", "1", OutputMode.JSON_ONLY),
+    )
+    for _ in range(50):
+        await asyncio.sleep(0)
+        if engine.in_flight >= 1:
+            break
+    assert engine.in_flight == 1, "First call should have entered the pipeline"
+
+    # Two over-cap attempts. Collect outcomes without branching.
+    outcomes = [await _attempt_admission(service) for _ in range(2)]
+
+    # Cap invariant (belt-and-braces): the engine must never see more
+    # than one in-flight pipeline. ``asyncio.Semaphore`` already enforces
+    # this regardless of admission strategy, but we assert it to catch
+    # any future refactor that accidentally loosens the cap.
+    assert engine.max_in_flight == 1, (
+        f"Admission cap violated: {engine.max_in_flight} concurrent pipelines "
+        "observed against max_concurrent_extractions=1."
+    )
+    # Fail-fast invariant: over-cap callers raise ExtractionOverloadedError,
+    # not a wall-clock TimeoutError from queueing on the semaphore.
+    assert all(isinstance(o, ExtractionOverloadedError) for o in outcomes), (
+        f"Over-cap callers queued or succeeded instead of failing fast. Outcomes: {outcomes!r}"
+    )
+    for outcome in outcomes:
+        assert isinstance(outcome, ExtractionOverloadedError)
+        assert outcome.http_status == 503
+        assert outcome.params is not None
+        assert outcome.params.model_dump() == {"max_concurrent": 1}
+
+    gate.set()
+    result = await first
+    assert isinstance(result, ExtractionResult)
+
+
 async def test_extraction_service_releases_semaphore_on_success() -> None:
     """After a successful extract, the semaphore permit is returned."""
     settings = _build_settings(max_concurrent_extractions=1)

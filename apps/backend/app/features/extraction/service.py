@@ -20,11 +20,16 @@ elsewhere; once that work completes, its result is discarded.
 up on CPU and Ollama, a per-service ``asyncio.Semaphore`` caps the
 number of concurrent pipelines at ``Settings.max_concurrent_extractions``
 (issue #109). Over-cap requests are rejected immediately with
-``ExtractionOverloadedError`` (HTTP 503). ``extract()`` checks
-``Semaphore.locked()`` before entering the ``async with`` block and
-short-circuits if no permit is available, so admitted callers acquire
-the semaphore without waiting and rejected callers fail fast instead
-of queuing behind their own 504 timeout budget.
+``ExtractionOverloadedError`` (HTTP 503). ``extract()`` uses a
+non-blocking ``acquire`` (via ``asyncio.timeout(0)``) so admission
+and permit acquisition happen in one step: either the acquire
+succeeds immediately and the request proceeds, or it times out and
+raises. This avoids a stale pre-check such as ``locked()`` saying
+"capacity is available" and then blocking/queueing on ``acquire()``
+instead of failing fast with ``ExtractionOverloadedError`` (issue
+#230). Admitted callers hold the permit for the duration of the
+pipeline and release it in a ``finally`` so it is returned on both
+success and error paths.
 """
 
 from __future__ import annotations
@@ -85,10 +90,11 @@ class ExtractionService:
         self._timeout_seconds = settings.extraction_timeout_seconds
         # Admission-control semaphore (issue #109). One permit per
         # concurrent pipeline; over-cap requests are rejected up-front
-        # in ``extract`` rather than awaiting on ``acquire`` (which would
-        # defeat the backpressure contract — callers would sit in the
-        # wait queue until their 504 budget ran out, with the background
-        # work still consuming CPU and Ollama on the other side).
+        # via a non-blocking acquire rather than awaiting on ``acquire``
+        # (which would defeat the backpressure contract — callers would
+        # sit in the wait queue until their 504 budget ran out, with the
+        # background work still consuming CPU and Ollama on the other
+        # side). See ``extract`` for the atomic acquire pattern.
         self._max_concurrent_extractions = settings.max_concurrent_extractions
         self._semaphore = asyncio.Semaphore(self._max_concurrent_extractions)
 
@@ -115,25 +121,50 @@ class ExtractionService:
             SkillNotFoundError: requested skill is not in the manifest.
             Other DomainError subclasses: propagated from downstream components.
         """
-        # Admission check (issue #109). ``Semaphore.locked()`` is True iff
-        # every permit is currently held. The check and the ``async with``
-        # below are effectively atomic on a single-loop scheduler: when
-        # ``locked()`` returns False there is at least one free permit, and
-        # ``Semaphore.acquire()`` only yields when the counter is zero — so
-        # the semaphore is never awaited here, guaranteeing fail-fast
-        # rejection instead of queuing.
-        if self._semaphore.locked():
+        # Atomic admission (issue #230). ``asyncio.timeout(0)`` turns the
+        # semaphore acquire into a non-blocking try-acquire: if a permit
+        # is available, ``acquire`` completes synchronously (no yield) and
+        # the permit is taken; if none is available, ``acquire`` would
+        # suspend to wait, at which point the zero-budget deadline fires
+        # and ``TimeoutError`` is raised. The "is capacity available?"
+        # decision and the permit take-up are therefore a single
+        # operation. That preserves fail-fast admission: a caller either
+        # acquires immediately or is rejected immediately. By contrast,
+        # the older ``if locked(): raise; async with ...`` pattern relied
+        # on the ``locked()`` pre-check staying current until the acquire;
+        # if an ``await`` ever slipped between those steps, the pre-check
+        # could become stale and a request meant to fail fast could end up
+        # waiting on the semaphore instead (queued / delayed rejection).
+        #
+        # ``asyncio.wait_for(acquire(), timeout=0)`` would NOT work here:
+        # ``wait_for`` cancels the coroutine before giving it a chance to
+        # complete synchronously, so it raises ``TimeoutError`` even when
+        # a permit is available. ``asyncio.timeout(0)`` only fires on the
+        # first true suspension, which is exactly the "would block" case.
+        try:
+            async with asyncio.timeout(0):
+                await self._semaphore.acquire()
+        except TimeoutError:
+            # ``from None`` to match the file's "timeout → DomainError"
+            # pattern (``ExtractionBudgetExceededError`` below uses it, as
+            # does ``IntelligenceTimeoutError`` in ``extraction_engine.py``).
+            # Here the inner ``TimeoutError`` is a pure signalling primitive
+            # for "would block" — it carries no diagnostic context worth
+            # chaining, only a misleading "TimeoutError" tail on what is
+            # really a capacity-rejection event.
             raise ExtractionOverloadedError(
                 max_concurrent=self._max_concurrent_extractions,
-            )
+            ) from None
 
-        async with self._semaphore:
+        try:
             return await self._run_pipeline(
                 pdf_bytes,
                 skill_name,
                 skill_version,
                 output_mode,
             )
+        finally:
+            self._semaphore.release()
 
     async def _run_pipeline(
         self,
