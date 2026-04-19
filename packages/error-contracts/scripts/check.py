@@ -65,7 +65,20 @@ def _file_drift(expected: Path, actual: Path, label: str) -> list[str]:
     return []
 
 
-def main() -> int:
+def run_check(
+    errors_yaml: Path = _ERRORS_YAML,
+    live_python_dir: Path = _LIVE_PYTHON_DIR,
+    live_ts: Path = _LIVE_TS,
+    live_required_keys: Path = _LIVE_REQUIRED_KEYS,
+) -> list[str]:
+    """Generate into a temp dir and return the drift list against live paths.
+
+    Pure function over the supplied paths — takes no module-level state and
+    performs no I/O outside the temp dir and the provided live paths. This
+    shape lets unit tests point `live_*` at `tmp_path` fixtures and drive
+    pass/fail / missing / extra / content-drift cases without touching the
+    real monorepo layout. (PR #312 review follow-up.)
+    """
     with tempfile.TemporaryDirectory() as tmp_str:
         tmp = Path(tmp_str)
         tmp_python = tmp / "python"
@@ -73,15 +86,19 @@ def main() -> int:
         tmp_ts = tmp / "generated.ts"
         tmp_keys = tmp / "required-keys.json"
 
-        generate_python(_ERRORS_YAML, tmp_python)
-        generate_typescript(_ERRORS_YAML, tmp_ts)
-        generate_required_keys(_ERRORS_YAML, tmp_keys)
+        generate_python(errors_yaml, tmp_python)
+        generate_typescript(errors_yaml, tmp_ts)
+        generate_required_keys(errors_yaml, tmp_keys)
 
         drift: list[str] = []
-        drift.extend(_collect_dir_drift(tmp_python, _LIVE_PYTHON_DIR))
-        drift.extend(_file_drift(tmp_ts, _LIVE_TS, "typescript"))
-        drift.extend(_file_drift(tmp_keys, _LIVE_REQUIRED_KEYS, "required-keys"))
+        drift.extend(_collect_dir_drift(tmp_python, live_python_dir))
+        drift.extend(_file_drift(tmp_ts, live_ts, "typescript"))
+        drift.extend(_file_drift(tmp_keys, live_required_keys, "required-keys"))
+    return drift
 
+
+def main() -> int:
+    drift = run_check()
     if drift:
         sys.stderr.write("Error contract drift detected:\n")
         for item in drift:
