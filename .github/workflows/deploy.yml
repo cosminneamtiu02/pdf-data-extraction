@@ -35,7 +35,7 @@ jobs:
       # would habituate on-call to a permanently-red Deploy job and mask a
       # real failure once the push is wired (issue #270).
       - name: Push to registry
-        if: ${{ vars.DEPLOY_ENABLED == 'true' }}
+        if: vars.DEPLOY_ENABLED == 'true'
         run: |
           echo "::error::Push to registry not yet implemented — see issue #121 for tracking."
           exit 1
@@ -47,6 +47,6 @@ jobs:
       # assume an image was pushed. Emit a loud `::warning::` annotation so
       # the run page makes the no-op explicit and points at the flip.
       - name: Deploy disabled notice
-        if: ${{ vars.DEPLOY_ENABLED != 'true' }}
+        if: vars.DEPLOY_ENABLED != 'true'
         run: |
           echo "::warning::Deploy is intentionally disabled for this repository. No image was pushed or deployed. To enable deployment, set the repository variable DEPLOY_ENABLED to 'true' once the registry push from issue #121 lands."
