@@ -33,6 +33,8 @@ def test_benchmark_settings_defaults() -> None:
     assert s.skill_name == "invoice"
     assert s.skill_version == "1"
     assert s.service_pid is None
+    assert s.warmup == 1
+    assert s.timeout == 300.0
 
 
 def test_benchmark_settings_reads_env_prefix(
@@ -47,6 +49,8 @@ def test_benchmark_settings_reads_env_prefix(
     monkeypatch.setenv("BENCH_SKILL_NAME", "receipt")
     monkeypatch.setenv("BENCH_SKILL_VERSION", "2")
     monkeypatch.setenv("BENCH_SERVICE_PID", "4242")
+    monkeypatch.setenv("BENCH_WARMUP", "5")
+    monkeypatch.setenv("BENCH_TIMEOUT", "60.5")
 
     s = BenchmarkSettings(_env_file=None)  # type: ignore[call-arg]
 
@@ -56,6 +60,8 @@ def test_benchmark_settings_reads_env_prefix(
     assert s.skill_name == "receipt"
     assert s.skill_version == "2"
     assert s.service_pid == 4242
+    assert s.warmup == 5
+    assert s.timeout == 60.5
 
 
 def test_benchmark_settings_empty_service_pid_is_none(
@@ -83,5 +89,40 @@ def test_benchmark_settings_rejects_invalid_service_pid(
 ) -> None:
     """A non-integer BENCH_SERVICE_PID value raises ValidationError."""
     monkeypatch.setenv("BENCH_SERVICE_PID", "not-an-int")
+    with pytest.raises(ValidationError):
+        BenchmarkSettings(_env_file=None)  # type: ignore[call-arg]
+
+
+def test_benchmark_settings_rejects_negative_warmup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A negative BENCH_WARMUP value raises ValidationError (Field(ge=0))."""
+    monkeypatch.setenv("BENCH_WARMUP", "-1")
+    with pytest.raises(ValidationError):
+        BenchmarkSettings(_env_file=None)  # type: ignore[call-arg]
+
+
+def test_benchmark_settings_accepts_zero_warmup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Warmup=0 is valid (no warm-up iterations); guards Field(ge=0), not gt=0."""
+    monkeypatch.setenv("BENCH_WARMUP", "0")
+    assert BenchmarkSettings(_env_file=None).warmup == 0  # type: ignore[call-arg]
+
+
+def test_benchmark_settings_rejects_zero_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A zero BENCH_TIMEOUT value raises ValidationError (Field(gt=0))."""
+    monkeypatch.setenv("BENCH_TIMEOUT", "0")
+    with pytest.raises(ValidationError):
+        BenchmarkSettings(_env_file=None)  # type: ignore[call-arg]
+
+
+def test_benchmark_settings_rejects_negative_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A negative BENCH_TIMEOUT value raises ValidationError (Field(gt=0))."""
+    monkeypatch.setenv("BENCH_TIMEOUT", "-1.0")
     with pytest.raises(ValidationError):
         BenchmarkSettings(_env_file=None)  # type: ignore[call-arg]
