@@ -39,3 +39,14 @@ jobs:
         run: |
           echo "::error::Push to registry not yet implemented — see issue #121 for tracking."
           exit 1
+
+      # Companion to the gated push step above: when DEPLOY_ENABLED is unset
+      # or anything other than the literal string "true", the push is
+      # silently skipped and the job lands green. That can create "green
+      # deploy" false confidence — an operator reading the run UI might
+      # assume an image was pushed. Emit a loud `::warning::` annotation so
+      # the run page makes the no-op explicit and points at the flip.
+      - name: Deploy disabled notice
+        if: ${{ vars.DEPLOY_ENABLED != 'true' }}
+        run: |
+          echo "::warning::Deploy is intentionally disabled for this repository. No image was pushed or deployed. To enable deployment, set the repository variable DEPLOY_ENABLED to 'true' once the registry push from issue #121 lands."
