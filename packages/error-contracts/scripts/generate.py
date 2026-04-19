@@ -198,6 +198,14 @@ def generate_python(errors_path: Path, output_dir: Path) -> list[Path]:
         base_name = error_class_name.removesuffix("Error")
         error_file_stem = _class_to_snake(error_class_name)  # e.g. "internal_error"
         params = cast("dict[str, str]", spec.get("params", {}))
+        # Iterate params by sorted key name so reordering param keys in
+        # errors.yaml (a semantic no-op — params are set-like) produces
+        # byte-stable generated artifacts. Without this, a YAML param-key
+        # swap drifts the generated params class field order, __init__
+        # signature, TS interface fields, and required-keys.json
+        # (issue #286 extended per PR #309 review).
+        sorted_param_items = sorted(params.items())
+        sorted_param_names = [name for name, _ in sorted_param_items]
         http_status = cast("int", spec["http_status"])
 
         # Generate error class (and params class first, when params exist, so
@@ -209,7 +217,7 @@ def generate_python(errors_path: Path, output_dir: Path) -> list[Path]:
             params_file = output_dir / f"{params_file_stem}.py"
             fields = "\n".join(
                 f"    {name}: {PARAM_TYPE_TO_PYTHON[ptype]}"
-                for name, ptype in params.items()
+                for name, ptype in sorted_param_items
             )
             params_file.write_text(
                 f'"""Generated from errors.yaml. Do not edit."""\n\n'
@@ -225,16 +233,18 @@ def generate_python(errors_path: Path, output_dir: Path) -> list[Path]:
 
             kw_args = [
                 f"{name}: {PARAM_TYPE_TO_PYTHON[ptype]}"
-                for name, ptype in params.items()
+                for name, ptype in sorted_param_items
             ]
             init_signature = ", ".join(kw_args)
-            params_construct = ", ".join(f"{name}={name}" for name in params)
+            params_construct = ", ".join(
+                f"{name}={name}" for name in sorted_param_names
+            )
             # Check if the super().__init__ line would exceed the project
             # line-length (matches ruff `line-length = 100` via _PY_LINE_LENGTH_LIMIT).
             super_line = f"        super().__init__(params={params_class_name}({params_construct}))"
             if len(super_line) > _PY_LINE_LENGTH_LIMIT:
                 params_lines = ",\n                ".join(
-                    f"{name}={name}" for name in params
+                    f"{name}={name}" for name in sorted_param_names
                 )
                 super_block = (
                     f"        super().__init__(\n"
@@ -353,8 +363,13 @@ def generate_typescript(errors_path: Path, output_path: Path) -> Path:
         spec = errors[code]
         params = cast("dict[str, str]", spec.get("params", {}))
         if params:
+            # Sort param names so reordering param keys in errors.yaml
+            # produces byte-stable TS output (PR #309 review: nested
+            # mappings also need deterministic iteration, not just the
+            # top-level error-code keys).
             fields = "; ".join(
-                f"{name}: {PARAM_TYPE_TO_TS[ptype]}" for name, ptype in params.items()
+                f"{name}: {PARAM_TYPE_TO_TS[ptype]}"
+                for name, ptype in sorted(params.items())
             )
             params_entries.append(f"  {code}: {{ {fields} }};")
         else:
@@ -394,8 +409,11 @@ def generate_required_keys(errors_path: Path, output_path: Path) -> Path:
     sorted_codes = sorted(errors.keys())
 
     keys = list(sorted_codes)
+    # Sort param names within each list so reordering param keys in
+    # errors.yaml (a semantic no-op — translators treat params as a set)
+    # keeps required-keys.json byte-stable (PR #309 review follow-up).
     params_by_key: dict[str, list[str]] = {
-        code: list(cast("dict[str, str]", errors[code].get("params", {})).keys())
+        code: sorted(cast("dict[str, str]", errors[code].get("params", {})).keys())
         for code in sorted_codes
     }
 

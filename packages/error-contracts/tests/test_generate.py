@@ -442,3 +442,100 @@ def test_generate_required_keys_is_deterministic_across_yaml_key_order(
     )
 
     assert json_forward.read_bytes() == json_reversed.read_bytes()
+
+
+# PR #309 review follow-up: also reorder param keys within an error spec.
+# The earlier determinism fixtures only varied top-level error-code order.
+# Param maps are set-like (translators treat them as unordered), so
+# swapping `reason`/`attempts` must also keep every generated artifact
+# byte-identical.
+_PARAM_ORDER_YAML_FORWARD = """
+version: 1
+errors:
+  CHARLIE_ERROR:
+    http_status: 422
+    description: Param-reorder case
+    params:
+      reason: string
+      attempts: integer
+"""
+
+_PARAM_ORDER_YAML_SWAPPED = """
+version: 1
+errors:
+  CHARLIE_ERROR:
+    http_status: 422
+    description: Param-reorder case
+    params:
+      attempts: integer
+      reason: string
+"""
+
+
+def test_generate_python_is_deterministic_across_param_key_order(tmp_path: Path):
+    """Swapping param keys within an error spec must not drift any Python
+    artifact — registry, params class, error class, or `__init__`.
+    """
+    from scripts.generate import generate_python
+
+    out_forward = tmp_path / "out_forward"
+    out_swapped = tmp_path / "out_swapped"
+    out_forward.mkdir()
+    out_swapped.mkdir()
+
+    generate_python(
+        _write_yaml(tmp_path, "forward.yaml", _PARAM_ORDER_YAML_FORWARD),
+        out_forward,
+    )
+    generate_python(
+        _write_yaml(tmp_path, "swapped.yaml", _PARAM_ORDER_YAML_SWAPPED),
+        out_swapped,
+    )
+
+    for py_file in (
+        "_registry.py",
+        "__init__.py",
+        "charlie_error.py",
+        "charlie_params.py",
+    ):
+        assert (out_forward / py_file).read_bytes() == (
+            out_swapped / py_file
+        ).read_bytes(), f"{py_file} drifted when params keys were reordered"
+
+
+def test_generate_typescript_is_deterministic_across_param_key_order(tmp_path: Path):
+    """Swapping param keys within an error spec must not drift the TS output."""
+    from scripts.generate import generate_typescript
+
+    ts_forward = generate_typescript(
+        _write_yaml(tmp_path, "forward.yaml", _PARAM_ORDER_YAML_FORWARD),
+        tmp_path / "forward.ts",
+    )
+    ts_swapped = generate_typescript(
+        _write_yaml(tmp_path, "swapped.yaml", _PARAM_ORDER_YAML_SWAPPED),
+        tmp_path / "swapped.ts",
+    )
+
+    assert ts_forward.read_bytes() == ts_swapped.read_bytes()
+
+
+def test_generate_required_keys_is_deterministic_across_param_key_order(
+    tmp_path: Path,
+):
+    """Swapping param keys within an error spec must not drift
+    `required-keys.json`. `params_by_key` is translator-facing metadata
+    (order-insensitive by semantics), so sorted output keeps the artifact
+    byte-stable under the semantically-equivalent YAML reorder.
+    """
+    from scripts.generate import generate_required_keys
+
+    json_forward = generate_required_keys(
+        _write_yaml(tmp_path, "forward.yaml", _PARAM_ORDER_YAML_FORWARD),
+        tmp_path / "forward.json",
+    )
+    json_swapped = generate_required_keys(
+        _write_yaml(tmp_path, "swapped.yaml", _PARAM_ORDER_YAML_SWAPPED),
+        tmp_path / "swapped.json",
+    )
+
+    assert json_forward.read_bytes() == json_swapped.read_bytes()

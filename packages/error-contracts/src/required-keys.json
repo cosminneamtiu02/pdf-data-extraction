@@ -39,12 +39,12 @@
     ],
     "PDF_PASSWORD_PROTECTED": [],
     "PDF_TOO_LARGE": [
-      "max_bytes",
-      "actual_bytes"
+      "actual_bytes",
+      "max_bytes"
     ],
     "PDF_TOO_MANY_PAGES": [
-      "limit",
-      "actual"
+      "actual",
+      "limit"
     ],
     "SKILL_NOT_FOUND": [
       "name",

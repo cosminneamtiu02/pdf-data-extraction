@@ -30,8 +30,8 @@ export interface ErrorParamsByCode {
   PDF_NO_TEXT_EXTRACTABLE: Record<string, never>;
   PDF_PARSER_UNAVAILABLE: { dependency: string };
   PDF_PASSWORD_PROTECTED: Record<string, never>;
-  PDF_TOO_LARGE: { max_bytes: number; actual_bytes: number };
-  PDF_TOO_MANY_PAGES: { limit: number; actual: number };
+  PDF_TOO_LARGE: { actual_bytes: number; max_bytes: number };
+  PDF_TOO_MANY_PAGES: { actual: number; limit: number };
   SKILL_NOT_FOUND: { name: string; version: string };
   SKILL_VALIDATION_FAILED: { file: string; reason: string };
   STRUCTURED_OUTPUT_FAILED: Record<string, never>;
