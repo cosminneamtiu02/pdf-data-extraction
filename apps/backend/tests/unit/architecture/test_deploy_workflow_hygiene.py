@@ -16,6 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Final
 
+import pytest
 import yaml
 
 from ._linter_subprocess import REPO_ROOT
@@ -30,6 +31,36 @@ def _load_deploy_workflow() -> dict[str, Any]:
         "got a non-mapping or null value, likely malformed YAML."
     )
     return workflow
+
+
+def _strip_shell_inline_comment(line: str) -> str:
+    """Return `line` with any trailing bash-style inline comment removed.
+
+    Bash treats ``#`` as a comment start only when it is at the start of a
+    token — line start or preceded by whitespace — AND outside any single-
+    or double-quoted string. Minimal implementation that covers the shapes
+    that appear in GitHub Actions ``run:`` blocks, so the ``exit 1``
+    detector below does not flag ``echo foo  # exit 1`` as if the comment
+    text were real code.
+    """
+    in_single = False
+    in_double = False
+    prev_was_space = True
+    for idx, ch in enumerate(line):
+        if in_single:
+            if ch == "'":
+                in_single = False
+        elif in_double:
+            if ch == '"' and (idx == 0 or line[idx - 1] != "\\"):
+                in_double = False
+        elif ch == "'":
+            in_single = True
+        elif ch == '"':
+            in_double = True
+        elif ch == "#" and prev_was_space:
+            return line[:idx].rstrip()
+        prev_was_space = ch.isspace()
+    return line
 
 
 def test_deploy_job_is_gated_on_deploy_enabled_variable() -> None:
@@ -88,7 +119,7 @@ def test_deploy_job_has_no_unconditional_exit_one() -> None:
             continue
         # Check every non-blank, non-comment line for a bare `exit 1`.
         for raw_line in run_block.splitlines():
-            line = raw_line.strip()
+            line = _strip_shell_inline_comment(raw_line.strip())
             if not line or line.startswith("#"):
                 continue
             # Match `exit 1` as its own statement OR at the end of a
@@ -107,3 +138,28 @@ def test_deploy_job_has_no_unconditional_exit_one() -> None:
         "that reintroduces the permanent-red regression tracked in #270:\n"
         + "\n".join(f"  - {o}" for o in offenders)
     )
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        # Plain inline comment after code — stripped.
+        ("echo foo  # exit 1", "echo foo"),
+        # No comment — line returned unchanged.
+        ("echo foo", "echo foo"),
+        # `#` embedded inside double-quoted string is not a comment.
+        ('echo "foo # bar"', 'echo "foo # bar"'),
+        # `#` embedded inside single-quoted string is not a comment.
+        ("echo 'foo # bar'", "echo 'foo # bar'"),
+        # `#` not preceded by whitespace (e.g. inside a URL fragment) is
+        # not a comment start.
+        ("curl https://example.com/path#frag", "curl https://example.com/path#frag"),
+        # Real `exit 1` followed by a comment — the code survives.
+        ("exit 1 # intentional failure", "exit 1"),
+        # Full-line comment — returned as empty so the outer `startswith('#')`
+        # guard can drop it. (The strip removes the comment; nothing remains.)
+        ("# exit 1", ""),
+    ],
+)
+def test_strip_shell_inline_comment(line: str, expected: str) -> None:
+    assert _strip_shell_inline_comment(line) == expected
