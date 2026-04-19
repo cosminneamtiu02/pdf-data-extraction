@@ -302,6 +302,14 @@ def generate_python(errors_path: Path, output_dir: Path) -> list[Path]:
         for module, name in init_imports
         if "Error" in name and "Params" not in name
     )
+    # Sort registry_entries too (imports are already sorted above) so the
+    # generated dict body is deterministic regardless of YAML key order.
+    # Without this sort, two developers reordering YAML keys produced
+    # diverging _registry.py diffs that CI's "regenerated content matches"
+    # check then flagged as drift (issue #286). Each entry starts with four
+    # spaces + `"<CODE>":`, so string sort gives alphabetical order by error
+    # code — matching the imports' sort key.
+    sorted_registry_entries = sorted(registry_entries)
     registry_content = (
         '"""Generated error registry. Do not edit."""\n\n'
         "from __future__ import annotations\n\n"
@@ -311,7 +319,7 @@ def generate_python(errors_path: Path, output_dir: Path) -> list[Path]:
         + "\n".join(_py_import_line(module, name) for module, name in error_imports)
         + "\n\n"
         + "ERROR_CLASSES: dict[str, type[DomainError]] = {\n"
-        + "\n".join(registry_entries)
+        + "\n".join(sorted_registry_entries)
         + "\n}\n"
     )
     registry_file.write_text(registry_content)
