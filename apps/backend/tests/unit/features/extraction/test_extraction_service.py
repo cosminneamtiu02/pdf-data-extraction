@@ -731,11 +731,13 @@ async def test_extraction_service_overloaded_error_suppresses_timeout_cause() ->
     noisy, low-signal "During handling of the above exception, another
     exception occurred" traces in logs and error responses.
 
-    The rest of this file already uses ``from None`` when remapping
-    timeouts to DomainError subclasses (see ``ExtractionBudgetExceededError``
-    at line 275 of ``service.py`` and ``IntelligenceTimeoutError`` in
-    ``extraction_engine.py``). This test pins the same invariant for the
-    admission-path remap so the file speaks one way, not two.
+    The rest of the codebase already uses ``from None`` when remapping
+    timeouts to DomainError subclasses (see the ``except TimeoutError``
+    remap to ``ExtractionBudgetExceededError`` in
+    ``ExtractionService._run_pipeline`` and the one to
+    ``IntelligenceTimeoutError`` in ``extraction_engine.py``). This test
+    pins the same invariant for the admission-path remap so the file
+    speaks one way, not two.
     """
     settings = _build_settings(max_concurrent_extractions=1)
     service = _build_service(settings=settings)
