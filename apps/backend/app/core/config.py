@@ -59,7 +59,16 @@ class Settings(BaseSettings):
     max_pdf_pages: Annotated[int, Field(gt=0)] = 200
     max_pdf_bytes: Annotated[int, Field(gt=0)] = 50 * 1024 * 1024  # 50 MB
 
-    ollama_base_url: str = "http://host.docker.internal:11434"
+    # ``repr=False`` so authenticated-proxy URLs like
+    # ``http://user:pass@proxy:11434`` never leak into ``repr(settings)``
+    # (exception tracebacks, debug dumps, structlog payloads that fold
+    # the full settings object). ``LOG_REDACTED_KEYS`` covers logger
+    # event kwargs, not Pydantic field reprs — this is the complementary
+    # guard at the model level (issue #284).
+    ollama_base_url: str = Field(
+        default="http://host.docker.internal:11434",
+        repr=False,
+    )
     ollama_model: str = "gemma4:e2b"
 
     @field_validator("log_level", mode="after")

@@ -123,6 +123,25 @@ def test_settings_ollama_base_url_whitespace_stripped() -> None:
     assert s.ollama_base_url == "http://localhost:11434"
 
 
+def test_settings_ollama_base_url_credentials_not_in_repr() -> None:
+    """Proxy credentials in ``ollama_base_url`` must not appear in ``repr(settings)``.
+
+    Operators running Ollama behind an authenticated proxy embed the password
+    in the URL (``http://user:pass@proxy:11434``). Any ``repr(settings)`` that
+    surfaces in an exception traceback, a debug dump, or a structlog payload
+    would then leak the credential. ``Field(repr=False)`` on the field prevents
+    Pydantic from including the value in the model's ``repr`` — issue #284.
+    """
+    s = Settings(ollama_base_url="http://user:secret@proxy.internal:11434")
+    rendered = repr(s)
+    assert "secret" not in rendered
+    assert "user" not in rendered
+    # The field name itself is fine to appear; only the *value* must be
+    # redacted. If a future pydantic release changes how ``repr=False`` is
+    # implemented, this assertion fails loudly.
+    assert "ollama_base_url" not in rendered
+
+
 # -- cors_origins empty-string coercion (issue #58) --------------------------
 
 
