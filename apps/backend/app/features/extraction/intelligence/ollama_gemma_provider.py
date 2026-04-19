@@ -365,12 +365,17 @@ class OllamaGemmaProvider(BaseLanguageModel):
         self,
         prompt: str,
         *,
-        client: httpx.AsyncClient | None = None,
+        client: httpx.AsyncClient,
     ) -> str:
-        http = client or self.http_client
+        # ``client`` is required (not defaulted to ``self.http_client``) so any
+        # caller is forced to go through ``_get_http_client()`` for loop-bound
+        # rebinding. Falling back to ``self.http_client`` bypassed the
+        # rebuild-on-loop-switch logic and was a foot-gun for any new caller
+        # that forgot to call ``_get_http_client()`` first — Pyright strict
+        # now surfaces the mistake at author time (issue #277).
         payload = _build_payload(self._model, prompt)
         try:
-            response = await http.post(self._generate_url, json=payload)
+            response = await client.post(self._generate_url, json=payload)
             response.raise_for_status()
         except httpx.ConnectError as exc:
             _logger.warning("intelligence_unavailable", cause="connect_error", error=str(exc))
