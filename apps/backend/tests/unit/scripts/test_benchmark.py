@@ -262,6 +262,8 @@ def test_parse_args_reads_bench_env_vars_via_pydantic_settings(
     ``os.environ.get`` (CLAUDE.md-forbidden). After the refactor they flow
     through :class:`app.core.benchmark_settings.BenchmarkSettings`, so this
     test pins the wiring by exercising every BENCH_* variable at once.
+
+    Extended for issue #275 to also cover ``BENCH_WARMUP`` / ``BENCH_TIMEOUT``.
     """
     fixtures_dir = tmp_path / "bench-pdfs"
     monkeypatch.setenv("BENCH_URL", "http://example:9090")
@@ -270,6 +272,8 @@ def test_parse_args_reads_bench_env_vars_via_pydantic_settings(
     monkeypatch.setenv("BENCH_SKILL_NAME", "receipt")
     monkeypatch.setenv("BENCH_SKILL_VERSION", "2")
     monkeypatch.setenv("BENCH_SERVICE_PID", "1234")
+    monkeypatch.setenv("BENCH_WARMUP", "3")
+    monkeypatch.setenv("BENCH_TIMEOUT", "75.5")
 
     config = parse_args([])
 
@@ -279,6 +283,41 @@ def test_parse_args_reads_bench_env_vars_via_pydantic_settings(
     assert config.skill_name == "receipt"
     assert config.skill_version == "2"
     assert config.service_pid == 1234
+    assert config.warmup == 3
+    assert config.timeout == 75.5
+
+
+def test_parse_args_cli_warmup_and_timeout_override_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--warmup`` / ``--timeout`` on the CLI win over ``BENCH_*`` env values.
+
+    Regression guard for issue #275: after env-parity was restored for these
+    two knobs, the CLI must still take precedence over env — matching
+    pydantic-settings' documented init-kwargs > env source priority and the
+    behaviour of the other BENCH_*-backed flags.
+    """
+    monkeypatch.setenv("BENCH_WARMUP", "2")
+    monkeypatch.setenv("BENCH_TIMEOUT", "30.0")
+
+    config = parse_args(["--warmup", "7", "--timeout", "45"])
+
+    assert config.warmup == 7
+    assert config.timeout == 45.0
+
+
+def test_parse_args_negative_warmup_exits_nonzero() -> None:
+    """``--warmup -1`` exits non-zero via pydantic Field(ge=0)."""
+    with pytest.raises(SystemExit) as exc_info:
+        parse_args(["--warmup", "-1"])
+    assert exc_info.value.code != 0
+
+
+def test_parse_args_zero_timeout_exits_nonzero() -> None:
+    """``--timeout 0`` exits non-zero via pydantic Field(gt=0)."""
+    with pytest.raises(SystemExit) as exc_info:
+        parse_args(["--timeout", "0"])
+    assert exc_info.value.code != 0
 
 
 def test_parse_args_empty_bench_service_pid_is_none(
