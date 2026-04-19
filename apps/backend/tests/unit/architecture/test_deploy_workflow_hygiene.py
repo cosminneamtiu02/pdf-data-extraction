@@ -13,6 +13,7 @@ the existing job runs. No workflow edit should be required for the flip.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, Final
 
@@ -22,6 +23,18 @@ import yaml
 from ._linter_subprocess import REPO_ROOT
 
 _DEPLOY_WORKFLOW: Final[Path] = REPO_ROOT / ".github" / "workflows" / "deploy.yml"
+
+# Matches `exit 1` as a standalone statement — i.e. surrounded by non-word
+# characters on both sides so it is robust to punctuation-adjacent forms like
+# ``(exit 1)``, ``foo&&exit 1``, or ``exit 1;`` while still excluding
+# legitimate neighbours like ``exit 10`` or ``myexit 1``.
+_EXIT_ONE_RE: Final[re.Pattern[str]] = re.compile(r"(?<!\w)exit[ \t]+1(?!\w)")
+
+# Characters that put the shell back into "command position" — after any of
+# them, an unquoted ``#`` starts a comment. Bash's full grammar also treats
+# ``{``, ``!``, ``<``, ``>``, etc. as command-position openers, but the shapes
+# that appear in GitHub Actions ``run:`` blocks are well-covered by this set.
+_COMMAND_POSITION_TERMINATORS: Final[frozenset[str]] = frozenset(";&|(")
 
 
 def _load_deploy_workflow() -> dict[str, Any]:
@@ -36,16 +49,17 @@ def _load_deploy_workflow() -> dict[str, Any]:
 def _strip_shell_inline_comment(line: str) -> str:
     """Return `line` with any trailing bash-style inline comment removed.
 
-    Bash treats ``#`` as a comment start only when it is at the start of a
-    token — line start or preceded by whitespace — AND outside any single-
-    or double-quoted string. Minimal implementation that covers the shapes
-    that appear in GitHub Actions ``run:`` blocks, so the ``exit 1``
-    detector below does not flag ``echo foo  # exit 1`` as if the comment
-    text were real code.
+    Bash treats ``#`` as a comment start only when it is in "command
+    position" — at line start, or preceded by whitespace or one of the
+    command terminators in :data:`_COMMAND_POSITION_TERMINATORS` — AND
+    outside any single- or double-quoted string. Minimal implementation
+    that covers the shapes that appear in GitHub Actions ``run:`` blocks,
+    so the downstream ``exit 1`` detector does not flag commented-out text
+    (``echo foo  # exit 1``, ``echo ok;# exit 1``) as real code.
     """
     in_single = False
     in_double = False
-    prev_was_space = True
+    prev_char = " "  # line start counts as command-position
     for idx, ch in enumerate(line):
         if in_single:
             if ch == "'":
@@ -57,9 +71,9 @@ def _strip_shell_inline_comment(line: str) -> str:
             in_single = True
         elif ch == '"':
             in_double = True
-        elif ch == "#" and prev_was_space:
+        elif ch == "#" and (prev_char.isspace() or prev_char in _COMMAND_POSITION_TERMINATORS):
             return line[:idx].rstrip()
-        prev_was_space = ch.isspace()
+        prev_char = ch
     return line
 
 
@@ -117,21 +131,14 @@ def test_deploy_job_has_no_unconditional_exit_one() -> None:
         run_block = step.get("run")
         if not isinstance(run_block, str):
             continue
-        # Check every non-blank, non-comment line for a bare `exit 1`.
         for raw_line in run_block.splitlines():
             line = _strip_shell_inline_comment(raw_line.strip())
             if not line or line.startswith("#"):
                 continue
-            # Match `exit 1` as its own statement OR at the end of a
-            # compound statement (`foo && exit 1`). Do not over-match on
-            # `exit 10` etc.
-            tokens = line.replace(";", " ").replace("&&", " ").split()
-            for idx, tok in enumerate(tokens):
-                if tok == "exit" and idx + 1 < len(tokens) and tokens[idx + 1] == "1":
-                    offenders.append(
-                        f"step '{step.get('name', '<unnamed>')}' contains `exit 1`: {line!r}",
-                    )
-                    break
+            if _EXIT_ONE_RE.search(line):
+                offenders.append(
+                    f"step '{step.get('name', '<unnamed>')}' contains `exit 1`: {line!r}",
+                )
 
     assert not offenders, (
         "deploy.yml `deploy` job steps must not unconditionally `exit 1` — "
@@ -159,7 +166,49 @@ def test_deploy_job_has_no_unconditional_exit_one() -> None:
         # Full-line comment — returned as empty so the outer `startswith('#')`
         # guard can drop it. (The strip removes the comment; nothing remains.)
         ("# exit 1", ""),
+        # Command-position `#` after `;` (no whitespace) — bash comment start.
+        ("echo ok;# exit 1", "echo ok;"),
+        # Command-position `#` after `&&` — bash comment start.
+        ("echo ok&&# exit 1", "echo ok&&"),
+        # Command-position `#` after `||` — bash comment start.
+        ("echo ok||# exit 1", "echo ok||"),
+        # Command-position `#` immediately after subshell `(`.
+        ("(# inside subshell", "("),
     ],
 )
 def test_strip_shell_inline_comment(line: str, expected: str) -> None:
     assert _strip_shell_inline_comment(line) == expected
+
+
+@pytest.mark.parametrize(
+    ("line", "should_match"),
+    [
+        # Bare statement.
+        ("exit 1", True),
+        # Trailing semicolon.
+        ("exit 1;", True),
+        # Subshell form — tokenizer would miss this.
+        ("(exit 1)", True),
+        # Punctuation-adjacent `&&` with no spaces — tokenizer would miss.
+        ("foo&&exit 1", True),
+        # `||` fallthrough — tokenizer would miss without `||` splitting.
+        ("cmd||exit 1", True),
+        # Leading whitespace is fine.
+        ("    exit 1", True),
+        # `exit 10` must NOT match — we only object to exit-code 1.
+        ("exit 10", False),
+        # `exit 11` likewise.
+        ("exit 11", False),
+        # `myexit 1` (e.g. a custom function) must NOT match.
+        ("myexit 1", False),
+        # `exit 1a` — suffix prevents match.
+        ("exit 1a", False),
+        # Bare `exit` (no code) is benign.
+        ("exit", False),
+    ],
+)
+def test_exit_one_regex(
+    line: str,
+    should_match: bool,  # noqa: FBT001 -- parametrized expected, not a flag argument
+) -> None:
+    assert bool(_EXIT_ONE_RE.search(line)) is should_match

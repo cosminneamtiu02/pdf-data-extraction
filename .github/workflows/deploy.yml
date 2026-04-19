@@ -42,5 +42,7 @@ jobs:
         # exercise the rest of the pipeline, this step does not re-red the
         # job. Replace this whole step body with the real push when #121
         # lands; do not keep the placeholder AND the real push side by side.
+        # Emitted as `::notice::` so operators see the message surfaced in
+        # the Actions run UI rather than buried in step logs.
         run: |
-          echo "Deploy not yet wired — tracked in #121. Set DEPLOY_ENABLED=true when the registry push is ready, and replace this placeholder with the real push commands."
+          echo "::notice::Deploy not yet wired — tracked in #121. To enable this job once the registry push is ready, set the repository variable DEPLOY_ENABLED to 'true' (Settings → Secrets and variables → Actions → Variables), then replace this placeholder with the real push commands."
