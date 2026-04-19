@@ -10,11 +10,12 @@ three gaps:
    (`importlib.import_module("app.features.other")`) imports.
 
 2. **Dynamic import containment** - `importlib.import_module("docling")`,
-   `importlib.import_module("pymupdf")`, and the equivalent `__import__`
-   builtin form (e.g. `__import__("docling")`) bypass import-linter's
+   `importlib.import_module("pymupdf")`, the equivalent `__import__`
+   builtin form (e.g. `__import__("docling")`), and
+   `importlib.util.find_spec("langextract")` all bypass import-linter's
    static graph. This test walks every .py file under `app/` and asserts
-   that dynamic imports of contained third-party packages only appear in
-   their designated files.
+   that dynamic imports (or availability probes) of contained third-party
+   packages only appear in their designated files.
 
 3. **Composition-root containment for `app/api/`** (issue #229) - the
    `shared-no-features` import-linter contract covers `app.shared`,
@@ -125,11 +126,18 @@ def _collect_static_dotted_imports(source: str) -> set[str]:
 def _collect_dynamic_import_targets(source: str) -> set[str]:
     """Find string-literal arguments to dynamic-import calls.
 
-    Covers both dynamic-import mechanisms named in this module's docstring:
-    ``importlib.import_module(...)`` and the ``__import__`` builtin. Missing
-    either one lets a file reach a contained package without import-linter
-    or this AST scan firing — ``__import__`` is an expression, not an
-    ``import`` statement, so import-linter cannot see it.
+    Covers the three dynamic-import-adjacent mechanisms that bypass
+    import-linter's static graph:
+
+    * ``importlib.import_module(...)`` — the canonical runtime import.
+    * ``__import__(...)`` — the builtin, an expression rather than an
+      ``import`` statement.
+    * ``importlib.util.find_spec(...)`` — probes module availability so a
+      caller can conditionally branch on whether a contained third-party
+      package is installed. Missing it lets a file stealth-escape the C1
+      gate by writing ``if find_spec("langextract") is not None: ...``
+      without tripping either import-linter or the dynamic-import branches
+      above.
 
     Returns the FULL dotted target (e.g. `"app.features.billing.foo"` or
     `"docling.datamodel.base_models"`), not just the root module. Storing
@@ -146,7 +154,7 @@ def _collect_dynamic_import_targets(source: str) -> set[str]:
             continue
         func = node.func
         is_dynamic_import = False
-        if (isinstance(func, ast.Attribute) and func.attr == "import_module") or (
+        if (isinstance(func, ast.Attribute) and func.attr in {"import_module", "find_spec"}) or (
             isinstance(func, ast.Name) and func.id in {"import_module", "__import__"}
         ):
             is_dynamic_import = True
@@ -446,6 +454,37 @@ def test_collect_dynamic_import_targets_records_builtin___import___with_dotted_p
     ``startswith("app.features.")`` predicate.
     """
     source = '__import__("app.features.billing.foo")\n'
+    targets = _collect_dynamic_import_targets(source)
+    assert targets == {"app.features.billing.foo"}
+
+
+def test_collect_dynamic_import_targets_records_util_find_spec() -> None:
+    """The collector must also catch ``importlib.util.find_spec`` (issue #280).
+
+    ``importlib.util.find_spec("langextract")`` is a third dynamic-import-
+    adjacent mechanism: it probes module availability so a caller can
+    conditionally branch on whether a contained third-party package is
+    installed. A production file using it to reach Docling / PyMuPDF /
+    LangExtract / httpx would slip through both import-linter (the call
+    is an expression, not an ``import`` statement) and the previous AST
+    scan (which only looked for ``import_module`` and ``__import__``),
+    stealth-escaping the C1 gate. Treat the first string-literal argument
+    to ``find_spec`` as a containment target, mirroring the ``__import__``
+    and ``import_module`` handling.
+    """
+    source = 'import importlib.util\nimportlib.util.find_spec("langextract")\n'
+    targets = _collect_dynamic_import_targets(source)
+    assert "langextract" in targets
+
+
+def test_collect_dynamic_import_targets_records_util_find_spec_with_dotted_path() -> None:
+    """The ``find_spec`` branch must record the FULL dotted target (issue #280).
+
+    Mirrors the ``importlib.import_module`` and ``__import__`` invariants —
+    storing only the root would neutralise any sibling-feature guard whose
+    predicate uses a dotted-prefix check.
+    """
+    source = 'import importlib.util\nimportlib.util.find_spec("app.features.billing.foo")\n'
     targets = _collect_dynamic_import_targets(source)
     assert targets == {"app.features.billing.foo"}
 
