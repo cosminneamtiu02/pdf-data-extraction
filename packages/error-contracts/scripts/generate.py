@@ -198,6 +198,18 @@ def generate_python(errors_path: Path, output_dir: Path) -> list[Path]:
         base_name = error_class_name.removesuffix("Error")
         error_file_stem = _class_to_snake(error_class_name)  # e.g. "internal_error"
         params = cast("dict[str, str]", spec.get("params", {}))
+        # Iterate params by sorted key name so reordering param keys in
+        # errors.yaml (a semantic no-op — params are set-like) produces
+        # byte-stable Python artifacts emitted by this function: the
+        # generated Params class field order and the error class's
+        # __init__ signature plus the Params(...) constructor call.
+        # TS interface field order and required-keys.json param ordering
+        # are independently stabilised by the `sorted(params.items())` /
+        # `sorted(...keys())` calls inside `generate_typescript` and
+        # `generate_required_keys` respectively — see those functions if
+        # touching that determinism. (issue #286 extended per PR #309 review.)
+        sorted_param_items = sorted(params.items())
+        sorted_param_names = [name for name, _ in sorted_param_items]
         http_status = cast("int", spec["http_status"])
 
         # Generate error class (and params class first, when params exist, so
@@ -209,7 +221,7 @@ def generate_python(errors_path: Path, output_dir: Path) -> list[Path]:
             params_file = output_dir / f"{params_file_stem}.py"
             fields = "\n".join(
                 f"    {name}: {PARAM_TYPE_TO_PYTHON[ptype]}"
-                for name, ptype in params.items()
+                for name, ptype in sorted_param_items
             )
             params_file.write_text(
                 f'"""Generated from errors.yaml. Do not edit."""\n\n'
@@ -225,16 +237,18 @@ def generate_python(errors_path: Path, output_dir: Path) -> list[Path]:
 
             kw_args = [
                 f"{name}: {PARAM_TYPE_TO_PYTHON[ptype]}"
-                for name, ptype in params.items()
+                for name, ptype in sorted_param_items
             ]
             init_signature = ", ".join(kw_args)
-            params_construct = ", ".join(f"{name}={name}" for name in params)
+            params_construct = ", ".join(
+                f"{name}={name}" for name in sorted_param_names
+            )
             # Check if the super().__init__ line would exceed the project
             # line-length (matches ruff `line-length = 100` via _PY_LINE_LENGTH_LIMIT).
             super_line = f"        super().__init__(params={params_class_name}({params_construct}))"
             if len(super_line) > _PY_LINE_LENGTH_LIMIT:
                 params_lines = ",\n                ".join(
-                    f"{name}={name}" for name in params
+                    f"{name}={name}" for name in sorted_param_names
                 )
                 super_block = (
                     f"        super().__init__(\n"
@@ -302,6 +316,19 @@ def generate_python(errors_path: Path, output_dir: Path) -> list[Path]:
         for module, name in init_imports
         if "Error" in name and "Params" not in name
     )
+    # Sort registry_entries too (imports are already sorted above) so the
+    # generated dict body is deterministic regardless of YAML key order.
+    # Without this sort, two developers reordering YAML keys produced
+    # diverging _registry.py diffs that CI's "regenerated content matches"
+    # check then flagged as drift (issue #286). Each entry starts with four
+    # spaces + `"<CODE>":`, so string sort gives alphabetical order by error
+    # code in the generated dict body. Note: this is a different sort key
+    # than `error_imports` above, which sorts by `(module, name)` tuple
+    # (default tuple ordering); both are alphabetical, but on different
+    # fields. The two sorts are deliberately independent — the imports'
+    # order only affects `from ... import ...` line layout, while this sort
+    # affects the user-visible dict-key order.
+    sorted_registry_entries = sorted(registry_entries)
     registry_content = (
         '"""Generated error registry. Do not edit."""\n\n'
         "from __future__ import annotations\n\n"
@@ -311,7 +338,7 @@ def generate_python(errors_path: Path, output_dir: Path) -> list[Path]:
         + "\n".join(_py_import_line(module, name) for module, name in error_imports)
         + "\n\n"
         + "ERROR_CLASSES: dict[str, type[DomainError]] = {\n"
-        + "\n".join(registry_entries)
+        + "\n".join(sorted_registry_entries)
         + "\n}\n"
     )
     registry_file.write_text(registry_content)
@@ -325,15 +352,28 @@ def generate_typescript(errors_path: Path, output_path: Path) -> Path:
     data = load_and_validate(errors_path)
     errors = cast("dict[str, ErrorSpec]", data["errors"])
 
-    codes_array = ", ".join(f'"{code}"' for code in errors)
+    # Sort by error code for deterministic output regardless of YAML key
+    # order. Drives the ErrorCode union, ErrorParamsByCode interface,
+    # ERROR_CODES tuple, and HTTP_STATUS_BY_CODE map — all four would
+    # otherwise drift in `task errors:check` whenever YAML keys are
+    # reordered (issue #286).
+    sorted_codes = sorted(errors.keys())
+
+    codes_array = ", ".join(f'"{code}"' for code in sorted_codes)
 
     params_entries: list[str] = []
     status_entries: list[str] = []
-    for code, spec in errors.items():
+    for code in sorted_codes:
+        spec = errors[code]
         params = cast("dict[str, str]", spec.get("params", {}))
         if params:
+            # Sort param names so reordering param keys in errors.yaml
+            # produces byte-stable TS output (PR #309 review: nested
+            # mappings also need deterministic iteration, not just the
+            # top-level error-code keys).
             fields = "; ".join(
-                f"{name}: {PARAM_TYPE_TO_TS[ptype]}" for name, ptype in params.items()
+                f"{name}: {PARAM_TYPE_TO_TS[ptype]}"
+                for name, ptype in sorted(params.items())
             )
             params_entries.append(f"  {code}: {{ {fields} }};")
         else:
@@ -343,7 +383,7 @@ def generate_typescript(errors_path: Path, output_path: Path) -> Path:
     content = (
         "// THIS FILE IS GENERATED FROM errors.yaml\n"
         "// DO NOT EDIT BY HAND. Run `task errors:generate` to regenerate.\n\n"
-        f"export type ErrorCode =\n  | {'\n  | '.join(f'"{code}"' for code in errors)};\n\n"
+        f"export type ErrorCode =\n  | {'\n  | '.join(f'"{code}"' for code in sorted_codes)};\n\n"
         "export interface ErrorParamsByCode {\n" + "\n".join(params_entries) + "\n}\n\n"
         "export interface ApiErrorPayload<C extends ErrorCode = ErrorCode> {\n"
         "  code: C;\n"
@@ -367,10 +407,18 @@ def generate_required_keys(errors_path: Path, output_path: Path) -> Path:
     data = load_and_validate(errors_path)
     errors = cast("dict[str, ErrorSpec]", data["errors"])
 
-    keys = list(errors.keys())
+    # Sort by error code so the JSON output is byte-stable regardless of
+    # YAML key order. Without this, reordering keys in errors.yaml would
+    # drift `required-keys.json` and trip `task errors:check` (issue #286).
+    sorted_codes = sorted(errors.keys())
+
+    keys = list(sorted_codes)
+    # Sort param names within each list so reordering param keys in
+    # errors.yaml (a semantic no-op — translators treat params as a set)
+    # keeps required-keys.json byte-stable (PR #309 review follow-up).
     params_by_key: dict[str, list[str]] = {
-        code: list(cast("dict[str, str]", spec.get("params", {})).keys())
-        for code, spec in errors.items()
+        code: sorted(cast("dict[str, str]", errors[code].get("params", {})).keys())
+        for code in sorted_codes
     }
 
     result = {

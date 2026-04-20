@@ -12,5 +12,5 @@ class PdfTooManyPagesError(DomainError):
     code: ClassVar[str] = "PDF_TOO_MANY_PAGES"
     http_status: ClassVar[int] = 413
 
-    def __init__(self, *, limit: int, actual: int) -> None:
-        super().__init__(params=PdfTooManyPagesParams(limit=limit, actual=actual))
+    def __init__(self, *, actual: int, limit: int) -> None:
+        super().__init__(params=PdfTooManyPagesParams(actual=actual, limit=limit))
