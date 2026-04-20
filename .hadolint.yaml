@@ -1,0 +1,18 @@
+# hadolint configuration (issue #359).
+#
+# hadolint lints `infra/docker/backend.Dockerfile`. The Dockerfile is
+# deliberately pinned by digest (see the `ARG PYTHON_IMAGE=...@sha256:...`
+# header) and runs `apt-get install --no-install-recommends` without a
+# version pin on `tesseract-ocr` because the pin is anchored at the
+# base-image digest level, not at package level. That makes DL3008
+# (`Pin versions in apt-get install`) a false positive for this project.
+#
+# ignored: list of rule IDs explicitly disabled.
+
+ignored:
+  # DL3008: Pin versions in apt-get install. We pin the base image by
+  # digest (`python:3.13-slim@sha256:...`), which locks the apt package
+  # set to exactly one state — re-pinning each package per-install would
+  # double-pin without adding determinism and would require rebuilding
+  # the pin list on every base-image digest bump.
+  - DL3008

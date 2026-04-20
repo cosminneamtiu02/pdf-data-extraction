@@ -75,7 +75,7 @@ errors:
 
   EXTRACTION_BUDGET_EXCEEDED:
     http_status: 504
-    description: The end-to-end extraction pipeline (parse + extract + resolve + annotate) exceeded the configured budget before completing; distinct from INTELLIGENCE_TIMEOUT, which is scoped to the Ollama request itself (issue #227)
+    description: "The end-to-end extraction pipeline (parse + extract + resolve + annotate) exceeded the configured budget before completing; distinct from INTELLIGENCE_TIMEOUT, which is scoped to the Ollama request itself (issue #227)"
     params:
       budget_seconds: number
 

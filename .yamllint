@@ -1,0 +1,80 @@
+# yamllint configuration (issue #359).
+#
+# Extends the shipped `default` preset and relaxes the rules that would
+# otherwise reject this repo's existing YAML style. The goal is to catch
+# regressions (duplicate keys, trailing whitespace, inconsistent
+# indentation) without forcing a sweep-edit of every YAML file in the
+# tree. Anything silenced here has a comment explaining why.
+
+extends: default
+
+# Do not descend into generated or third-party trees. The `.venv` entry
+# covers both root-level and nested virtualenvs; `node_modules` covers any
+# future JS tooling. Lockfiles (`uv.lock`) are TOML, not YAML, so they are
+# already out of scope by extension, but we call them out for clarity.
+ignore: |
+  .venv/
+  **/.venv/
+  **/node_modules/
+  **/__pycache__/
+  apps/backend/uv.lock
+  packages/error-contracts/uv.lock
+
+rules:
+  # Repo convention: YAML files use 2-space indentation (see .editorconfig).
+  # The default preset already matches, but pin it explicitly so a later
+  # editorconfig edit does not silently diverge.
+  indentation:
+    spaces: 2
+    indent-sequences: true
+    check-multi-line-strings: false
+
+  # Line-length disabled. The repo's YAML has legitimate long lines that
+  # cannot be wrapped without changing semantics: `::error::` / `::notice::`
+  # GitHub Actions echo messages must be on one line (GitHub's workflow
+  # parser treats `\n` inside them as a literal newline in the annotation
+  # body); multi-statement `uv run python -c "..."` scripts in Taskfile.yml
+  # are single-line by nature; and the issue-template placeholder prose in
+  # `.github/ISSUE_TEMPLATE/*.yml` is a single rendered paragraph whose
+  # source representation is one line. A follow-up issue may revisit whether
+  # to reintroduce a soft cap with per-file disables.
+  line-length: disable
+
+  # Do not force every document to start with `---`. Most YAML in this
+  # repo (compose, pre-commit, workflows) omits it by convention.
+  document-start: disable
+
+  # Do not force a trailing blank line at EOF — `end-of-file-fixer` already
+  # enforces that, and running two hooks with slightly different semantics
+  # against the same constraint produces confusing double-warnings.
+  empty-lines:
+    max: 2
+    max-start: 0
+    max-end: 1
+
+  # Truthiness check forbids bare `yes`/`no`/`on`/`off` (YAML 1.1 booleans)
+  # which PyYAML silently coerces to Python `True`/`False`. GitHub Actions
+  # uses a literal `on:` key at the top level of every workflow file —
+  # PyYAML parses it as `True`, the workflow still fires correctly on
+  # GitHub, but yamllint's `truthy` rule would flag it. Allow the standard
+  # boolean spellings and the `on` literal specifically so workflows stay
+  # clean without suppression comments on every file.
+  truthy:
+    allowed-values: ["true", "false", "on", "off"]
+    check-keys: true
+
+  # Comment spacing: the default requires `# comment` (one space after `#`).
+  # A handful of banner-style comments in this repo use `#─` for ASCII-art
+  # section separators (e.g. Taskfile.yml). Relax the min-spaces-from-content
+  # so those banners don't have to be rewritten.
+  comments:
+    min-spaces-from-content: 1
+    require-starting-space: true
+
+  # Comment-indentation: default is strict equal-to-content; relax so
+  # banner comments at column 0 don't fight the rule.
+  comments-indentation: disable
+
+  # The `braces` and `brackets` defaults forbid space-inside-flow-sequences,
+  # but workflows legitimately use `branches: [main]` (no space) AND
+  # `types: [opened, synchronize, reopened]` (no space). Keep defaults.
