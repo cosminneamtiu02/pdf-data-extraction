@@ -199,10 +199,10 @@ def test_handle_domain_error_emits_warning_with_exc_info_for_5xx(
     """A 5xx DomainError subclass must emit a structured 'domain_error' warning log.
 
     Issue #323 guard: before this fix the handler was silent, so
-    ``InternalError`` / ``IntelligenceUnavailableError`` / ``TimeoutError``
-    / etc. produced only an access-log 5xx line with no code, no params,
-    no traceback. Observers had to correlate the request_id against the
-    exception's origin by hand.
+    ``InternalError`` / ``IntelligenceUnavailableError`` /
+    ``IntelligenceTimeoutError`` / etc. produced only an access-log 5xx
+    line with no code, no params, no traceback. Observers had to
+    correlate the request_id against the exception's origin by hand.
 
     Spies directly on ``errors_module.logger`` because
     ``structlog.testing.capture_logs`` depends on structlog's own processor
