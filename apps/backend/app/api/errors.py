@@ -32,6 +32,29 @@ def register_exception_handlers(app: FastAPI) -> None:
         exc: DomainError,
     ) -> JSONResponse:
         request_id = _get_request_id(request)
+        # Observability contract (issue #323): 5xx DomainError subclasses —
+        # ``StructuredOutputFailedError``, ``IntelligenceUnavailableError``,
+        # ``IntelligenceTimeoutError``, ``PdfParserUnavailableError``,
+        # ``ExtractionOverloadedError`` — are on-call-actionable, so emit at
+        # warning with ``exc_info=True`` so tracebacks reach the aggregator.
+        # 4xx is user-caused and high-volume; info-level keeps it visible
+        # without paging and omits the traceback.
+        http_5xx_floor = 500
+        if exc.http_status >= http_5xx_floor:
+            logger.warning(
+                "domain_error",
+                code=exc.code,
+                http_status=exc.http_status,
+                request_id=request_id,
+                exc_info=True,  # noqa: LOG014 — this function IS a FastAPI exception handler
+            )
+        else:
+            logger.info(
+                "domain_error",
+                code=exc.code,
+                http_status=exc.http_status,
+                request_id=request_id,
+            )
         return JSONResponse(
             status_code=exc.http_status,
             headers={"X-Request-Id": request_id},
