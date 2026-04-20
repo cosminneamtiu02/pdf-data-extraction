@@ -1,40 +1,43 @@
-# Docker build context — repo root.
+# ── Repo-root .dockerignore ──────────────────────────────────
+# Docker honors ONLY the .dockerignore adjacent to the build-context root.
+# The canonical build command in this repo (`.github/workflows/deploy.yml`
+# and `task docker:build`) is:
 #
-# Both `.github/workflows/deploy.yml` and `task docker:build` use `.`
-# (repo root) as the Docker build context, so the `.dockerignore` must
-# live HERE to take effect (Docker only consults the one adjacent to
-# the context root — issue #269). The previous location at
-# `apps/backend/.dockerignore` was silently inactive: without this
-# file the daemon received the entire monorepo, including
-# `.claude/worktrees/` (tens of gigabytes of generated AI-agent
-# workspaces), every cache directory, and all test fixtures —
-# ballooning the context and invalidating the build cache on any
-# repo-wide file change.
+#     docker build -f infra/docker/backend.Dockerfile .
 #
-# The Dockerfile itself (`infra/docker/backend.Dockerfile`) COPYs only
-# `apps/backend/pyproject.toml`, `apps/backend/uv.lock`,
-# `apps/backend/app/`, and `apps/backend/skills/`. Everything else in
-# the context is wasted bytes at best and a leak surface at worst.
+# so the context is the repo root — this file. A per-slice file at
+# apps/backend/.dockerignore is silently ignored. See issue #269.
+#
+# Entries below follow Docker's .dockerignore syntax (gitignore-like but
+# NOT identical). All patterns are matched relative to the build-context
+# root; a leading `/` anchors the pattern to the root (it does NOT mean an
+# absolute filesystem path — Docker strips it and treats the remainder as
+# a repo-root-relative match). Without a leading slash the pattern also
+# matches against the path relative to the context root, but `**/foo/`
+# makes "at any depth" explicit. A leading `!` re-includes an otherwise-
+# excluded path. See Docker's `.dockerignore` reference:
+# https://docs.docker.com/reference/dockerfile/#dockerignore-file
 
-# VCS & editor metadata
+# ── Version control ──────────────────────────────────────────
 .git/
-.github/
+.gitattributes
+.gitignore
+
+# ── Agent and local-state trees ──────────────────────────────
+# .claude/ carries worktree state for parallel agents (issue #267) and
+# must never be baked into an image.
+.claude/
 .vscode/
 .idea/
-*.swp
-*.swo
 
-# Claude Code / superpowers tooling — can reach tens of gigabytes of
-# generated parallel-agent workspaces. Parallel with the `.gitignore`
-# entry discussed in issue #267 and added in PR #274.
-.claude/
-
-# Python bytecode, caches, build artifacts
+# ── Python build + cache artifacts ───────────────────────────
+# These are machine-local and poison Docker's layer cache on any change.
+# `uv sync` inside the builder stage provisions a fresh .venv from
+# pyproject.toml + uv.lock, so the host .venv must not be uploaded.
+**/.venv/
 **/__pycache__/
 **/*.py[cod]
 **/*.egg-info/
-**/*.egg
-**/.venv/
 **/.pytest_cache/
 **/.ruff_cache/
 **/.mypy_cache/
@@ -44,21 +47,52 @@
 **/coverage.xml
 **/htmlcov/
 
-# Node / tooling (error-contracts package uses these when operated on
-# in dev but never during the backend image build)
+# ── Node / frontend caches (defensive; no frontend today) ────
 **/node_modules/
 
-# OS
+# ── Docs and markdown ────────────────────────────────────────
+# Documentation is not needed at runtime. Keep the backend README in case
+# a future Dockerfile step references it (e.g. for metadata LABEL).
+docs/
+*.md
+!apps/backend/README.md
+
+# ── OS / editor noise ────────────────────────────────────────
 .DS_Store
 Thumbs.db
+*.log
+*.swp
+*~
 
-# Repo-level artefacts the backend image does NOT need. The Dockerfile
-# explicitly COPYs only `apps/backend/app/` and `apps/backend/skills/`,
-# so anything outside those paths only bloats the context.
-docs/
-packages/
+# ── Environment files ────────────────────────────────────────
+# Only `.env.example` is tracked; the real `.env` must never leak into
+# a built image regardless of layer.
+.env
+.env.*
+!.env.example
+!**/.env.example
+
+# ── Non-runtime trees in the backend slice ───────────────────
+# The Dockerfile (`infra/docker/backend.Dockerfile`) only COPYs
+# `apps/backend/pyproject.toml`, `apps/backend/uv.lock`,
+# `apps/backend/app/`, and `apps/backend/skills/`. Everything else under
+# `apps/backend/` would still be uploaded to the daemon as build context
+# without these exclusions, which was the regression issue #269 set out
+# to fix. Adding each tree explicitly so a newcomer can see, at a glance,
+# what the image does NOT need.
 apps/backend/tests/
 apps/backend/architecture/
 apps/backend/fixtures/
 apps/backend/scripts/
-*.md
+
+# ── CI / workflow metadata ───────────────────────────────────
+# `.github/` (Actions workflows, Dependabot config, issue templates) is
+# repo-management only and is never COPYd into the image.
+.github/
+
+# ── Non-backend monorepo packages ────────────────────────────
+# `packages/error-contracts/` is a codegen input; the generated Python
+# files live under `apps/backend/app/exceptions/_generated/` (already
+# bundled via `apps/backend/app/`), so the source package itself is not
+# needed in the runtime image.
+packages/
