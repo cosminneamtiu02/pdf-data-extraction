@@ -6,9 +6,14 @@ from typing import Annotated
 from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
 
 from app.core.docling_modes import OcrMode, TableMode
+from app.core.filtered_dotenv_source import FilteredDotEnvSettingsSource
 
 # `app/core/config.py` -> `app/core/` -> `app/` -> `apps/backend/`
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -29,7 +34,87 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
+        # Rejects unknown inputs at ``Settings`` construction. What this
+        # catches and what it does NOT catch:
+        #
+        #   * CAUGHT — unknown constructor kwargs (e.g. a future
+        #     ``Settings(olama_model=...)`` site in code) raise
+        #     ``ValidationError``. This is the load-bearing guard for
+        #     issue #271.
+        #   * NOT CAUGHT — unknown keys in ``.env``. The
+        #     ``FilteredDotEnvSettingsSource`` below strips dotenv keys
+        #     that are not declared fields BEFORE they reach validation,
+        #     so ``BENCH_*`` keys owned by ``BenchmarkSettings`` (and
+        #     typos like ``OLLMA_MODEL=x``) are silently ignored. This
+        #     mirrors the shell-env-var behavior below and preserves
+        #     the shared-``.env`` layout (``cp .env.example .env`` in
+        #     ``docs/new-project-setup.md``).
+        #   * NOT CAUGHT — typoed shell env var names. pydantic-settings
+        #     resolves env vars by name-lookup: it only reads names that
+        #     match declared fields. A misspelled shell env var like
+        #     ``OLAMA_MODEL=x`` (one ``L``) is never read, so ``extra``
+        #     has nothing to forbid.
+        #
+        # The real defence against typoed env-var names (shell and
+        # ``.env`` alike) is the parity check in
+        # ``tests/unit/core/test_env_example_parity.py``, which fails
+        # on any ``.env.example`` key that does not map to a declared
+        # field on a managed ``BaseSettings`` subclass. Operators who
+        # typo keys in their own local ``.env`` (not the checked-in
+        # example) get the silent-ignore behavior pydantic-settings
+        # ships by default for env vars — tracked separately if the
+        # project adopts a deploy-time lint.
+        #
+        # Declared explicitly so the contract is part of this file's
+        # source of truth and does not depend on the pydantic-settings
+        # upstream default staying ``"forbid"`` across upgrades (issue
+        # #271). See ``tests/unit/core/test_settings_extra_forbid.py``
+        # for the full matrix of catches-vs-does-not-catch cases.
+        extra="forbid",
     )
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """Swap the default dotenv source for one that filters unknown keys.
+
+        The default :class:`~pydantic_settings.DotEnvSettingsSource`
+        returns every key from ``.env``, which collides with
+        ``extra="forbid"`` because our ``.env`` is shared with
+        :class:`scripts.BenchmarkSettings` and contains its ``BENCH_*``
+        keys. ``FilteredDotEnvSettingsSource`` strips keys that are not
+        declared on :class:`Settings` before they reach validation,
+        preserving the ``extra="forbid"`` guard for constructor kwargs
+        while allowing the shared ``.env`` layout documented in
+        ``docs/new-project-setup.md`` to keep working.
+
+        The replacement source is constructed with the ``env_file`` /
+        ``env_file_encoding`` already resolved on ``dotenv_settings`` so
+        that per-call overrides like ``Settings(_env_file="./other.env")``
+        keep working — pydantic-settings bakes those overrides into the
+        ``dotenv_settings`` instance it hands us here.
+
+        The priority order (``init_settings`` first) is unchanged from
+        pydantic-settings' default so programmatic overrides still win
+        over env vars and dotenv values.
+        """
+        filtered_dotenv_source = FilteredDotEnvSettingsSource(
+            settings_cls,
+            env_file=dotenv_settings.env_file,  # type: ignore[attr-defined]
+            env_file_encoding=dotenv_settings.env_file_encoding,  # type: ignore[attr-defined]
+        )
+        return (
+            init_settings,
+            env_settings,
+            filtered_dotenv_source,
+            file_secret_settings,
+        )
 
     app_env: str = "development"
     log_level: str = "info"
