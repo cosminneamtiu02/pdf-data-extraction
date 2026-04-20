@@ -2,6 +2,7 @@
 
 import ast
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from fastapi import FastAPI
@@ -21,6 +22,10 @@ def _create_test_app_with_handler() -> FastAPI:
     @test_app.get("/trigger-domain-error")
     async def trigger_domain_error() -> None:
         raise NotFoundError
+
+    @test_app.get("/trigger-5xx-domain-error")
+    async def trigger_5xx_domain_error() -> None:
+        raise InternalError
 
     @test_app.get("/trigger-validation-error")
     async def trigger_validation_error() -> None:
@@ -186,3 +191,58 @@ def test_error_handler_source_has_no_hardcoded_error_codes() -> None:
         f"generated class attributes (e.g. ValidationFailedError.code) "
         f"instead. Offenders: {offenders}"
     )
+
+
+def test_handle_domain_error_emits_warning_with_exc_info_for_5xx(
+    test_client: TestClient,
+) -> None:
+    """A 5xx DomainError subclass must emit a structured 'domain_error' warning log.
+
+    Issue #323 guard: before this fix the handler was silent, so
+    ``InternalError`` / ``IntelligenceUnavailableError`` / ``TimeoutError``
+    / etc. produced only an access-log 5xx line with no code, no params,
+    no traceback. Observers had to correlate the request_id against the
+    exception's origin by hand.
+
+    Spies directly on ``errors_module.logger`` because
+    ``structlog.testing.capture_logs`` depends on structlog's own processor
+    chain and is bypassed when earlier tests in the suite reroute structlog
+    through stdlib logging.
+    """
+    with patch.object(errors_module, "logger") as mock_logger:
+        response = test_client.get("/trigger-5xx-domain-error")
+
+    assert response.status_code == InternalError.http_status
+
+    mock_logger.warning.assert_called_once()
+    args, kwargs = mock_logger.warning.call_args
+    assert args == ("domain_error",)
+    assert kwargs["code"] == InternalError.code
+    assert kwargs["http_status"] == InternalError.http_status
+    assert kwargs["exc_info"] is True
+    assert "request_id" in kwargs
+
+    mock_logger.info.assert_not_called()
+
+
+def test_handle_domain_error_emits_info_for_4xx(test_client: TestClient) -> None:
+    """A 4xx DomainError subclass emits an info-level 'domain_error' event without traceback.
+
+    4xx errors are user-caused (bad input, missing resource) and are
+    high-volume by design. Info level keeps them visible in aggregation
+    without paging, and ``exc_info`` is omitted to avoid noise in logs.
+    """
+    with patch.object(errors_module, "logger") as mock_logger:
+        response = test_client.get("/trigger-domain-error")
+
+    assert response.status_code == 404  # NotFoundError
+
+    mock_logger.info.assert_called_once()
+    args, kwargs = mock_logger.info.call_args
+    assert args == ("domain_error",)
+    assert kwargs["code"] == NotFoundError.code
+    assert kwargs["http_status"] == NotFoundError.http_status
+    assert "request_id" in kwargs
+    assert "exc_info" not in kwargs
+
+    mock_logger.warning.assert_not_called()
