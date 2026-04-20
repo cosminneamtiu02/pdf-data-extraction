@@ -37,12 +37,12 @@ def _precommit_ruff_rev() -> str:
     # AssertionError (not TypeError) is the intended failure shape: this is a
     # pytest guardrail helper, and pytest's test-runner messaging is keyed on
     # AssertionError for test-assertion-style reporting. The ``noqa: TRY004``
-    # below is scoped: ruff only emits TRY004 for a ``raise AssertionError``
-    # that follows an ``isinstance(...)`` check, so only this single call site
-    # is flagged — the other two ``raise AssertionError`` lines further down
-    # in this helper (missing-``rev`` and repo-not-found) follow None/value
-    # checks and do not trigger TRY004. Applying the suppression universally
-    # would introduce unused-noqa errors (RUF100) on those call sites.
+    # suppressions in this file are scoped to ``raise AssertionError`` sites
+    # that directly follow ``isinstance(...)`` checks, because those are the
+    # cases ruff flags for TRY004. Other ``raise AssertionError`` lines in
+    # these helpers (missing ``rev``/``version`` values, repo-not-found,
+    # etc.) follow None/value checks and do NOT trigger TRY004, so applying
+    # the suppression universally would surface as RUF100 (unused-noqa).
     if not isinstance(data, dict):
         msg = (
             f"{_PRECOMMIT_PATH} did not parse to a mapping "
@@ -60,7 +60,16 @@ def _precommit_ruff_rev() -> str:
         if not isinstance(repo, dict):
             continue
         repo_url = repo.get("repo")
-        if repo_url is None or _RUFF_PRECOMMIT_REPO_SUBSTRING not in repo_url:
+        if repo_url is None:
+            continue
+        if not isinstance(repo_url, str):
+            msg = (
+                f"pre-commit repo entry in {_PRECOMMIT_PATH} has non-string 'repo' "
+                f"(got {type(repo_url).__name__!r} in {repo!r}); pre-commit config "
+                f"schema may have changed."
+            )
+            raise AssertionError(msg)  # noqa: TRY004
+        if _RUFF_PRECOMMIT_REPO_SUBSTRING not in repo_url:
             continue
         rev = repo.get("rev")
         if rev is None:
