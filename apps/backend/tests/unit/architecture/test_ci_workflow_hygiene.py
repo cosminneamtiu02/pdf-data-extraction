@@ -71,25 +71,91 @@ def test_ci_builds_dockerfile_on_every_pr() -> None:
     paths, apt package disappeared, etc.), so a broken Dockerfile can
     sit on ``main`` until someone flips ``DEPLOY_ENABLED=true``.
 
-    This test pins the gate: some job in ``ci.yml`` must invoke
-    ``docker build`` against the repo-root backend Dockerfile. The job
-    name is not constrained (implementers can pick what fits the layout)
-    so the test doesn't lock in an unnecessary naming invariant.
+    The assertion enforces THREE things that together guarantee "every PR
+    builds the Dockerfile" (PR #418 review):
+
+    1. The workflow fires on the ``pull_request`` event with no ``paths:``
+       filter that could silently skip PRs touching files outside a
+       narrow subset.
+    2. At least one step in some job invokes ``docker build`` against
+       the repo-root backend Dockerfile.
+    3. Neither that step nor its containing job carries an ``if:`` guard
+       that could skip the build for some subset of PRs (e.g. a future
+       ``if: vars.DOCKER_BUILD_ENABLED == 'true'`` would make the gate
+       toggleable, which is the exact failure mode this test guards
+       against).
+
+    Job and step names are intentionally not constrained so the test
+    doesn't lock in naming invariants.
     """
     workflow: dict[str, Any] = yaml.safe_load(_CI_WORKFLOW.read_text())
 
-    matching_steps: list[tuple[str, str]] = []
-    for job_name, step in _iter_steps(workflow):
-        run_body = step.get("run")
-        if not isinstance(run_body, str):
-            continue
-        if "docker build" in run_body and _BACKEND_DOCKERFILE_RELATIVE in run_body:
-            matching_steps.append((job_name, step.get("name", "")))
+    # (1) pull_request trigger with no paths-filter gating.
+    # PyYAML parses YAML's bare ``on:`` key as the Python literal ``True``
+    # because ``on`` is a YAML 1.1 boolean. The workflow still fires
+    # correctly on GitHub (it interprets the string ``on:``), but our
+    # walker has to look under both keys. The ``# type: ignore`` is
+    # load-bearing: ``dict.get`` is typed as ``(str) -> V``, and we're
+    # intentionally probing a bool key that arises from YAML 1.1
+    # parsing of the literal ``on`` token.
+    triggers: dict[str, Any] = (
+        workflow.get("on") or workflow.get(True)  # type: ignore[arg-type]  # YAML 1.1 parses `on:` as bool True
+    ) or {}
+    pull_request_config = triggers.get("pull_request")
+    assert pull_request_config is not None, (
+        "ci.yml does not declare a `pull_request` trigger; the "
+        "dockerfile-build gate cannot fire on every PR."
+    )
+    if isinstance(pull_request_config, dict):
+        paths_filter = pull_request_config.get("paths")
+        paths_ignore_filter = pull_request_config.get("paths-ignore")
+        assert paths_filter is None, (
+            "ci.yml `pull_request` trigger declares a `paths:` filter "
+            f"({paths_filter!r}); PRs outside that filter would skip the "
+            "dockerfile-build gate. Remove the filter or switch to a "
+            "non-gating always-on trigger."
+        )
+        assert paths_ignore_filter is None, (
+            "ci.yml `pull_request` trigger declares a `paths-ignore:` "
+            f"filter ({paths_ignore_filter!r}); PRs matching those paths "
+            "would skip the dockerfile-build gate."
+        )
 
-    assert matching_steps, (
+    # (2) Locate the matching step AND its job body (for the if:
+    # assertion below).
+    jobs: dict[str, Any] = workflow.get("jobs") or {}
+    matching: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
+    for job_name, job_body in jobs.items():
+        for step in job_body.get("steps") or []:
+            run_body = step.get("run")
+            if not isinstance(run_body, str):
+                continue
+            if "docker build" in run_body and _BACKEND_DOCKERFILE_RELATIVE in run_body:
+                matching.append((job_name, job_body, step))
+
+    assert matching, (
         f"ci.yml has no step that runs `docker build` against "
         f"`{_BACKEND_DOCKERFILE_RELATIVE}`. Without this gate a broken "
         f"Dockerfile can ship to main undetected because the deploy "
         f"workflow's job-level DEPLOY_ENABLED gate skips the Build step "
         f"(issue #417)."
+    )
+
+    # (3) Neither the matching step nor its job carries an `if:` guard.
+    # At least one matching (job, step) pair must be unconditional; we
+    # don't require ALL matches to be unconditional in case the file
+    # legitimately has other gated docker-build steps later (e.g. a
+    # slow/opt-in variant).
+    unconditional = [
+        (job_name, step)
+        for job_name, job_body, step in matching
+        if "if" not in job_body and "if" not in step
+    ]
+    assert unconditional, (
+        "Every matching `docker build` step in ci.yml is gated with an "
+        "`if:` clause at either the job or step level. A conditional "
+        "dockerfile-build gate defeats the whole point of #417 — if the "
+        "gate is toggleable, a broken Dockerfile can still slip through "
+        "whenever the toggle is off. Keep at least one unconditional "
+        "docker-build step that runs on every PR."
     )
