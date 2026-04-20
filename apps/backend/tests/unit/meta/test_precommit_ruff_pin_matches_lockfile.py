@@ -36,7 +36,13 @@ def _precommit_ruff_rev() -> str:
     data = yaml.safe_load(_PRECOMMIT_PATH.read_text(encoding="utf-8"))
     # AssertionError (not TypeError) is the intended failure shape: this is a
     # pytest guardrail helper, and pytest's test-runner messaging is keyed on
-    # AssertionError for test-assertion-style reporting.
+    # AssertionError for test-assertion-style reporting. The ``noqa: TRY004``
+    # below is scoped: ruff only emits TRY004 for a ``raise AssertionError``
+    # that follows an ``isinstance(...)`` check, so only this single call site
+    # is flagged — the other two ``raise AssertionError`` lines further down
+    # in this helper (missing-``rev`` and repo-not-found) follow None/value
+    # checks and do not trigger TRY004. Applying the suppression universally
+    # would introduce unused-noqa errors (RUF100) on those call sites.
     if not isinstance(data, dict):
         msg = (
             f"{_PRECOMMIT_PATH} did not parse to a mapping "
