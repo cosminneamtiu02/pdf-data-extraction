@@ -26,19 +26,48 @@ _RUFF_PACKAGE_NAME = "ruff"
 
 def _precommit_ruff_rev() -> str:
     data = yaml.safe_load(_PRECOMMIT_PATH.read_text(encoding="utf-8"))
-    for repo in data["repos"]:
-        if _RUFF_PRECOMMIT_REPO_SUBSTRING in repo["repo"]:
-            return str(repo["rev"]).lstrip("v")
+    # AssertionError (not TypeError) is the intended failure shape: this is a
+    # pytest guardrail helper, and pytest's test-runner messaging is keyed on
+    # AssertionError for test-assertion-style reporting.
+    if not isinstance(data, dict):
+        msg = (
+            f"{_PRECOMMIT_PATH} did not parse to a mapping "
+            f"(got {type(data).__name__}); pre-commit config schema may have changed."
+        )
+        raise AssertionError(msg)  # noqa: TRY004
+    for repo in data.get("repos", []):
+        if not isinstance(repo, dict):
+            continue
+        repo_url = repo.get("repo")
+        if repo_url is None or _RUFF_PRECOMMIT_REPO_SUBSTRING not in repo_url:
+            continue
+        rev = repo.get("rev")
+        if rev is None:
+            msg = (
+                f"ruff-pre-commit entry in {_PRECOMMIT_PATH} is missing 'rev' "
+                f"(got {repo!r}); pre-commit config schema may have changed."
+            )
+            raise AssertionError(msg)
+        return str(rev).removeprefix("v")
     msg = f"{_RUFF_PRECOMMIT_REPO_SUBSTRING} repo not found in {_PRECOMMIT_PATH}"
     raise AssertionError(msg)
 
 
 def _uv_lock_ruff_version() -> str:
-    with _UV_LOCK_PATH.open("rb") as fh:
-        data = tomllib.load(fh)
-    for package in data["package"]:
-        if package["name"] == _RUFF_PACKAGE_NAME:
-            return str(package["version"])
+    data = tomllib.loads(_UV_LOCK_PATH.read_text(encoding="utf-8"))
+    for package in data.get("package", []):
+        if not isinstance(package, dict):
+            continue
+        if package.get("name") != _RUFF_PACKAGE_NAME:
+            continue
+        version = package.get("version")
+        if version is None:
+            msg = (
+                f"ruff package entry in {_UV_LOCK_PATH} is missing 'version' "
+                f"(got {package!r}); uv.lock schema may have changed."
+            )
+            raise AssertionError(msg)
+        return str(version)
     msg = f"ruff not found in {_UV_LOCK_PATH}"
     raise AssertionError(msg)
 
