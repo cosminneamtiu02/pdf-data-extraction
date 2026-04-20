@@ -74,8 +74,8 @@ class SkillYamlSchema(BaseModel):
 
         detected_composition_keys = _detect_unsupported_composition_root_keys(self.output_schema)
         if detected_composition_keys:
-            # Render the supported-keyword set directly from the constant so
-            # adding/removing an entry in ``_UNSUPPORTED_COMPOSITION_KEYS``
+            # Render the unsupported-keyword set directly from the constant
+            # so adding/removing an entry in ``_UNSUPPORTED_COMPOSITION_KEYS``
             # automatically keeps the user-facing error message in sync
             # (PR #315 review follow-up — previously hard-coded as
             # "(anyOf/oneOf/allOf)" which could drift from the constant).
