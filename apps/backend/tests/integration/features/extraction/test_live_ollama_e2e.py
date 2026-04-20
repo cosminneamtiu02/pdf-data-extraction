@@ -19,7 +19,7 @@ Skip-gate mechanism
 The test is skipped cleanly (not failed) when Ollama is not reachable at
 the configured ``ollama_base_url`` OR the configured ``ollama_model`` tag
 is missing from its ``/api/tags`` listing. The probe is run via the
-module-scoped ``_ollama_reachable_fixture`` pytest fixture (see below):
+function-scoped ``_ollama_reachable_fixture`` pytest fixture (see below):
 pytest requests the fixture *before* the async test body starts, so the
 synchronous ``httpx.get`` call happens outside any event loop and cannot
 block one. The fixture calls ``pytest.skip(...)`` directly on failure,
@@ -31,9 +31,10 @@ evaluates before deselect) would fire a real network request during
 ``pytest --collect-only`` and during every ``task test:integration`` run
 that deselects this suite via ``-m "not slow"``, adding latency and
 potentially hanging on misconfigured networks. The fixture is therefore
-scoped to the module (not the session), opt-in via explicit request
-from the test function, and guarded by the ``@pytest.mark.slow`` marker
-on the module so deselect-based invocations never instantiate it.
+scoped to the test function (not the session or module), opt-in via
+explicit request from the test function, and guarded by the
+``@pytest.mark.slow`` marker on the module so deselect-based
+invocations never instantiate it.
 
 Running locally
 ---------------
@@ -88,7 +89,7 @@ def _ollama_reachable(settings: Settings) -> tuple[bool, str]:
     malformed JSON, or missing model yields ``False`` and a human-readable
     reason that pytest surfaces as the skip message.
 
-    Invocation scope: called **only** from the module-scoped
+    Invocation scope: called **only** from the function-scoped
     ``_ollama_reachable_fixture`` pytest fixture, which pytest resolves
     *before* the async test body is scheduled. This keeps the synchronous
     ``httpx.get`` call off any event loop — async tests cannot tolerate a
@@ -163,8 +164,10 @@ def _ollama_reachable_fixture() -> None:
     ``-m "not slow"`` is set. Function scope removes all that reasoning;
     the probe cost is negligible (<2 s per slow-run) and still only pays
     once per test because the file carries only one live-Ollama test.
-    ``autouse=False``: the test function requests the fixture explicitly
-    by name so the call graph is visible in the signature.
+    ``autouse=False``: the test requests the fixture explicitly via
+    ``@pytest.mark.usefixtures("_ollama_reachable_fixture")`` rather than
+    as a function parameter, so the request is visible as a decorator on
+    the test function (not in its signature).
     """
     probe_settings: Settings = Settings()  # type: ignore[reportCallIssue]  # pydantic-settings loads fields from env
     ollama_ready, ollama_skip_reason = _ollama_reachable(probe_settings)
