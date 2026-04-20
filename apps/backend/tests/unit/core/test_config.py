@@ -123,6 +123,39 @@ def test_settings_ollama_base_url_whitespace_stripped() -> None:
     assert s.ollama_base_url == "http://localhost:11434"
 
 
+def test_settings_ollama_base_url_credentials_not_in_repr() -> None:
+    """Proxy credentials in ``ollama_base_url`` must not appear in ``repr(settings)``.
+
+    Operators running Ollama behind an authenticated proxy embed the password
+    in the URL (``http://user:pass@proxy:11434``). Any ``repr(settings)`` that
+    surfaces in an exception traceback, a debug dump, or a structlog payload
+    would then leak the credential. ``Field(repr=False)`` on the field tells
+    Pydantic to omit the field entirely from the model's ``repr`` — both the
+    name and the value — see issue #284.
+
+    The sentinel-value assertion is robust against env-bleed: the test owns
+    the value it greps for, so other settings populated from ``.env`` or
+    process env cannot accidentally satisfy or break it. ``_env_file=None``
+    keeps the rest of the repr deterministic.
+    """
+    sentinel = "PUD7HRfAlzrhN-Sentinel-284"
+    credentialed_url = f"http://operator:{sentinel}@proxy.internal:11434"
+    s = Settings(  # type: ignore[call-arg]
+        _env_file=None,
+        ollama_base_url=credentialed_url,
+    )
+    rendered = repr(s)
+    # Primary contract: the credential value must never leak.
+    assert sentinel not in rendered
+    assert credentialed_url not in rendered
+    # ``Field(repr=False)`` omits the field entirely, so the field name
+    # must also be absent. If a future pydantic release weakens that
+    # contract (e.g. renders ``ollama_base_url=<hidden>``), this assertion
+    # fails loudly — the credential value check above remains the
+    # load-bearing security guarantee.
+    assert "ollama_base_url" not in rendered
+
+
 # -- cors_origins empty-string coercion (issue #58) --------------------------
 
 

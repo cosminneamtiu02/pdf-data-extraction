@@ -20,6 +20,14 @@ permissions:
 
 jobs:
   deploy:
+    # Kill switch (#270): the deploy path is not wired up yet — the rollout
+    # story is tracked in issue #121. Until then, skip the job cleanly
+    # (neutral grey in the Actions UI) rather than failing it (red), so
+    # on-call does not habituate to a permanently-red Deploy job and miss
+    # real regressions once the registry push goes live. Operators flip
+    # the repo variable `DEPLOY_ENABLED` to the literal string "true" to
+    # enable. Any other value (unset, "false", "1", empty) skips.
+    if: vars.DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -28,25 +36,13 @@ jobs:
       - name: Build backend Docker image
         run: docker build -f infra/docker/backend.Dockerfile -t pdf-data-extraction-backend:${{ github.sha }} .
 
-      # Registry push is wired behind the DEPLOY_ENABLED repo variable so
-      # the Deploy job stays green (Build step still verifies the Dockerfile
-      # on every merge, push step is SKIPPED) until #121 lands the actual
-      # registry credentials + push command. An unconditional `exit 1` here
-      # would habituate on-call to a permanently-red Deploy job and mask a
-      # real failure once the push is wired (issue #270).
       - name: Push to registry
-        if: vars.DEPLOY_ENABLED == 'true'
+        # Placeholder body until issue #121 wires up the registry push.
+        # Exits 0 so that once an operator flips `DEPLOY_ENABLED=true` to
+        # exercise the rest of the pipeline, this step does not re-red the
+        # job. Replace this whole step body with the real push when #121
+        # lands; do not keep the placeholder AND the real push side by side.
+        # Emitted as `::notice::` so operators see the message surfaced in
+        # the Actions run UI rather than buried in step logs.
         run: |
-          echo "::error::Push to registry not yet implemented — see issue #121 for tracking."
-          exit 1
-
-      # Companion to the gated push step above: when DEPLOY_ENABLED is unset
-      # or anything other than the literal string "true", the push is
-      # silently skipped and the job lands green. That can create "green
-      # deploy" false confidence — an operator reading the run UI might
-      # assume an image was pushed. Emit a loud `::warning::` annotation so
-      # the run page makes the no-op explicit and points at the flip.
-      - name: Deploy disabled notice
-        if: vars.DEPLOY_ENABLED != 'true'
-        run: |
-          echo "::warning::Deploy is intentionally disabled for this repository. No image was pushed or deployed. To enable deployment, set the repository variable DEPLOY_ENABLED to 'true' once the registry push from issue #121 lands."
+          echo "::notice::Deploy not yet wired — tracked in #121. To enable this job once the registry push is ready, set the repository variable DEPLOY_ENABLED to 'true' (Settings → Secrets and variables → Actions → Variables), then replace this placeholder with the real push commands."
