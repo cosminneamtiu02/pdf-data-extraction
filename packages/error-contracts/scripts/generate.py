@@ -200,10 +200,14 @@ def generate_python(errors_path: Path, output_dir: Path) -> list[Path]:
         params = cast("dict[str, str]", spec.get("params", {}))
         # Iterate params by sorted key name so reordering param keys in
         # errors.yaml (a semantic no-op — params are set-like) produces
-        # byte-stable generated artifacts. Without this, a YAML param-key
-        # swap drifts the generated params class field order, __init__
-        # signature, TS interface fields, and required-keys.json
-        # (issue #286 extended per PR #309 review).
+        # byte-stable Python artifacts emitted by this function: the
+        # generated Params class field order and the error class's
+        # __init__ signature plus the Params(...) constructor call.
+        # TS interface field order and required-keys.json param ordering
+        # are independently stabilised by the `sorted(params.items())` /
+        # `sorted(...keys())` calls inside `generate_typescript` and
+        # `generate_required_keys` respectively — see those functions if
+        # touching that determinism. (issue #286 extended per PR #309 review.)
         sorted_param_items = sorted(params.items())
         sorted_param_names = [name for name, _ in sorted_param_items]
         http_status = cast("int", spec["http_status"])
