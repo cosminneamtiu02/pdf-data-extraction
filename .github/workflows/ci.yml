@@ -71,6 +71,29 @@ jobs:
       - name: Contract tests
         run: uv run pytest tests/contract/ -v
 
+  dockerfile-build:
+    # Issue #417: `deploy.yml`'s job-level `if: vars.DEPLOY_ENABLED ==
+    # 'true'` guard (#300) skips the Build step on every merge, so the
+    # Dockerfile is not exercised in CI by default. Static checks in
+    # `test_dockerfile_hygiene.py` only parse the Dockerfile — they
+    # cannot catch wrong COPY paths, disappearing apt packages, or any
+    # runtime-of-build failure. This job closes that gap by running
+    # `docker build` on every PR without pushing to any registry.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          # No downstream step pushes or calls an authenticated GH API.
+          persist-credentials: false
+
+      - name: Build backend Docker image
+        # No `--push`, no registry credentials, no DEPLOY_ENABLED
+        # coupling. Pure build verification. The image is named for
+        # local use on the runner only; it is discarded when the runner
+        # tears down.
+        run: docker build -f infra/docker/backend.Dockerfile -t pdfx-backend:ci-${{ github.sha }} .
+
   error-contracts:
     runs-on: ubuntu-latest
     timeout-minutes: 10
