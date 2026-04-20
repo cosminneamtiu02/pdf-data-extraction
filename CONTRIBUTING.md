@@ -3,7 +3,7 @@
 ## Getting Started
 
 1. Clone the repository
-2. Install prerequisites: Python 3.13, [uv](https://docs.astral.sh/uv/), Docker
+2. Install prerequisites: Python 3.13, [uv](https://docs.astral.sh/uv/), Docker, [task](https://taskfile.dev/installation/) (go-task)
 3. Run `task dev` to start the backend stack
 
 ## Development Setup
