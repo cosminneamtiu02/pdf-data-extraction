@@ -251,7 +251,7 @@ def _is_empty_object_schema(schema: dict[str, Any]) -> bool:
     Composition (`anyOf`/`oneOf`/`allOf`) and `$ref` roots are rejected
     by a separate guard in the model validator because the extraction
     engine only knows how to derive field names from top-level
-    `properties`. See `_uses_unsupported_composition_root`.
+    `properties`. See `_detect_unsupported_composition_root_keys`.
     """
     declared_type = schema.get("type")
     if declared_type is None:
