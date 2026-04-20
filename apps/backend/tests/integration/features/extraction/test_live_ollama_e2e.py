@@ -143,9 +143,9 @@ _OLLAMA_CLIENT_BUDGET_SECONDS: float = 120.0
 _CLIENT_TIMEOUT_SECONDS: float = _EXTRACTION_BUDGET_SECONDS + 20.0
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def _ollama_reachable_fixture() -> None:
-    """Module-scoped skip gate for live-Ollama reachability.
+    """Function-scoped skip gate for live-Ollama reachability.
 
     Why a fixture rather than an in-body probe: the reachability check
     uses synchronous ``httpx.get`` (see ``_ollama_reachable`` for the
@@ -154,10 +154,15 @@ def _ollama_reachable_fixture() -> None:
     fixtures *before* scheduling the coroutine, so running the probe in a
     fixture keeps the blocking call entirely off the event loop.
 
-    Why ``scope="module"``: the probe runs at most once per pytest
-    process that actually invokes this module — not at collection time.
-    ``-m "not slow"`` invocations deselect the test before fixture setup
-    runs, so the probe stays silent for the default integration suite.
+    Why function-scoped (issue #328): previously ``scope="module"`` as an
+    optimisation, but under
+    ``asyncio_default_fixture_loop_scope = "session"`` the
+    "sync-def + module-scope" combination interacts awkwardly with
+    pytest-asyncio's session-loop setup lifecycle — the module-scoped
+    fixture can be instantiated eagerly during collection even when
+    ``-m "not slow"`` is set. Function scope removes all that reasoning;
+    the probe cost is negligible (<2 s per slow-run) and still only pays
+    once per test because the file carries only one live-Ollama test.
     ``autouse=False``: the test function requests the fixture explicitly
     by name so the call graph is visible in the signature.
     """
