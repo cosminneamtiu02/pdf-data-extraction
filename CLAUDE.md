@@ -173,13 +173,16 @@ Excluded: property-based, performance, mutation, snapshot, fuzz beyond Schemathe
 
 ## PR Authoring and Attribution
 
-All pull requests on this repo are opened by `cosminneamtiu02`. This
-deliberately gives up Copilot auto-review: the `copilot_code_review`
-rule on the `main-protection` ruleset only fires for PR authors with an
-active Copilot code-review seat scoped to this repo, and cosmin's
-personal Copilot Pro does not extend to repos he does not own. Reviews
-now come from human reviewers or explicit reviewer assignment, not the
-ruleset. (Switched 2026-04-20 from an earlier Ioana-as-author routing.)
+All human-authored pull requests on this repo are opened by
+`cosminneamtiu02`. Dependabot-authored PRs remain the exception — they
+are scoped under the Dependabot section below and their own auto-merge
+workflow. This deliberately gives up Copilot auto-review for humans:
+the `copilot_code_review` rule on the `main-protection` ruleset only
+fires for PR authors with an active Copilot code-review seat scoped to
+this repo, and cosmin's personal Copilot Pro does not extend to repos
+he does not own. Reviews now come from human reviewers or explicit
+reviewer assignment, not the ruleset. (Switched 2026-04-20 from an
+earlier Ioana-as-author routing.)
 
 ### Before `gh pr create` on this repo
 
@@ -228,10 +231,13 @@ PR-body-to-squash-commit transformation (observed on PR #20: an 89-char
 trailer broke across two lines and became unparseable). The git-config
 author path is robust; the manual trailer path is fragile.
 
-The Claude AI-attribution trailer (`Co-authored-by: Claude Opus 4.7 (1M
-context) <noreply@anthropic.com>`) is optional — Anthropic has no GitHub
-account to credit, so it serves only as transparency about AI-assisted
-commits. Omit it if it would wrap a trailer line.
+That prohibition applies to human and AI attribution trailers alike —
+do NOT use `Co-authored-by:` for Claude (or any other AI tool) either.
+If you want AI-assistance transparency in the commit message or PR
+body, write a plain non-trailer note such as `AI-assisted with Claude`
+instead. Keeping the rule uniform avoids the "forbid-but-also-allow"
+contradiction an earlier revision of this section carried, and keeps
+all attribution off the fragile trailer path.
 
 ### Historical context
 
