@@ -702,15 +702,23 @@ def test_default_preflight_logs_structured_event_on_password_protected(
 
 
 # ---------------------------------------------------------------------------
-# PR #245 review: resolution of ``FileDataError`` attribute must not degrade
-# into ``RuntimeError`` when the attribute is missing or not an exception type.
+# PR #245 review + issue #278 follow-up: resolution of ``FileDataError``
+# attribute must not degrade into ``RuntimeError`` when the attribute is
+# missing or not an exception type.
 #
 # If a future PyMuPDF release renames ``FileDataError``, the preflight must
 # NOT fall back to wrapping every ``RuntimeError`` from ``pymupdf.open`` as
 # ``PdfInvalidError`` — that would silently reclassify genuine 500s as 400s,
 # violating the "no silent fallbacks" constraint.
 #
-# Only ``ValueError`` remains as the safe, narrow wrap in that degraded case.
+# Under issue #278, the degraded case now has an EMPTY allow-list:
+# ``ValueError`` (and every other exception from ``pymupdf.open``)
+# propagates unchanged rather than being wrapped as ``PdfInvalidError``.
+# Previous versions of this section said "only ``ValueError`` remains as
+# the safe, narrow wrap" — that contract was retired in #278; the
+# tests below still pin the "``RuntimeError`` must not wrap as 400"
+# invariant, and the ``ValueError``-propagation tests further up lock
+# in the new zero-wrap contract.
 # ---------------------------------------------------------------------------
 
 
