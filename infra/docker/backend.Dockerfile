@@ -67,8 +67,17 @@ FROM ${PYTHON_IMAGE}
 # tini is a tiny (~10 KB) binary; apt's Debian-stable package is kept to
 # just the binary via `--no-install-recommends`, respecting the
 # #139 / #192 image-size budget.
+#
+# `curl` is installed so the HEALTHCHECK (below) can probe `/health`
+# without spawning the full app venv Python interpreter every 30s
+# (issue #363). `curl` is a ~250 KB static binary on Debian slim with
+# `--no-install-recommends`; the alternative (`python -c ...` against
+# the ~500 MB Docling + LangExtract + PyMuPDF + torch CPU-wheel venv)
+# is orders of magnitude more expensive per probe and races against
+# `docker stop` during graceful shutdown.
 RUN apt-get update \
     && apt-get install --no-install-recommends -y \
+        curl \
         tesseract-ocr \
         tesseract-ocr-eng \
         tini \
@@ -92,8 +101,16 @@ USER appuser
 
 EXPOSE 8000
 
+# Exec-form HEALTHCHECK (issue #363): invokes `curl` directly instead of
+# wrapping the probe in `/bin/sh -c`, and — more importantly — avoids
+# re-spawning a cold Python interpreter against the ~500 MB app venv
+# (Docling + LangExtract + PyMuPDF + torch CPU wheels) every 30s.
+# `curl -fsS` exits non-zero on any non-2xx response and is quiet on
+# success; `/health` is the right endpoint for container-level liveness
+# (the compose-level healthcheck hits `/ready` for readiness — see
+# infra/compose/docker-compose.prod.yml). `curl` is installed above.
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"
+    CMD ["curl", "-fsS", "http://localhost:8000/health"]
 
 # Exec-form ENTRYPOINT so Docker does not wrap it in /bin/sh (which would
 # insert a shell as PID 1 and defeat the point of tini). The `--` sentinel
