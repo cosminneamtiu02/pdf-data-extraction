@@ -72,15 +72,18 @@ class SkillYamlSchema(BaseModel):
             # known path; inner-validator raises never escape unwrapped.
             raise SkillValidationFailedError(file="", reason="\n".join(problems)) from exc
 
-        if _uses_unsupported_composition_root(self.output_schema):
+        detected_composition_keys = _detect_unsupported_composition_root_keys(self.output_schema)
+        if detected_composition_keys:
             problems.append(
-                "output_schema uses composition (anyOf/oneOf/allOf) or $ref at "
-                "the root, which is not yet supported for extraction skills: "
-                "the engine derives field names strictly from top-level "
-                "'properties' (see declared_field_names in extraction_engine), "
-                "so composition-rooted schemas would load successfully but "
-                "silently produce zero-field extractions at runtime. Declare "
-                "explicit 'properties' at the root instead. Issue #289.",
+                f"output_schema uses unsupported root key(s) "
+                f"{detected_composition_keys!r}: composition (anyOf/oneOf/allOf) "
+                f"or $ref at the root is not yet supported for extraction "
+                f"skills. The engine derives field names strictly from "
+                f"top-level 'properties' (see declared_field_names in "
+                f"extraction_engine), so composition-rooted schemas would "
+                f"load successfully but silently produce zero-field "
+                f"extractions at runtime. Declare explicit 'properties' at "
+                f"the root instead. Issue #289."
             )
             raise SkillValidationFailedError(file="", reason="\n".join(problems))
 
@@ -207,8 +210,13 @@ def _format_pydantic_errors(exc: ValidationError) -> str:
 _UNSUPPORTED_COMPOSITION_KEYS: tuple[str, ...] = ("anyOf", "oneOf", "allOf", "$ref")
 
 
-def _uses_unsupported_composition_root(schema: dict[str, Any]) -> bool:
-    """Return True when the root schema delegates shape via composition or $ref.
+def _detect_unsupported_composition_root_keys(schema: dict[str, Any]) -> list[str]:
+    """Return the list of unsupported composition/$ref keys present at the schema root.
+
+    Returns an empty list if none are present (truthy check at call sites
+    doubles as "uses unsupported root shape"). The returned list preserves
+    the declaration order in ``_UNSUPPORTED_COMPOSITION_KEYS`` so error
+    messages are deterministic.
 
     Draft 7 permits these keys as valid schema roots, but the extraction
     engine's ``declared_field_names`` derives fields strictly from top-level
@@ -217,7 +225,7 @@ def _uses_unsupported_composition_root(schema: dict[str, Any]) -> bool:
     time with a clearer error than the generic "empty object" branch would
     emit (issue #289).
     """
-    return any(key in schema for key in _UNSUPPORTED_COMPOSITION_KEYS)
+    return [key for key in _UNSUPPORTED_COMPOSITION_KEYS if key in schema]
 
 
 def _is_empty_object_schema(schema: dict[str, Any]) -> bool:
