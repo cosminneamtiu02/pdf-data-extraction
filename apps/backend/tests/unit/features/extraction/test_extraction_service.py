@@ -12,6 +12,7 @@ import time
 from typing import Any
 
 import pytest
+import structlog.testing
 
 from app.core.config import Settings
 from app.exceptions import (
@@ -1055,3 +1056,116 @@ async def test_ollama_internal_timeout_is_not_remapped_to_extraction_budget_erro
     assert not isinstance(excinfo.value, ExtractionBudgetExceededError)
     assert excinfo.value.params is not None
     assert excinfo.value.params.model_dump() == {"budget_seconds": 30.0}
+
+
+# ---------------------------------------------------------------------------
+# Issue #416: cancellation vs. timeout log distinguishability.
+#
+# ``asyncio.timeout`` cancels cooperative awaits by injecting
+# ``asyncio.CancelledError`` and then converting it to ``TimeoutError`` at
+# the context-manager boundary when the deadline has expired. But if an
+# OUTER cancellation (caller cancelled the task, client disconnected) fires
+# inside the pipeline, the same ``CancelledError`` can propagate past the
+# ``except TimeoutError`` branch unlabelled — operators triaging a 5xx spike
+# have no way to tell "caller cancelled" from "we ran out of budget" from
+# the structured logs. These tests pin two distinct, greppable events:
+# ``extraction_cancelled`` for caller cancellation, ``extraction_timeout``
+# for pipeline-budget expiry.
+# ---------------------------------------------------------------------------
+
+
+class _CancellingEngine:
+    """Engine that raises ``asyncio.CancelledError`` mid-extraction.
+
+    Models the shape of a caller-driven cancellation (task cancel, client
+    disconnect) observed from inside the pipeline after the semaphore is
+    acquired but before the work completes. The service's ``CancelledError``
+    branch must fire unconditionally on this path — whether or not the
+    outer ``asyncio.timeout`` has anything to do with it.
+    """
+
+    async def extract(
+        self,
+        _text: str,
+        _skill: Any,
+        _provider: Any,
+    ) -> list[RawExtraction]:
+        raise asyncio.CancelledError
+
+
+async def test_cancelled_error_emits_extraction_cancelled_event_and_reraises() -> None:
+    """Issue #416: CancelledError path logs ``extraction_cancelled`` and re-raises.
+
+    The extraction service must never swallow ``asyncio.CancelledError`` —
+    cooperative cancellation relies on it propagating out so the caller's
+    task can terminate cleanly. The fix is observability-only: we log a
+    distinct event so operators can tell a caller-cancellation breadcrumb
+    apart from a pipeline-budget timeout in structured logs.
+    """
+    service = _build_service(engine=_CancellingEngine())
+
+    with (
+        structlog.testing.capture_logs() as captured,
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await service.extract(_PDF_BYTES, "invoice", "1", OutputMode.JSON_ONLY)
+
+    cancelled_events = [e for e in captured if e["event"] == "extraction_cancelled"]
+    assert len(cancelled_events) == 1, (
+        f"Expected exactly one extraction_cancelled event; got {captured!r}"
+    )
+    # Must NOT masquerade as the timeout event.
+    timeout_events = [e for e in captured if e["event"] == "extraction_timeout"]
+    assert timeout_events == []
+
+
+async def test_timeout_emits_extraction_timeout_event_with_budget_seconds() -> None:
+    """Issue #416: pipeline-budget timeout logs ``extraction_timeout`` with context.
+
+    A ``extraction_timeout`` event must be emitted alongside the
+    ``ExtractionBudgetExceededError`` raise so operators can distinguish
+    a pipeline-budget timeout from a caller-cancellation in structured logs.
+    The event carries the configured budget so triage can tell at a glance
+    how long the pipeline ran before hitting the cap.
+    """
+    engine = _FakeEngine(sleep_seconds=0.2)
+    settings = _build_settings(extraction_timeout_seconds=0.05)
+    service = _build_service(engine=engine, settings=settings)
+
+    with (
+        structlog.testing.capture_logs() as captured,
+        pytest.raises(ExtractionBudgetExceededError),
+    ):
+        await service.extract(_PDF_BYTES, "invoice", "1", OutputMode.JSON_ONLY)
+
+    timeout_events = [e for e in captured if e["event"] == "extraction_timeout"]
+    assert len(timeout_events) == 1, (
+        f"Expected exactly one extraction_timeout event; got {captured!r}"
+    )
+    assert timeout_events[0]["budget_seconds"] == 0.05
+    # Must NOT masquerade as the cancellation event.
+    cancelled_events = [e for e in captured if e["event"] == "extraction_cancelled"]
+    assert cancelled_events == []
+
+
+async def test_inner_timeout_error_does_not_emit_extraction_timeout_event() -> None:
+    """Issue #416: the ``extraction_timeout`` event fires only for budget expiry.
+
+    A downstream component may raise a built-in ``TimeoutError`` for reasons
+    unrelated to the pipeline budget (e.g. a socket-layer timeout inside
+    Docling). That case re-raises the inner error as-is — without remapping
+    to ``ExtractionBudgetExceededError`` — so the ``extraction_timeout``
+    event, which is specifically the pipeline-budget breadcrumb, must not
+    fire either. Keeping the two concerns paired avoids a misleading
+    "budget exceeded" log line when the real failing component is elsewhere.
+    """
+    settings = _build_settings(extraction_timeout_seconds=60.0)
+    service = _build_service(parser=_InnerTimeoutParser(), settings=settings)
+
+    with structlog.testing.capture_logs() as captured, pytest.raises(TimeoutError):
+        await service.extract(_PDF_BYTES, "invoice", "1", OutputMode.JSON_ONLY)
+
+    timeout_events = [e for e in captured if e["event"] == "extraction_timeout"]
+    assert timeout_events == []
+    cancelled_events = [e for e in captured if e["event"] == "extraction_cancelled"]
+    assert cancelled_events == []
