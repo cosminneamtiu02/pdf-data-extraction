@@ -6,5 +6,5 @@ from pydantic import BaseModel
 class PdfTooManyPagesParams(BaseModel):
     """Parameters for PDF_TOO_MANY_PAGES error."""
 
-    limit: int
     actual: int
+    limit: int
