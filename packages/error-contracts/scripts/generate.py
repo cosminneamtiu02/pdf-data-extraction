@@ -15,7 +15,9 @@ from scripts._duplicate_key_safe_loader import DuplicateKeyDetectingSafeLoader
 
 # The YAML shape is: {"version": int, "errors": {CODE: {http_status: int, description: str, params: {name: type}}}}.
 # We keep the in-memory representation duck-typed as dict[str, Any] because
-# yaml.safe_load returns Any; validation happens in `load_and_validate`.
+# yaml.load with our DuplicateKeyDetectingSafeLoader subclass (a SafeLoader
+# that rejects duplicate mapping keys at parse time) returns Any; validation
+# happens in `load_and_validate`.
 ErrorSpec = dict[str, Any]
 ErrorsYaml = dict[str, Any]
 

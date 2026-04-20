@@ -103,16 +103,16 @@ TAB_INDENTED_DUPLICATE_YAML = (
 
 
 @pytest.mark.parametrize(
-    ("name", "yaml_text"),
+    "yaml_text",
     [
-        ("flow_style", FLOW_STYLE_DUPLICATE_YAML),
-        ("trailing_whitespace", TRAILING_WHITESPACE_DUPLICATE_YAML),
-        ("quoted_form", QUOTED_FORM_DUPLICATE_YAML),
-        ("nested_params_mapping", NESTED_DUPLICATE_PARAMS_YAML),
-        ("tab_indented_flow", TAB_INDENTED_DUPLICATE_YAML),
+        pytest.param(FLOW_STYLE_DUPLICATE_YAML, id="flow_style"),
+        pytest.param(TRAILING_WHITESPACE_DUPLICATE_YAML, id="trailing_whitespace"),
+        pytest.param(QUOTED_FORM_DUPLICATE_YAML, id="quoted_form"),
+        pytest.param(NESTED_DUPLICATE_PARAMS_YAML, id="nested_params_mapping"),
+        pytest.param(TAB_INDENTED_DUPLICATE_YAML, id="tab_indented_flow"),
     ],
 )
-def test_duplicate_keys_are_rejected(tmp_path: Path, name: str, yaml_text: str) -> None:
+def test_duplicate_keys_are_rejected(tmp_path: Path, yaml_text: str) -> None:
     """Every duplicate-key edge case the old regex missed must now raise."""
     path = tmp_path / "errors.yaml"
     path.write_text(yaml_text)
