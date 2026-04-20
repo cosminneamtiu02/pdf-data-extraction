@@ -16,6 +16,17 @@ repos:
       - id: ruff
       - id: ruff-format
 
+  # pyright is pinned to match apps/backend/uv.lock (guarded by
+  # tests/unit/meta/test_precommit_pyright_hook_present.py). Scoped to the
+  # pre-push stage because a strict type check across app/ scripts/ tests/
+  # is too slow for every commit — same reasoning as the pytest-unit hook
+  # below.
+  - repo: https://github.com/RobertCraigie/pyright-python
+    rev: v1.1.408
+    hooks:
+      - id: pyright
+        stages: [pre-push]
+
   - repo: local
     hooks:
       # Pre-push: run unit tests before code leaves the machine
