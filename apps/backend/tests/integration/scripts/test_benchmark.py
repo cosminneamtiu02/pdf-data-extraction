@@ -209,30 +209,26 @@ def test_benchmark_completes_against_stubbed_service(tmp_path: Path) -> None:
 
     try:
         import io
-        import sys
 
         captured_out = io.StringIO()
         captured_err = io.StringIO()
-        old_stdout, old_stderr = sys.stdout, sys.stderr
-        sys.stdout, sys.stderr = captured_out, captured_err
 
-        try:
-            code = bench_main(
-                [
-                    "--url",
-                    f"http://127.0.0.1:{port}",
-                    "--iterations",
-                    "1",
-                    "--warmup",
-                    "0",
-                    "--fixtures-dir",
-                    str(fixtures_dir),
-                    "--timeout",
-                    "30",
-                ]
-            )
-        finally:
-            sys.stdout, sys.stderr = old_stdout, old_stderr
+        code = bench_main(
+            [
+                "--url",
+                f"http://127.0.0.1:{port}",
+                "--iterations",
+                "1",
+                "--warmup",
+                "0",
+                "--fixtures-dir",
+                str(fixtures_dir),
+                "--timeout",
+                "30",
+            ],
+            out=captured_out,
+            err=captured_err,
+        )
 
         out = captured_out.getvalue()
         err = captured_err.getvalue()
@@ -255,31 +251,26 @@ def test_benchmark_unreachable_service_exits_nonzero(tmp_path: Path) -> None:
     _write_fixture_pdfs(fixtures_dir)
 
     import io
-    import sys
     import time
 
     captured_err = io.StringIO()
-    old_stderr = sys.stderr
-    sys.stderr = captured_err
 
     start = time.monotonic()
-    try:
-        code = bench_main(
-            [
-                "--url",
-                "http://127.0.0.1:1",
-                "--iterations",
-                "1",
-                "--warmup",
-                "0",
-                "--fixtures-dir",
-                str(fixtures_dir),
-                "--timeout",
-                "5",
-            ]
-        )
-    finally:
-        sys.stderr = old_stderr
+    code = bench_main(
+        [
+            "--url",
+            "http://127.0.0.1:1",
+            "--iterations",
+            "1",
+            "--warmup",
+            "0",
+            "--fixtures-dir",
+            str(fixtures_dir),
+            "--timeout",
+            "5",
+        ],
+        err=captured_err,
+    )
 
     elapsed = time.monotonic() - start
     err = captured_err.getvalue()
@@ -297,25 +288,20 @@ def test_benchmark_missing_fixtures_exits_nonzero(tmp_path: Path) -> None:
     (fixtures_dir / "native_invoice_10p.pdf").write_bytes(b"%PDF-1.4 stub")
 
     import io
-    import sys
 
     captured_err = io.StringIO()
-    old_stderr = sys.stderr
-    sys.stderr = captured_err
 
-    try:
-        code = bench_main(
-            [
-                "--url",
-                "http://127.0.0.1:1",
-                "--iterations",
-                "1",
-                "--fixtures-dir",
-                str(fixtures_dir),
-            ]
-        )
-    finally:
-        sys.stderr = old_stderr
+    code = bench_main(
+        [
+            "--url",
+            "http://127.0.0.1:1",
+            "--iterations",
+            "1",
+            "--fixtures-dir",
+            str(fixtures_dir),
+        ],
+        err=captured_err,
+    )
 
     err = captured_err.getvalue()
 
@@ -338,29 +324,24 @@ def test_benchmark_extraction_errors_exit_nonzero(tmp_path: Path) -> None:
 
     try:
         import io
-        import sys
 
         captured_err = io.StringIO()
-        old_stderr = sys.stderr
-        sys.stderr = captured_err
 
-        try:
-            code = bench_main(
-                [
-                    "--url",
-                    f"http://127.0.0.1:{port}",
-                    "--iterations",
-                    "1",
-                    "--warmup",
-                    "0",
-                    "--fixtures-dir",
-                    str(fixtures_dir),
-                    "--timeout",
-                    "30",
-                ]
-            )
-        finally:
-            sys.stderr = old_stderr
+        code = bench_main(
+            [
+                "--url",
+                f"http://127.0.0.1:{port}",
+                "--iterations",
+                "1",
+                "--warmup",
+                "0",
+                "--fixtures-dir",
+                str(fixtures_dir),
+                "--timeout",
+                "30",
+            ],
+            err=captured_err,
+        )
 
         err = captured_err.getvalue()
         assert code != 0, f"Expected non-zero exit, got 0. stderr: {err}"
