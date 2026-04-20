@@ -4,9 +4,17 @@ When Dependabot bumps ruff in pyproject.toml, uv.lock also advances but the
 pre-commit hook rev stays pinned at the older tag. The hooks then produce
 different lint results from CI. This test asserts they stay in sync.
 
-When this test fails, bump the `rev:` under the `ruff-pre-commit` repo in
-.pre-commit-config.yaml to match the resolved ruff version in uv.lock (or
-re-run `uv lock` if you meant to bump ruff via pre-commit-config).
+When this test fails, pick one of:
+
+- Bump the `rev:` under the `ruff-pre-commit` repo in
+  .pre-commit-config.yaml to match the resolved ruff version in uv.lock
+  (use this path when uv.lock / apps/backend/pyproject.toml are the
+  source of truth, which is the default for this repo); OR
+- If you intended to bump ruff via pre-commit-config, bump ruff in
+  apps/backend/pyproject.toml and re-run `uv lock` so uv.lock picks up
+  the new resolved version.
+
+Editing the pre-commit `rev:` alone will NOT change `apps/backend/uv.lock`.
 """
 
 from __future__ import annotations
