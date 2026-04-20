@@ -11,9 +11,13 @@ from typing import Any, cast
 
 import yaml
 
+from scripts._duplicate_key_safe_loader import DuplicateKeyDetectingSafeLoader
+
 # The YAML shape is: {"version": int, "errors": {CODE: {http_status: int, description: str, params: {name: type}}}}.
 # We keep the in-memory representation duck-typed as dict[str, Any] because
-# yaml.safe_load returns Any; validation happens in `load_and_validate`.
+# yaml.load with our DuplicateKeyDetectingSafeLoader subclass (a SafeLoader
+# that rejects duplicate mapping keys at parse time) returns Any; validation
+# happens in `load_and_validate`.
 ErrorSpec = dict[str, Any]
 ErrorsYaml = dict[str, Any]
 
@@ -67,40 +71,33 @@ def _class_to_snake(name: str) -> str:
     return s
 
 
-def _detect_duplicate_keys(raw_text: str) -> None:
-    """Detect duplicate top-level error code keys in the YAML text."""
-    lines = raw_text.split("\n")
-    in_errors = False
-    seen_codes: set[str] = set()
-    indent_pattern = re.compile(r"^  (\w+):$")
-
-    for line in lines:
-        stripped = line.rstrip()
-        if stripped == "errors:":
-            in_errors = True
-            continue
-        if in_errors:
-            m = indent_pattern.match(stripped)
-            if m:
-                code = m.group(1)
-                if code in seen_codes:
-                    msg = f"Duplicate error code: {code}"
-                    raise ValueError(msg)
-                seen_codes.add(code)
-            elif (
-                stripped
-                and not stripped.startswith(" ")
-                and not stripped.startswith("#")
-            ):
-                in_errors = False
-
-
 def load_and_validate(errors_path: Path) -> ErrorsYaml:
-    """Load errors.yaml and validate its contents."""
-    raw_text = errors_path.read_text()
-    _detect_duplicate_keys(raw_text)
+    """Load errors.yaml and validate its contents.
 
-    loaded = yaml.safe_load(raw_text)
+    Uses ``DuplicateKeyDetectingSafeLoader`` (issue #294): the prior
+    regex-based duplicate-key check missed keys written with leading
+    tabs, trailing whitespace before the colon, quoted form, flow-style
+    mappings, or any mapping nested deeper than the baked-in two-space
+    indent. The loader subclass overrides mapping construction so every
+    duplicate fires a ``ConstructorError`` at parse time.
+
+    Every ``yaml.YAMLError`` (the superclass of ``ConstructorError``,
+    ``ParserError``, ``ScannerError``, …) is re-raised as ``ValueError``
+    with the source path prepended so callers keep a single
+    ``except ValueError`` handler regardless of which sub-failure YAML
+    raised. Duplicate-key detection is only one of several YAML-layer
+    failures that now surface through the same contract.
+    """
+    raw_text = errors_path.read_text()
+
+    try:
+        loaded = yaml.load(  # noqa: S506 — DuplicateKeyDetectingSafeLoader is a SafeLoader subclass
+            raw_text,
+            Loader=DuplicateKeyDetectingSafeLoader,
+        )
+    except yaml.YAMLError as exc:
+        msg = f"YAML error in {errors_path}: {exc}"
+        raise ValueError(msg) from exc
     if not isinstance(loaded, dict):
         msg = f"errors.yaml top-level must be a mapping, got {type(loaded).__name__}"
         raise ValueError(msg)
