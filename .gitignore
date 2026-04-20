@@ -17,6 +17,9 @@ htmlcov/
 .mypy_cache/
 .hypothesis/
 .import_linter_cache/
+.cache/
+build/
+dist/
 
 # IDE
 .vscode/*
