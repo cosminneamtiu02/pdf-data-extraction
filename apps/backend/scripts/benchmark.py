@@ -25,7 +25,10 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from typing import TextIO
 
 try:
     import resource  # Unix only
@@ -632,8 +635,22 @@ def parse_args(argv: list[str]) -> BenchConfig:
     )
 
 
-def main(argv: list[str] | None = None) -> int:
-    """CLI entry point.  Returns a process exit code."""
+def main(
+    argv: list[str] | None = None,
+    *,
+    out: TextIO | None = None,
+    err: TextIO | None = None,
+) -> int:
+    """CLI entry point.  Returns a process exit code.
+
+    ``out`` and ``err`` default to ``sys.stdout`` / ``sys.stderr`` when ``None``.
+    Integration tests inject ``io.StringIO`` instances so they can capture the
+    report and error messages without mutating the process-global streams
+    (issue #326).
+    """
+    out_stream = sys.stdout if out is None else out
+    err_stream = sys.stderr if err is None else err
+
     try:
         config = parse_args(sys.argv[1:] if argv is None else argv)
     except SystemExit as exc:
@@ -643,16 +660,16 @@ def main(argv: list[str] | None = None) -> int:
     try:
         results = run_benchmark(config)
     except FileNotFoundError as exc:
-        sys.stderr.write(f"Error: {exc}\n")
+        err_stream.write(f"Error: {exc}\n")
         return 1
     except (ConnectionError, httpx.ConnectError, httpx.TimeoutException) as exc:
-        sys.stderr.write(f"Error: {exc}\n")
+        err_stream.write(f"Error: {exc}\n")
         return 1
     except RuntimeError as exc:
-        sys.stderr.write(f"Error: {exc}\n")
+        err_stream.write(f"Error: {exc}\n")
         return 1
 
-    sys.stdout.write(format_report(results))
+    out_stream.write(format_report(results))
     return 0
 
 
