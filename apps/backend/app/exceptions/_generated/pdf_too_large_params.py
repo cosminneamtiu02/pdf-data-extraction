@@ -6,5 +6,5 @@ from pydantic import BaseModel
 class PdfTooLargeParams(BaseModel):
     """Parameters for PDF_TOO_LARGE error."""
 
-    max_bytes: int
     actual_bytes: int
+    max_bytes: int

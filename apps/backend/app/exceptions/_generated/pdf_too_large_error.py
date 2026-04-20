@@ -12,5 +12,5 @@ class PdfTooLargeError(DomainError):
     code: ClassVar[str] = "PDF_TOO_LARGE"
     http_status: ClassVar[int] = 413
 
-    def __init__(self, *, max_bytes: int, actual_bytes: int) -> None:
-        super().__init__(params=PdfTooLargeParams(max_bytes=max_bytes, actual_bytes=actual_bytes))
+    def __init__(self, *, actual_bytes: int, max_bytes: int) -> None:
+        super().__init__(params=PdfTooLargeParams(actual_bytes=actual_bytes, max_bytes=max_bytes))
