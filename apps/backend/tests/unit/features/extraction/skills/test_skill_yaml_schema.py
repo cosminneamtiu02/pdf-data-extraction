@@ -573,6 +573,140 @@ def test_is_empty_object_schema_classifies_draft7_type_variants(
     assert _is_empty_object_schema(schema) is expected
 
 
+@pytest.mark.parametrize(
+    ("schema", "expected"),
+    [
+        pytest.param(
+            {"anyOf": [{"type": "string"}, {"type": "number"}]},
+            ["anyOf"],
+            id="anyOf",
+        ),
+        pytest.param(
+            {"oneOf": [{"type": "string"}, {"type": "object"}]},
+            ["oneOf"],
+            id="oneOf",
+        ),
+        pytest.param(
+            {"allOf": [{"type": "object", "properties": {"x": {"type": "string"}}}]},
+            ["allOf"],
+            id="allOf",
+        ),
+        pytest.param({"$ref": "#/definitions/Foo"}, ["$ref"], id="ref"),
+    ],
+)
+def test_detect_unsupported_composition_root_keys_returns_triggering_keys(
+    schema: dict[str, object],
+    expected: list[str],
+) -> None:
+    """`_detect_unsupported_composition_root_keys` returns the exact keys
+    present so the rejection message names the offending root shape (PR #315
+    review follow-up). Issue #289.
+    """
+    from app.features.extraction.skills.skill_yaml_schema import (
+        _detect_unsupported_composition_root_keys,
+    )
+
+    assert _detect_unsupported_composition_root_keys(schema) == expected
+
+
+def test_detect_unsupported_composition_root_keys_returns_empty_for_plain_object() -> None:
+    """Plain object schemas with explicit `properties` must not be mistaken
+    for composition roots. The helper returns an empty list so callers can
+    treat it as falsy (`if detected: ...`).
+    """
+    from app.features.extraction.skills.skill_yaml_schema import (
+        _detect_unsupported_composition_root_keys,
+    )
+
+    assert (
+        _detect_unsupported_composition_root_keys(
+            {"type": "object", "properties": {"a": {"type": "string"}}}
+        )
+        == []
+    )
+
+
+def test_detect_unsupported_composition_root_keys_returns_empty_for_type_array() -> None:
+    """Array-typed root schemas are NOT composition/$ref roots — they have
+    explicit ``type: array`` semantics that `declared_field_names` ignores
+    elsewhere. The helper should return an empty list for them; the actual
+    array-root rejection (if any) is the concern of `_is_empty_object_schema`
+    or future policy. (PR #315 review: explicit ``type: array`` coverage.)
+    """
+    from app.features.extraction.skills.skill_yaml_schema import (
+        _detect_unsupported_composition_root_keys,
+    )
+
+    assert (
+        _detect_unsupported_composition_root_keys({"type": "array", "items": {"type": "string"}})
+        == []
+    )
+
+
+def test_detect_unsupported_composition_root_keys_fires_on_mixed_properties_plus_allof() -> None:
+    """A schema that mixes top-level `properties` with a composition keyword
+    (e.g. `allOf` for extra constraints) is still rejected under current
+    policy. The extraction engine only reads top-level `properties`, but the
+    author is signaling they want composition semantics that the engine
+    can't honour — failing loud with a named-key error is better than
+    pretending the composition metadata applies. If a future PR teaches
+    the validator to allow the mixed case, this test needs to flip along
+    with the policy. (PR #315 review: mixed-properties-plus-composition
+    coverage.)
+    """
+    from app.features.extraction.skills.skill_yaml_schema import (
+        _detect_unsupported_composition_root_keys,
+    )
+
+    mixed_schema = {
+        "type": "object",
+        "properties": {"a": {"type": "string"}},
+        "allOf": [{"required": ["a"]}],
+    }
+    assert _detect_unsupported_composition_root_keys(mixed_schema) == ["allOf"]
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        pytest.param({"anyOf": [{"type": "object"}, {"type": "object"}]}, id="anyOf"),
+        pytest.param({"oneOf": [{"type": "object"}, {"type": "object"}]}, id="oneOf"),
+        pytest.param(
+            {"allOf": [{"type": "object", "properties": {"x": {"type": "string"}}}]},
+            id="allOf",
+        ),
+        pytest.param({"$ref": "#/definitions/Foo"}, id="ref"),
+    ],
+)
+def test_composition_root_schema_fails_with_clearer_error_not_empty_object(
+    write_skill_yaml: SkillYamlFactory,
+    schema: dict[str, object],
+) -> None:
+    """Composition/$ref-rooted output_schemas must fail load with a specific
+    error that names the root shape and the `declared_field_names` constraint
+    — NOT the generic "must declare at least one entry in 'properties'"
+    message, which was misleading to skill authors using these valid Draft 7
+    root shapes (PR #315 review follow-up).
+    """
+    path = write_skill_yaml(
+        output_schema=schema,
+        examples=[{"input": "x", "output": {}}],
+    )
+
+    with pytest.raises(SkillValidationFailedError) as exc_info:
+        SkillYamlSchema.load_from_file(path)
+
+    reason = _reason(exc_info.value)
+    assert "composition" in reason.lower() or "$ref" in reason
+    assert "declared_field_names" in reason or "top-level 'properties'" in reason
+    # Must NOT fall into the generic "empty object" branch for these roots.
+    assert "at least one entry in 'properties'" not in reason
+    # The rejection message must NAME the offending root key so authors
+    # know exactly which composition/$ref key tripped it (PR #315 review).
+    offending_key = next(k for k in ("anyOf", "oneOf", "allOf", "$ref") if k in schema)
+    assert offending_key in reason
+
+
 def test_output_schema_with_one_property_still_loads_successfully(
     write_skill_yaml: SkillYamlFactory,
 ) -> None:
