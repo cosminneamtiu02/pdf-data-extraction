@@ -77,13 +77,16 @@ class SkillYamlSchema(BaseModel):
             problems.append(
                 f"output_schema uses unsupported root key(s) "
                 f"{detected_composition_keys!r}: composition (anyOf/oneOf/allOf) "
-                f"or $ref at the root is not yet supported for extraction "
-                f"skills. The engine derives field names strictly from "
-                f"top-level 'properties' (see declared_field_names in "
-                f"extraction_engine), so composition-rooted schemas would "
-                f"load successfully but silently produce zero-field "
-                f"extractions at runtime. Declare explicit 'properties' at "
-                f"the root instead. Issue #289."
+                f"or $ref at the root is not yet supported for extraction skills. "
+                f"The engine derives field names strictly from top-level 'properties' "
+                f"(see declared_field_names in extraction_engine), so root-level "
+                f"composition/$ref semantics are not honored during extraction. In "
+                f"composition-only root schemas (no top-level 'properties'), this "
+                f"also yields zero derived fields at runtime; in mixed schemas that "
+                f"include top-level 'properties' alongside composition/$ref, fields "
+                f"are derived from 'properties' but the composition metadata is "
+                f"silently ignored. Declare explicit root 'properties' without "
+                f"relying on root-level composition or $ref. Issue #289."
             )
             raise SkillValidationFailedError(file="", reason="\n".join(problems))
 
@@ -220,9 +223,13 @@ def _detect_unsupported_composition_root_keys(schema: dict[str, Any]) -> list[st
 
     Draft 7 permits these keys as valid schema roots, but the extraction
     engine's ``declared_field_names`` derives fields strictly from top-level
-    ``properties``. A composition-rooted schema would load successfully and
-    then silently produce zero-field extractions at runtime. Reject at load
-    time with a clearer error than the generic "empty object" branch would
+    ``properties`` and does not interpret root-level composition metadata.
+    As a result, a pure composition- or ``$ref``-rooted schema could load
+    successfully and then yield zero derived fields at runtime, while a
+    mixed schema that combines top-level ``properties`` with one of these
+    keywords would still derive fields from ``properties`` but silently
+    ignore the composition semantics. Reject both shapes at load time
+    with a clearer error than the generic "empty object" branch would
     emit (issue #289).
     """
     return [key for key in _UNSUPPORTED_COMPOSITION_KEYS if key in schema]
