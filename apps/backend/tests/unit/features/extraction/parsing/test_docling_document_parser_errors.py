@@ -612,7 +612,9 @@ def test_default_preflight_propagates_value_error_from_open_unchanged(
     instead of ``bytes``). Those are programmer errors in the calling code,
     not malformed PDF bytes, so the preflight must propagate the ``ValueError``
     unchanged rather than wrapping it as ``PdfInvalidError``. At the API
-    boundary this becomes a 500 via the DomainError handler chain.
+    boundary, an unhandled ``ValueError`` is caught by the generic exception
+    handler and surfaces as ``INTERNAL_ERROR`` (500) — it is not a
+    ``DomainError``, so it does not flow through the DomainError handler chain.
 
     Regression guard for #278.
     """
@@ -761,7 +763,10 @@ def test_default_preflight_propagates_value_error_when_file_data_error_missing(
     ``ValueError`` is a programmer-error signal (wrong argument shape); the
     caller has a bug, not the PDF bytes. Reclassifying it as 400 would hide
     real bugs behind a user-facing "malformed PDF" response. At the API
-    boundary the propagated ``ValueError`` becomes a 500. See #278.
+    boundary, an unhandled ``ValueError`` is caught by the generic exception
+    handler and surfaces as ``INTERNAL_ERROR`` (500) — it is not a
+    ``DomainError``, so it does not flow through the DomainError handler chain.
+    See #278.
     """
     fake_mod = _build_fake_pymupdf_module_without_file_data_error()
     _set_open_raises(fake_mod, ValueError("bad stream"))
