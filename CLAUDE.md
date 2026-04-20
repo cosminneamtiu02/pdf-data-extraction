@@ -173,100 +173,75 @@ Excluded: property-based, performance, mutation, snapshot, fuzz beyond Schemathe
 
 ## PR Authoring and Attribution
 
-All human-authored pull requests on this repo must be opened by the
-Copilot-Pro-licensed account (`ioanaecaterinastan-collab`). Only PRs whose
-GitHub-author field is a user with an active Copilot code-review seat
-scoped to this repo trigger the `copilot_code_review` rule on the
-`main-protection` ruleset. PRs opened by `cosminneamtiu02` (a collaborator
-whose personal Copilot Pro does not extend to repos he does not own) do
-NOT get auto-reviewed — verified experimentally on 2026-04-14: PR #19
-(opened as Ioana) received a full Copilot review within 2 minutes; PRs
-#9–#17 (opened as cosmin) did not, even after close+reopen and
-`update-branch` retriggers.
-
-Root-cause context: PR #18 (2026-04-14) deleted a dead
-`copilot-review.yml` workflow after confirming the REST
-`POST /pulls/{n}/requested_reviewers` endpoint silently drops
-`reviewers[]=Copilot` on this repo regardless of caller entitlement.
-The only working path is the ruleset, which binds on `opened` /
-`reopened` events and only fires when the PR author is entitlement-eligible.
+All pull requests on this repo are opened by `cosminneamtiu02`. This
+deliberately gives up Copilot auto-review: the `copilot_code_review`
+rule on the `main-protection` ruleset only fires for PR authors with an
+active Copilot code-review seat scoped to this repo, and cosmin's
+personal Copilot Pro does not extend to repos he does not own. Reviews
+now come from human reviewers or explicit reviewer assignment, not the
+ruleset. (Switched 2026-04-20 from an earlier Ioana-as-author routing.)
 
 ### Before `gh pr create` on this repo
 
 1. Run `gh api /user --jq .login` and verify the output is
-   `ioanaecaterinastan-collab`. If it is anything else, run
-   `gh auth switch --user ioanaecaterinastan-collab` and re-verify.
-2. If the Ioana account is not yet authenticated in gh CLI, run
-   `gh auth login --hostname github.com` as Ioana once; gh will store
-   both identities and `gh auth switch` will flip between them.
+   `cosminneamtiu02`. If it is anything else, run
+   `gh auth switch --user cosminneamtiu02` and re-verify.
+2. If the PR touches `.github/workflows/**`, the cosmin gh token must
+   carry the `workflow` scope or the push is rejected server-side. One-
+   time refresh: `gh auth refresh -s workflow -h github.com -u cosminneamtiu02`.
 3. Do NOT switch mid-session on unrelated projects — `gh auth switch`
    flips the global gh identity for every shell on this machine. Commit
    to the switch for the duration of work on this repo.
 4. VSCode's "GitHub" extension (Source Control sidebar, PR panel) uses a
    separate auth context from the gh CLI. If PR creation goes through
    the extension, sign out of it via VSCode → Accounts → Sign out and
-   sign in as Ioana. If PR creation goes through gh in the terminal,
+   sign in as cosmin. If PR creation goes through gh in the terminal,
    the VSCode extension's identity is irrelevant.
 
-### Contribution credit for cosmin (via global git config)
+### Git author identity
 
-Cosmin's contribution-graph credit on Ioana-authored PRs flows through
-the `Co-authored-by:` trailer that GitHub **auto-extracts** from each
-branch commit's `author` field at squash-merge time. The load-bearing
-step is the git **global** (per-user) config, set once per machine:
+Global git config pins the commit author to cosmin's verified no-reply email:
 
 ```
 git config --global user.email "91669989+cosminneamtiu02@users.noreply.github.com"
 git config --global user.name  "cosminneamtiu02"
 ```
 
-This is `--global`, not `--local` — in git terminology `--local` means
-per-repository (stored in `.git/config`), `--global` means per-user
-(stored in `~/.gitconfig`). The `--global` choice is deliberate: it
-applies to every worktree on this machine and every parallel Claude
-session, which is what we want for this project. Cross-repo side
-effect: it also becomes the default identity for commits on any other
-repo on this machine. If you also work on repos where that's
-undesirable, override per-repo with `git config user.email ...` (no
-`--global`) inside those repos.
-
 User ID `91669989` was fetched from `/users/cosminneamtiu02`. The
-`<user-id>+<login>@users.noreply.github.com` form is the recommended
-reliable choice because GitHub auto-provisions it for every account
-and it never requires user action to verify. GitHub also resolves
-trailer-based contribution credit using **any** other email verified
-on the credited account (via Settings → Emails), so a personal
-verified email would also work — the no-reply form is simply the one
-we can rely on without out-of-band setup.
+`<user-id>+<login>@users.noreply.github.com` form is auto-provisioned by
+GitHub for every account and never requires user action to verify —
+required so GitHub resolves the commit author to the cosmin account.
 
-With that config set, every commit's `author` field is
-`cosminneamtiu02 <91669989+cosminneamtiu02@users.noreply.github.com>`,
-and when Ioana squash-merges a PR on this repo, GitHub auto-appends a
-`Co-authored-by: cosminneamtiu02 <91669989+...>` trailer to the squash
-commit message, matching the verified email → contribution graph
-credits cosmin.
+`--global` is deliberate: it applies to every worktree on this machine
+and every parallel Claude session, which is what we want for this
+project. Cross-repo side effect: it also becomes the default identity
+for commits on any other repo on this machine. If you also work on
+repos where that's undesirable, override per-repo with
+`git config user.email ...` (no `--global`) inside those repos.
 
-Do NOT write manual `Co-authored-by:` trailers in commit messages or
-PR body text on this repo. They are redundant with the auto-extracted
-trailer and, worse, long trailer lines get line-wrapped during the
+Since cosmin is the direct PR author, no `Co-authored-by: cosminneamtiu02`
+trailer is needed — GitHub credits the PR author directly.
+
+Do NOT write manual `Co-authored-by:` trailers in commit messages or PR
+body text on this repo. Long trailer lines get line-wrapped during the
 PR-body-to-squash-commit transformation (observed on PR #20: an 89-char
-trailer broke across two lines and became unparseable). The auto-
-extraction path is robust; the manual path is fragile. (Git's trailer
-parser is case-insensitive, so `Co-Authored-By:` and `Co-authored-by:`
-are functionally identical — the prohibition applies to both forms.
-The lowercase form is git's canonical convention.)
+trailer broke across two lines and became unparseable). The git-config
+author path is robust; the manual trailer path is fragile.
 
-The Claude AI-attribution trailer (`Co-authored-by: Claude Opus 4.6 (1M
-context) <noreply@anthropic.com>`) is separate and optional — Anthropic
-has no GitHub account to credit, so it serves only as transparency
-about AI-assisted commits. Omit it if it would wrap a trailer line.
+The Claude AI-attribution trailer (`Co-authored-by: Claude Opus 4.7 (1M
+context) <noreply@anthropic.com>`) is optional — Anthropic has no GitHub
+account to credit, so it serves only as transparency about AI-assisted
+commits. Omit it if it would wrap a trailer line.
 
-### At squash-merge time
+### Historical context
 
-Do NOT delete the auto-extracted `Co-authored-by:` trailer from the
-squash-merge message box. If the commit that lands on `main` does not
-carry it, cosmin's contribution-graph credit for that PR is lost and
-cannot be retroactively added.
+- **2026-04-14:** PR routing originally went through `ioanaecaterinastan-collab`
+  to trigger Copilot auto-review (PR #19 validated — review in ~2 minutes;
+  PRs #9–#17 as cosmin got no review). Cosmin's contribution credit on
+  those Ioana-authored PRs flowed through an auto-extracted
+  `Co-authored-by:` squash trailer from the branch-commit author field.
+- **2026-04-20:** routing switched to cosmin as direct author. Copilot
+  auto-review accepted as lost; no `Co-authored-by:` trailer needed.
 
 ## Dependabot
 
