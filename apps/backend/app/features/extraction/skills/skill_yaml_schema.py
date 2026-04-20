@@ -74,19 +74,30 @@ class SkillYamlSchema(BaseModel):
 
         detected_composition_keys = _detect_unsupported_composition_root_keys(self.output_schema)
         if detected_composition_keys:
+            # Render the supported-keyword set directly from the constant so
+            # adding/removing an entry in ``_UNSUPPORTED_COMPOSITION_KEYS``
+            # automatically keeps the user-facing error message in sync
+            # (PR #315 review follow-up — previously hard-coded as
+            # "(anyOf/oneOf/allOf)" which could drift from the constant).
+            unsupported_keyword_list = "/".join(_UNSUPPORTED_COMPOSITION_KEYS)
+            detected_keyword_list = "/".join(detected_composition_keys)
             problems.append(
                 f"output_schema uses unsupported root key(s) "
-                f"{detected_composition_keys!r}: composition (anyOf/oneOf/allOf) "
-                f"or $ref at the root is not yet supported for extraction skills. "
-                f"The engine derives field names strictly from top-level 'properties' "
-                f"(see declared_field_names in extraction_engine), so root-level "
-                f"composition/$ref semantics are not honored during extraction. In "
-                f"composition-only root schemas (no top-level 'properties'), this "
-                f"also yields zero derived fields at runtime; in mixed schemas that "
-                f"include top-level 'properties' alongside composition/$ref, fields "
-                f"are derived from 'properties' but the composition metadata is "
-                f"silently ignored. Declare explicit root 'properties' without "
-                f"relying on root-level composition or $ref. Issue #289."
+                f"{detected_composition_keys!r}: root-level unsupported "
+                f"keywords ({unsupported_keyword_list}) are not yet "
+                f"supported for extraction skills; this schema triggered "
+                f"the guard via ({detected_keyword_list}). The engine "
+                f"derives field names strictly from top-level 'properties' "
+                f"(see declared_field_names in extraction_engine), so "
+                f"root-level composition/$ref semantics are not honored "
+                f"during extraction. In composition-only root schemas "
+                f"(no top-level 'properties'), this also yields zero "
+                f"derived fields at runtime; in mixed schemas that include "
+                f"top-level 'properties' alongside composition/$ref, "
+                f"fields are derived from 'properties' but the composition "
+                f"metadata is silently ignored. Declare explicit root "
+                f"'properties' without relying on root-level composition "
+                f"or $ref. Issue #289."
             )
             raise SkillValidationFailedError(file="", reason="\n".join(problems))
 
