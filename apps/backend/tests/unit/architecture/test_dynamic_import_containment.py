@@ -138,11 +138,10 @@ def _importlib_aliases_from_module(tree: ast.Module) -> frozenset[str]:
     PR #310 review follow-up: tracking aliased bindings is load-bearing
     because ``import importlib as il; il.util.find_spec("pkg")`` was a
     silent bypass of the containment gate under the literal-match-only
-    logic. An ``import importlib.util as u`` alias binds ``u`` to the
-    submodule (not to ``importlib``), so it is intentionally ignored
-    here — the submodule alias does not give access to
-    ``u.util.find_spec`` (it would be ``u.find_spec`` directly, which
-    currently does not have a containment-detection pattern).
+    logic. ``import importlib.util as u`` is handled separately in
+    `_importlib_util_aliases_from_module` below because it binds ``u``
+    to the SUBMODULE (``u.find_spec(...)``), not to ``importlib``
+    (``u.util.find_spec(...)``).
     """
     aliases: set[str] = set()
     for node in tree.body:
@@ -155,8 +154,40 @@ def _importlib_aliases_from_module(tree: ast.Module) -> frozenset[str]:
                 # `import importlib.util` (no alias) binds `importlib` at
                 # module scope. `import importlib.util as u` binds `u`
                 # to the submodule, not to `importlib`, so skip when an
-                # asname is present.
+                # asname is present — that case is handled separately
+                # by `_importlib_util_aliases_from_module`.
                 aliases.add("importlib")
+    return frozenset(aliases)
+
+
+def _importlib_util_aliases_from_module(tree: ast.Module) -> frozenset[str]:
+    """Return local names bound DIRECTLY to the ``importlib.util`` submodule.
+
+    Scans only ``tree.body`` for ``import importlib.util as <alias>`` or
+    ``from importlib import util as <alias>``. The resulting aliases are
+    bound to the ``util`` submodule, so ``<alias>.find_spec(...)`` is the
+    availability probe — a one-shorter attribute chain than the
+    ``<importlib-alias>.util.find_spec(...)`` form handled by
+    `_is_importlib_util_find_spec_attribute`.
+
+    PR #310 review follow-up: ``import importlib.util as u; u.find_spec(
+    "pkg")`` was still a silent bypass after the first alias-tracking
+    pass, because the submodule alias never bound ``importlib`` and the
+    call shape is ``<name>.find_spec(...)``, not the three-segment
+    chain. This helper closes that hole.
+    """
+    aliases: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "importlib.util" and alias.asname is not None:
+                    aliases.add(alias.asname)
+        elif isinstance(node, ast.ImportFrom):
+            if node.module != "importlib" or node.level != 0:
+                continue
+            for alias in node.names:
+                if alias.name == "util":
+                    aliases.add(alias.asname if alias.asname is not None else "util")
     return frozenset(aliases)
 
 
@@ -258,6 +289,7 @@ def _collect_dynamic_import_targets(source: str) -> set[str]:
     """
     tree = ast.parse(source)
     importlib_aliases = _importlib_aliases_from_module(tree)
+    importlib_util_aliases = _importlib_util_aliases_from_module(tree)
     find_spec_local_bindings = _find_spec_bindings_from_importlib_util(tree)
     targets: set[str] = set()
     for node in ast.walk(tree):
@@ -267,6 +299,7 @@ def _collect_dynamic_import_targets(source: str) -> set[str]:
         if not _call_is_dynamic_import(
             func,
             importlib_aliases=importlib_aliases,
+            importlib_util_aliases=importlib_util_aliases,
             find_spec_local_bindings=find_spec_local_bindings,
         ):
             continue
@@ -282,6 +315,7 @@ def _call_is_dynamic_import(
     func: ast.expr,
     *,
     importlib_aliases: frozenset[str],
+    importlib_util_aliases: frozenset[str],
     find_spec_local_bindings: frozenset[str],
 ) -> bool:
     """Return True iff ``func`` names one of the tracked dynamic-import callables.
@@ -293,21 +327,27 @@ def _call_is_dynamic_import(
       ``importlib.import_module`` is by far the dominant use and a false
       positive is harmless for containment purposes — any string-literal
       argument is still gated by the per-package allowlist),
-    * the attribute chain ``<alias>.util.find_spec(...)`` where
-      ``<alias>`` is any local name bound to the ``importlib`` package
-      (PR #310 review follow-up: ``import importlib as il; il.util.
-      find_spec(...)`` is now recognised),
+    * the 3-segment chain ``<alias>.util.find_spec(...)`` where
+      ``<alias>`` is any local name bound to the ``importlib`` package,
+    * the 2-segment chain ``<util-alias>.find_spec(...)`` where
+      ``<util-alias>`` is any local name bound directly to the
+      ``importlib.util`` submodule (PR #310 review follow-up:
+      ``import importlib.util as u; u.find_spec(...)`` and
+      ``from importlib import util; util.find_spec(...)`` are now
+      recognised),
     * bare ``import_module(...)`` or ``__import__(...)`` calls, and
     * bare ``<name>(...)`` calls where ``<name>`` is any module-scope
       binding of ``importlib.util.find_spec`` — covers the canonical
       ``from importlib.util import find_spec`` AND the aliased
-      ``from importlib.util import find_spec as fs`` form (PR #310
-      review follow-up: the aliased form was previously a bypass).
+      ``from importlib.util import find_spec as fs`` form.
     """
     if isinstance(func, ast.Attribute):
         if func.attr == "import_module":
             return True
-        return _is_importlib_util_find_spec_attribute(func, importlib_aliases=importlib_aliases)
+        if _is_importlib_util_find_spec_attribute(func, importlib_aliases=importlib_aliases):
+            return True
+        if func.attr == "find_spec" and isinstance(func.value, ast.Name):
+            return func.value.id in importlib_util_aliases
     if isinstance(func, ast.Name):
         if func.id in {"import_module", "__import__"}:
             return True
@@ -727,6 +767,36 @@ def test_collect_dynamic_import_targets_records_aliased_from_import_find_spec() 
     matching bare calls to any of those names closes the hole.
     """
     source = 'from importlib.util import find_spec as fs\nfs("langextract")\n'
+    targets = _collect_dynamic_import_targets(source)
+    assert "langextract" in targets
+
+
+def test_collect_dynamic_import_targets_records_importlib_util_alias_find_spec() -> None:
+    """``import importlib.util as u; u.find_spec(...)`` must be detected.
+
+    PR #310 review follow-up: the first-pass alias-tracking only handled
+    root ``importlib`` aliases (matching the 3-segment
+    ``<alias>.util.find_spec`` chain). Binding the SUBMODULE directly
+    (``import importlib.util as u``) produces a shorter 2-segment call
+    (``u.find_spec(...)``) that the first-pass logic missed. The helper
+    `_importlib_util_aliases_from_module` collects those submodule
+    aliases and the matcher now checks them against 2-segment attribute
+    calls.
+    """
+    source = 'import importlib.util as u\nu.find_spec("langextract")\n'
+    targets = _collect_dynamic_import_targets(source)
+    assert "langextract" in targets
+
+
+def test_collect_dynamic_import_targets_records_from_importlib_import_util_find_spec() -> None:
+    """``from importlib import util; util.find_spec(...)`` must be detected.
+
+    Same 2-segment shape as the ``import importlib.util as u`` case,
+    but reached via ``ImportFrom``. The helper collects both. The
+    canonical local name ``util`` is covered; aliased forms
+    (``from importlib import util as u``) are also picked up.
+    """
+    source = 'from importlib import util\nutil.find_spec("langextract")\n'
     targets = _collect_dynamic_import_targets(source)
     assert "langextract" in targets
 
