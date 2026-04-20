@@ -9,6 +9,7 @@ and future monorepo layout changes (PR #312 review follow-up).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -235,28 +236,32 @@ def test_run_check_reports_drift_when_live_python_has_extra_file(
     )
 
 
+def _mutate_ts_content(ts: Path, keys: Path) -> None:
+    del keys  # unused; lambda-equivalent takes both for uniform signature
+    ts.write_text("// stale\n")
+
+
+def _mutate_keys_content(ts: Path, keys: Path) -> None:
+    del ts  # unused; lambda-equivalent takes both for uniform signature
+    keys.write_text("{}\n")
+
+
 @pytest.mark.parametrize(
     "mutator",
     [
-        pytest.param(
-            lambda ts, keys: ts.write_text("// stale\n"),
-            id="ts_content_drift",
-        ),
-        pytest.param(
-            lambda ts, keys: keys.write_text("{}\n"),
-            id="keys_content_drift",
-        ),
+        pytest.param(_mutate_ts_content, id="ts_content_drift"),
+        pytest.param(_mutate_keys_content, id="keys_content_drift"),
     ],
 )
-def test_run_check_flags_per_artifact_drift(tmp_path: Path, mutator: object) -> None:
+def test_run_check_flags_per_artifact_drift(
+    tmp_path: Path, mutator: Callable[[Path, Path], None]
+) -> None:
     errors_yaml = _write_errors_yaml(tmp_path)
     live_python = tmp_path / "live_py"
     live_ts = tmp_path / "live.ts"
     live_keys = tmp_path / "live_keys.json"
     _generate_live_tree(errors_yaml, live_python, live_ts, live_keys)
 
-    # Cast indirection: mutator is callable(Path, Path) -> None; `object`
-    # annotation keeps pyright strict happy without importing Callable.
-    mutator(live_ts, live_keys)  # type: ignore[operator]
+    mutator(live_ts, live_keys)
     drift = run_check(errors_yaml, live_python, live_ts, live_keys)
     assert drift, "expected drift to be detected"
