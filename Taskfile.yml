@@ -1,8 +1,28 @@
 version: "3"
 
+# Per-task deadlines (issue #357).
+#
+# go-task's schema has no per-task `timeout:` attribute as of v3.49
+# (https://taskfile.dev/docs/reference/schema), so every long-running
+# task wraps its real command through `infra/taskfile/with_timeout.py`
+# with a wall-clock deadline. A hung pytest, uv sync, or docker build
+# will SIGTERM (then SIGKILL) at the declared deadline and return
+# exit 124 (matching GNU timeout(1) convention), instead of stalling
+# `task check` indefinitely. Meta-tests in
+# apps/backend/tests/unit/meta/test_taskfile_hygiene.py pin the
+# invariant that every task in the TASKS_REQUIRING_TIMEOUT allowlist
+# carries a timeout wrapper on every shell command.
+#
+# Codegen tasks (errors:generate) declare `sources:` + `generates:`
+# so Task can checksum the inputs and skip a no-op re-run when
+# nothing has changed. `errors:check` runs the read-only `scripts.check`
+# driver (generates into a temp dir and diffs), NOT `errors:generate` —
+# per issue #291 the check must never mutate the working tree.
+
 vars:
   BACKEND_DIR: apps/backend
   COMPOSE_FILE: infra/compose/docker-compose.yml
+  TIMEOUT_WRAPPER: "{{.ROOT_DIR}}/infra/taskfile/with_timeout.py"
 
 tasks:
   # ── Development ──────────────────────────────────────────────
@@ -43,14 +63,26 @@ tasks:
   check:types:
     desc: Run the type checker
     cmds:
-      - cd {{.BACKEND_DIR}} && uv run pyright app/ scripts/ tests/
-      - cd packages/error-contracts && uv run pyright
+      - task: check:types:backend
+      - task: check:types:error-contracts
+
+  check:types:backend:
+    desc: Type-check the backend (pyright strict)
+    dir: "{{.BACKEND_DIR}}"
+    cmds:
+      - python3 {{.TIMEOUT_WRAPPER}} 300 -- uv run pyright app/ scripts/ tests/
+
+  check:types:error-contracts:
+    desc: Type-check the error-contracts package (pyright strict)
+    dir: packages/error-contracts
+    cmds:
+      - python3 {{.TIMEOUT_WRAPPER}} 300 -- uv run pyright
 
   check:arch:
     desc: Run import-linter architecture checks
     dir: "{{.BACKEND_DIR}}"
     cmds:
-      - uv run lint-imports --config architecture/import-linter-contracts.ini
+      - python3 {{.TIMEOUT_WRAPPER}} 120 -- uv run lint-imports --config architecture/import-linter-contracts.ini
 
   check:test:
     desc: Run unit, integration, and contract tests
@@ -77,32 +109,32 @@ tasks:
     desc: Run unit tests
     dir: "{{.BACKEND_DIR}}"
     cmds:
-      - uv run pytest tests/unit/ -v
+      - python3 {{.TIMEOUT_WRAPPER}} 300 -- uv run pytest tests/unit/ -v
 
   test:integration:
     desc: Run integration tests (in-process ASGI; no external services)
     dir: "{{.BACKEND_DIR}}"
     cmds:
-      - uv run pytest tests/integration/ -v -m "not slow"
+      - python3 {{.TIMEOUT_WRAPPER}} 600 -- uv run pytest tests/integration/ -v -m "not slow"
 
   test:slow:
     desc: Run integration tests marked slow (real Docling, real Ollama). Opt-in.
     dir: "{{.BACKEND_DIR}}"
     cmds:
-      - uv run pytest tests/integration/ -v -m slow
+      - python3 {{.TIMEOUT_WRAPPER}} 1800 -- uv run pytest tests/integration/ -v -m slow
 
   test:contract:
     desc: Run contract tests against the OpenAPI spec
     dir: "{{.BACKEND_DIR}}"
     cmds:
-      - uv run pytest tests/contract/ -v
+      - python3 {{.TIMEOUT_WRAPPER}} 300 -- uv run pytest tests/contract/ -v
 
   # ── Linting & Formatting ─────────────────────────────────────
   lint:
     desc: Run ruff (format checking lives in `format:check`; architecture in `check:arch`)
     dir: "{{.BACKEND_DIR}}"
     cmds:
-      - uv run ruff check .
+      - python3 {{.TIMEOUT_WRAPPER}} 120 -- uv run ruff check .
 
   format:
     desc: Run the formatter
@@ -114,7 +146,7 @@ tasks:
     desc: Verify formatting without rewriting files (CI parity with ruff format --check)
     dir: "{{.BACKEND_DIR}}"
     cmds:
-      - uv run ruff format --check .
+      - python3 {{.TIMEOUT_WRAPPER}} 120 -- uv run ruff format --check .
 
   # ── Skills ───────────────────────────────────────────────────
   skills:validate:
@@ -124,7 +156,7 @@ tasks:
       SKILLS_DIR: '{{.SKILLS_DIR | default ""}}'
     cmds:
       # Quote SKILLS_DIR so paths containing spaces survive shell tokenization.
-      - uv run python -m scripts.validate_skills{{if .SKILLS_DIR}} "{{.SKILLS_DIR}}"{{end}}
+      - python3 {{.TIMEOUT_WRAPPER}} 120 -- uv run python -m scripts.validate_skills{{if .SKILLS_DIR}} "{{.SKILLS_DIR}}"{{end}}
 
   # ── Benchmarking ─────────────────────────────────────────────
   bench:serve:
@@ -160,26 +192,39 @@ tasks:
     desc: Verify generated error contracts are in sync with errors.yaml (read-only, fails on drift)
     dir: packages/error-contracts
     cmds:
-      - uv run --with pyyaml python -m scripts.check
+      - python3 {{.TIMEOUT_WRAPPER}} 60 -- uv run --with pyyaml python -m scripts.check
 
   errors:generate:
     desc: Generate error classes from errors.yaml
     dir: packages/error-contracts
+    # sources/generates let Task checksum the inputs and skip a no-op
+    # re-run when nothing has changed (go-task's incremental-build
+    # contract). Editing errors.yaml invalidates the checksum and
+    # forces regeneration; untouched runs short-circuit with an
+    # "up-to-date" message. Issue #357.
+    sources:
+      - errors.yaml
+      - scripts/generate.py
+      - scripts/_duplicate_key_safe_loader.py
+    generates:
+      - ../../apps/backend/app/exceptions/_generated/*.py
+      - src/generated.ts
+      - src/required-keys.json
     cmds:
       - |
-        uv run --with pyyaml python -c "from pathlib import Path; from scripts.generate import generate_python, generate_typescript, generate_required_keys; p = Path('errors.yaml'); generate_python(p, Path('../../apps/backend/app/exceptions/_generated')); generate_typescript(p, Path('src/generated.ts')); generate_required_keys(p, Path('src/required-keys.json')); print('Generated all error contract files')"
+        python3 {{.TIMEOUT_WRAPPER}} 120 -- uv run --with pyyaml python -c "from pathlib import Path; from scripts.generate import generate_python, generate_typescript, generate_required_keys; p = Path('errors.yaml'); generate_python(p, Path('../../apps/backend/app/exceptions/_generated')); generate_typescript(p, Path('src/generated.ts')); generate_required_keys(p, Path('src/required-keys.json')); print('Generated all error contract files')"
 
   errors:test:
     desc: Run error-contracts package tests (codegen + validator); CI parity with .github/workflows/ci.yml error-contracts job
     dir: packages/error-contracts
     cmds:
-      - uv run --with pytest --with pyyaml pytest tests/ -v
+      - python3 {{.TIMEOUT_WRAPPER}} 300 -- uv run --with pytest --with pyyaml pytest tests/ -v
 
   # ── Docker ───────────────────────────────────────────────────
   docker:build:
     desc: Build the backend Docker image
     cmds:
-      - docker build -f infra/docker/backend.Dockerfile -t pdfx-backend .
+      - python3 {{.TIMEOUT_WRAPPER}} 600 -- docker build -f infra/docker/backend.Dockerfile -t pdfx-backend .
 
   docker:up:
     desc: Start docker-compose stack
