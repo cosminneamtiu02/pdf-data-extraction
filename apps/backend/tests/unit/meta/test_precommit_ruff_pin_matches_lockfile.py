@@ -49,7 +49,14 @@ def _precommit_ruff_rev() -> str:
             f"(got {type(data).__name__}); pre-commit config schema may have changed."
         )
         raise AssertionError(msg)  # noqa: TRY004
-    for repo in data.get("repos", []):
+    repos = data.get("repos", [])
+    if not isinstance(repos, list):
+        msg = (
+            f"{_PRECOMMIT_PATH} top-level 'repos' is {type(repos).__name__!r} "
+            f"(expected list); pre-commit config schema may have changed."
+        )
+        raise AssertionError(msg)  # noqa: TRY004
+    for repo in repos:
         if not isinstance(repo, dict):
             continue
         repo_url = repo.get("repo")
@@ -69,7 +76,14 @@ def _precommit_ruff_rev() -> str:
 
 def _uv_lock_ruff_version() -> str:
     data = tomllib.loads(_UV_LOCK_PATH.read_text(encoding="utf-8"))
-    for package in data.get("package", []):
+    packages = data.get("package", [])
+    if not isinstance(packages, list):
+        msg = (
+            f"{_UV_LOCK_PATH} top-level 'package' is {type(packages).__name__!r} "
+            f"(expected list); uv.lock schema may have changed."
+        )
+        raise AssertionError(msg)  # noqa: TRY004
+    for package in packages:
         if not isinstance(package, dict):
             continue
         if package.get("name") != _RUFF_PACKAGE_NAME:
