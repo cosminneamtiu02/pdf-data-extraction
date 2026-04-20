@@ -97,6 +97,17 @@ jobs:
   error-contracts:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Job-level concurrency group (issue #410). The workflow-level group
+    # (`${{ github.workflow }}-${{ github.ref }}`) cancels BOTH jobs when a
+    # second push arrives on the same ref. That leaves PRs in a "workflow
+    # cancelled" state where required status checks show as missing, and
+    # `gh pr merge --auto` waits forever. Scoping error-contracts to its
+    # own group means its short ~1 min window is isolated from the long
+    # backend-checks job: a second push only cancels the stale
+    # error-contracts run, not the full workflow.
+    concurrency:
+      group: ci-error-contracts-${{ github.ref }}
+      cancel-in-progress: true
     defaults:
       run:
         working-directory: packages/error-contracts
