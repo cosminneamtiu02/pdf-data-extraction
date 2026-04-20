@@ -72,6 +72,35 @@ class SkillYamlSchema(BaseModel):
             # known path; inner-validator raises never escape unwrapped.
             raise SkillValidationFailedError(file="", reason="\n".join(problems)) from exc
 
+        detected_composition_keys = _detect_unsupported_composition_root_keys(self.output_schema)
+        if detected_composition_keys:
+            # Render the unsupported-keyword set directly from the constant
+            # so adding/removing an entry in ``_UNSUPPORTED_COMPOSITION_KEYS``
+            # automatically keeps the user-facing error message in sync
+            # (PR #315 review follow-up — previously hard-coded as
+            # "(anyOf/oneOf/allOf)" which could drift from the constant).
+            unsupported_keyword_list = "/".join(_UNSUPPORTED_COMPOSITION_KEYS)
+            detected_keyword_list = "/".join(detected_composition_keys)
+            problems.append(
+                f"output_schema uses unsupported root key(s) "
+                f"{detected_composition_keys!r}: root-level unsupported "
+                f"keywords ({unsupported_keyword_list}) are not yet "
+                f"supported for extraction skills; this schema triggered "
+                f"the guard via ({detected_keyword_list}). The engine "
+                f"derives field names strictly from top-level 'properties' "
+                f"(see declared_field_names in extraction_engine), so "
+                f"root-level composition/$ref semantics are not honored "
+                f"during extraction. In composition-only root schemas "
+                f"(no top-level 'properties'), this also yields zero "
+                f"derived fields at runtime; in mixed schemas that include "
+                f"top-level 'properties' alongside composition/$ref, "
+                f"fields are derived from 'properties' but the composition "
+                f"metadata is silently ignored. Declare explicit root "
+                f"'properties' without relying on root-level composition "
+                f"or $ref. Issue #289."
+            )
+            raise SkillValidationFailedError(file="", reason="\n".join(problems))
+
         if _is_empty_object_schema(self.output_schema):
             problems.append(
                 "output_schema must declare at least one entry in 'properties' "
@@ -192,6 +221,31 @@ def _format_pydantic_errors(exc: ValidationError) -> str:
     return "; ".join(parts)
 
 
+_UNSUPPORTED_COMPOSITION_KEYS: tuple[str, ...] = ("anyOf", "oneOf", "allOf", "$ref")
+
+
+def _detect_unsupported_composition_root_keys(schema: dict[str, Any]) -> list[str]:
+    """Return the list of unsupported composition/$ref keys present at the schema root.
+
+    Returns an empty list if none are present (truthy check at call sites
+    doubles as "uses unsupported root shape"). The returned list preserves
+    the declaration order in ``_UNSUPPORTED_COMPOSITION_KEYS`` so error
+    messages are deterministic.
+
+    Draft 7 permits these keys as valid schema roots, but the extraction
+    engine's ``declared_field_names`` derives fields strictly from top-level
+    ``properties`` and does not interpret root-level composition metadata.
+    As a result, a pure composition- or ``$ref``-rooted schema could load
+    successfully and then yield zero derived fields at runtime, while a
+    mixed schema that combines top-level ``properties`` with one of these
+    keywords would still derive fields from ``properties`` but silently
+    ignore the composition semantics. Reject both shapes at load time
+    with a clearer error than the generic "empty object" branch would
+    emit (issue #289).
+    """
+    return [key for key in _UNSUPPORTED_COMPOSITION_KEYS if key in schema]
+
+
 def _is_empty_object_schema(schema: dict[str, Any]) -> bool:
     """Return True when `schema` permits object output but declares zero properties.
 
@@ -211,6 +265,11 @@ def _is_empty_object_schema(schema: dict[str, Any]) -> bool:
     Schemas whose `type` does not permit `object` (e.g. `{"type": "string"}`,
     `{"type": ["string", "null"]}`) are outside the scope of this invariant —
     they would fail elsewhere if ever used for an extraction skill.
+
+    Composition (`anyOf`/`oneOf`/`allOf`) and `$ref` roots are rejected
+    by a separate guard in the model validator because the extraction
+    engine only knows how to derive field names from top-level
+    `properties`. See `_detect_unsupported_composition_root_keys`.
     """
     declared_type = schema.get("type")
     if declared_type is None:
