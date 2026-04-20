@@ -4,6 +4,15 @@ These tests exercise the benchmark script's real HTTP client path against a
 FastAPI app with ``ExtractionService`` stubbed via ``dependency_overrides``.
 The app is served on a background thread so the benchmark makes real TCP
 connections (not in-process ASGI transport).
+
+Marked ``slow`` (module-level ``pytestmark``) because each test spins up a
+real ``uvicorn`` server on a background thread with a 10-second startup
+timeout. CLAUDE.md's explicit <10s budget applies to the *unit test suite*
+(``Testing Rules`` -> Unit), not to ``task check`` as a whole; these tests
+still need to stay out of the fast loop so they live under the ``slow``
+marker and are excluded from ``task check`` via the ``-m "not slow"`` filter
+(issue #283). Run them explicitly with
+``uv run pytest -m slow tests/integration/scripts/``.
 """
 
 from __future__ import annotations
@@ -14,6 +23,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
 
+import pytest
 import uvicorn
 import yaml
 
@@ -29,6 +39,8 @@ from app.features.extraction.schemas.field_status import FieldStatus
 from app.features.extraction.service import ExtractionService
 from app.main import create_app
 from scripts.benchmark import main as bench_main
+
+pytestmark = pytest.mark.slow
 
 _FAKE_PDF_BYTES = b"%PDF-1.4 fake annotated content for benchmark tests"
 
