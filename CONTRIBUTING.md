@@ -3,18 +3,18 @@
 ## Getting Started
 
 1. Clone the repository
-2. Install prerequisites: Python 3.13, Node 22, pnpm 10, Docker
-3. Run `task dev` to start the full stack
+2. Install prerequisites: Python 3.13, [uv](https://docs.astral.sh/uv/), Docker
+3. Run `task dev` to start the backend stack
 
 ## Development Setup
 
-See [docs/architecture.md](docs/architecture.md) for the system architecture
-and [docs/conventions.md](docs/conventions.md) for coding conventions.
+See [docs/architecture.md](docs/architecture.md) for the system architecture,
+[docs/conventions.md](docs/conventions.md) for coding conventions, and
+[docs/runbook.md](docs/runbook.md) for day-to-day operations.
 
 ## Code Style
 
 - **Python**: Ruff (ALL rules), Pyright strict
-- **TypeScript**: Biome, tsc strict
 - **Commits**: [Conventional Commits](https://www.conventionalcommits.org/)
 
 ## Pull Request Process
