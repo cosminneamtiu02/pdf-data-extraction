@@ -157,10 +157,10 @@ tasks:
 
   # ── Code Generation ──────────────────────────────────────────
   errors:check:
-    desc: Verify generated error contracts are in sync with errors.yaml (fails on drift)
+    desc: Verify generated error contracts are in sync with errors.yaml (read-only, fails on drift)
+    dir: packages/error-contracts
     cmds:
-      - task: errors:generate
-      - git diff --exit-code -- apps/backend/app/exceptions/_generated packages/error-contracts/src/generated.ts packages/error-contracts/src/required-keys.json
+      - uv run --with pyyaml python -m scripts.check
 
   errors:generate:
     desc: Generate error classes from errors.yaml
