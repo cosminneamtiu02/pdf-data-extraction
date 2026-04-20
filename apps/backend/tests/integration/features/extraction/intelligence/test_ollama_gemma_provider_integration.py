@@ -252,18 +252,19 @@ def local_ollama_stub() -> Iterator[str]:
 
 
 def _build_stub_provider(base_url: str, *, max_retries: int = 3) -> OllamaGemmaProvider:
-    """Build a provider pointed at the local TCP stub with a short timeout."""
+    """Build a provider pointed at the local TCP stub with a short timeout.
+
+    Delegates validator/provider wiring to ``_build_provider`` so there is a
+    single source of truth for the provider construction — only the
+    stub-specific ``Settings`` fields are owned here.
+    """
     settings = Settings(  # type: ignore[reportCallIssue]  # pydantic-settings loads fields from env
         ollama_base_url=base_url,
         ollama_model="gemma4:e2b",
         ollama_timeout_seconds=5.0,
         structured_output_max_retries=max_retries,
     )
-    validator = StructuredOutputValidator(
-        settings=settings,
-        correction_prompt_builder=CorrectionPromptBuilder(),
-    )
-    return OllamaGemmaProvider(settings=settings, validator=validator)
+    return _build_provider(settings)
 
 
 _EXTRACTIONS_SCHEMA: dict[str, Any] = {
