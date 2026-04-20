@@ -703,7 +703,7 @@ def test_composition_root_schema_fails_with_clearer_error_not_empty_object(
     assert "at least one entry in 'properties'" not in reason
     # The rejection message must NAME the offending root key so authors
     # know exactly which composition/$ref key tripped it (PR #315 review).
-    offending_key = next(iter(k for k in ("anyOf", "oneOf", "allOf", "$ref") if k in schema))
+    offending_key = next(k for k in ("anyOf", "oneOf", "allOf", "$ref") if k in schema)
     assert offending_key in reason
 
 
