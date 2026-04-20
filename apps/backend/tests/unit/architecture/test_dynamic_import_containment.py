@@ -10,11 +10,12 @@ three gaps:
    (`importlib.import_module("app.features.other")`) imports.
 
 2. **Dynamic import containment** - `importlib.import_module("docling")`,
-   `importlib.import_module("pymupdf")`, and the equivalent `__import__`
-   builtin form (e.g. `__import__("docling")`) bypass import-linter's
+   `importlib.import_module("pymupdf")`, the equivalent `__import__`
+   builtin form (e.g. `__import__("docling")`), and
+   `importlib.util.find_spec("langextract")` all bypass import-linter's
    static graph. This test walks every .py file under `app/` and asserts
-   that dynamic imports of contained third-party packages only appear in
-   their designated files.
+   that dynamic imports (or availability probes) of contained third-party
+   packages only appear in their designated files.
 
 3. **Composition-root containment for `app/api/`** (issue #229) - the
    `shared-no-features` import-linter contract covers `app.shared`,
@@ -35,6 +36,7 @@ three gaps:
 from __future__ import annotations
 
 import ast
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Final
 
@@ -122,14 +124,270 @@ def _collect_static_dotted_imports(source: str) -> set[str]:
     return names
 
 
+def _iter_module_scope_imports(tree: ast.Module) -> Iterator[ast.Import | ast.ImportFrom]:
+    """Yield every Import/ImportFrom that binds a name at module scope.
+
+    Descends into compound statements (If/Try/TryStar/With/For/While/Match)
+    whose bodies execute at module scope, but NOT into FunctionDef/
+    AsyncFunctionDef/ClassDef, where imports bind locally and do not
+    affect module-scope name resolution.
+
+    Closes the PR #310 re-review gap where ``try: import importlib.util as u``
+    at module scope created a valid binding that the previous top-level-only
+    walker missed. The compound-statement bodies named above do not create
+    their own lexical scope in Python — names bound inside them are visible
+    at module scope — so module-scope alias tracking must descend through
+    them. Function, async-function, and class bodies, in contrast, DO create
+    their own scopes and are correctly skipped to avoid treating a local
+    import as a module-scope binding.
+
+    Python 3.11 added ``try*`` (``ast.TryStar``) and 3.10 added
+    ``match``/``case`` (``ast.Match``). Both run their bodies at module
+    scope when used at the top level, so they must be descended into as
+    well — missing either leaves a bypass for the containment gate (a
+    module-scope ``match: case: import importlib.util as u`` would not
+    be seen). ``ast.TryStar`` is probed via ``getattr`` because older
+    Pythons lack the attribute; the fallback is to skip the check cleanly
+    rather than hard-import a symbol that may not exist.
+    """
+    try_star_type: type[ast.AST] | None = getattr(ast, "TryStar", None)
+    stack: list[ast.stmt] = list(tree.body)
+    while stack:
+        node = stack.pop(0)
+        if isinstance(node, ast.Import | ast.ImportFrom):
+            yield node
+            continue
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            # New lexical scope; don't descend.
+            continue
+        if isinstance(node, ast.If):
+            stack[:0] = list(node.body) + list(node.orelse)
+        elif isinstance(node, ast.Try):
+            handlers_body: list[ast.stmt] = [s for h in node.handlers for s in h.body]
+            stack[:0] = list(node.body) + handlers_body + list(node.orelse) + list(node.finalbody)
+        elif try_star_type is not None and isinstance(node, try_star_type):
+            # ``ast.TryStar`` (Python 3.11+) mirrors ``ast.Try`` — same
+            # body/handlers/orelse/finalbody shape, so descend identically.
+            handlers_body = [s for h in node.handlers for s in h.body]  # type: ignore[attr-defined]  # TryStar exposes handlers like Try
+            stack[:0] = (
+                list(node.body)  # type: ignore[attr-defined]
+                + handlers_body
+                + list(node.orelse)  # type: ignore[attr-defined]
+                + list(node.finalbody)  # type: ignore[attr-defined]
+            )
+        elif isinstance(node, ast.With | ast.AsyncWith):
+            stack[:0] = list(node.body)
+        elif isinstance(node, ast.For | ast.AsyncFor | ast.While):
+            stack[:0] = list(node.body) + list(node.orelse)
+        elif isinstance(node, ast.Match):
+            # match/case bodies (Python 3.10+) execute at module scope when
+            # used at the top level. Descend into every case's body.
+            cases_body: list[ast.stmt] = [s for c in node.cases for s in c.body]
+            stack[:0] = cases_body
+        # else: expression statement, assignment, etc. — no nested scope to
+        # descend into.
+
+
+def _importlib_aliases_from_module(tree: ast.Module) -> frozenset[str]:
+    """Return local names bound to the ``importlib`` package at module scope.
+
+    Scans module-scope imports (including those nested under top-level
+    ``try`` / ``if`` / ``with`` / ``for`` / ``while`` bodies) — but NOT
+    inside function or class bodies — via ``_iter_module_scope_imports``.
+    Picks up three shapes:
+
+    * ``import importlib`` → binds ``importlib``
+    * ``import importlib as il`` → binds ``il``
+    * ``import importlib.util`` → binds ``importlib`` (Python's standard
+      package-import semantics — the root package name is always bound)
+
+    PR #310 review follow-up: tracking aliased bindings is load-bearing
+    because ``import importlib as il; il.util.find_spec("pkg")`` was a
+    silent bypass of the containment gate under the literal-match-only
+    logic. ``import importlib.util as u`` is handled separately in
+    `_importlib_util_aliases_from_module` below because it binds ``u``
+    to the SUBMODULE (``u.find_spec(...)``), not to ``importlib``
+    (``u.util.find_spec(...)``). Widened (PR #310 re-review) to see
+    imports nested under top-level compound statements, because
+    ``try: import importlib as il`` at module scope still binds ``il``
+    globally.
+    """
+    aliases: set[str] = set()
+    for node in _iter_module_scope_imports(tree):
+        if not isinstance(node, ast.Import):
+            continue
+        for alias in node.names:
+            if alias.name == "importlib":
+                aliases.add(alias.asname if alias.asname is not None else "importlib")
+            elif alias.name.startswith("importlib.") and alias.asname is None:
+                # `import importlib.util` (no alias) binds `importlib` at
+                # module scope. `import importlib.util as u` binds `u`
+                # to the submodule, not to `importlib`, so skip when an
+                # asname is present — that case is handled separately
+                # by `_importlib_util_aliases_from_module`.
+                aliases.add("importlib")
+    return frozenset(aliases)
+
+
+def _importlib_util_aliases_from_module(tree: ast.Module) -> frozenset[str]:
+    """Return local names bound DIRECTLY to the ``importlib.util`` submodule.
+
+    Scans module-scope imports (including those nested under top-level
+    ``try`` / ``if`` / ``with`` / ``for`` / ``while`` bodies) — but NOT
+    inside function or class bodies — via ``_iter_module_scope_imports``
+    for ``import importlib.util as <alias>`` or
+    ``from importlib import util as <alias>``. The resulting aliases are
+    bound to the ``util`` submodule, so ``<alias>.find_spec(...)`` is the
+    availability probe — a one-shorter attribute chain than the
+    ``<importlib-alias>.util.find_spec(...)`` form handled by
+    `_is_importlib_util_find_spec_attribute`.
+
+    PR #310 review follow-up: ``import importlib.util as u; u.find_spec(
+    "pkg")`` was still a silent bypass after the first alias-tracking
+    pass, because the submodule alias never bound ``importlib`` and the
+    call shape is ``<name>.find_spec(...)``, not the three-segment
+    chain. This helper closes that hole. Widened (PR #310 re-review)
+    to see imports nested under top-level compound statements, because
+    ``try: import importlib.util as u`` at module scope still binds ``u``
+    globally.
+    """
+    aliases: set[str] = set()
+    for node in _iter_module_scope_imports(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "importlib.util" and alias.asname is not None:
+                    aliases.add(alias.asname)
+        else:
+            # `_iter_module_scope_imports` yields only Import | ImportFrom,
+            # so the non-Import branch is always ImportFrom.
+            if node.module != "importlib" or node.level != 0:
+                continue
+            for alias in node.names:
+                if alias.name == "util":
+                    aliases.add(alias.asname if alias.asname is not None else "util")
+    return frozenset(aliases)
+
+
+def _find_spec_bindings_from_importlib_util(tree: ast.Module) -> frozenset[str]:
+    """Return local names bound to ``importlib.util.find_spec`` at module scope.
+
+    Scans module-scope imports (including those nested under top-level
+    ``try`` / ``if`` / ``with`` / ``for`` / ``while`` bodies) — but NOT
+    inside function or class bodies — via ``_iter_module_scope_imports``.
+    An ``ImportFrom`` inside a function body does not create a module-level
+    name binding, so walking the full tree (``ast.walk``) would falsely
+    flag calls to the module-scope ``find_spec`` symbol when the
+    import lives in a nested function/class. Compound statements like
+    ``try`` and ``if`` at the top level, in contrast, DO bind names at
+    module scope and must be descended into.
+
+    Includes aliased forms so ``from importlib.util import find_spec as fs``
+    records ``fs`` as a detected target (PR #310 review follow-up). Without
+    this, ``fs("langextract")`` was a silent bypass of the gate.
+
+    PR #310 re-review follow-up: widened from ``tree.body``-only to the
+    compound-statement-descending walker so that
+    ``try: from importlib.util import find_spec as fs`` at module scope
+    is detected — a previously silent bypass.
+
+    Limitation: if a source imports ``find_spec`` and later rebinds the
+    local name (``fs = something_else``), the walker still counts calls
+    to that imported name as containment targets. Local reassignment of
+    an import-bound name is rare enough that this remains an accepted
+    first-pass narrowing; documenting it here keeps the trade-off
+    visible for future readers.
+    """
+    bound_names: set[str] = set()
+    for node in _iter_module_scope_imports(tree):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        if node.module != "importlib.util" or node.level != 0:
+            continue
+        for alias in node.names:
+            if alias.name != "find_spec":
+                continue
+            bound_names.add(alias.asname if alias.asname is not None else "find_spec")
+    return frozenset(bound_names)
+
+
+def _is_importlib_util_find_spec_attribute(
+    func: ast.expr,
+    *,
+    importlib_aliases: frozenset[str],
+) -> bool:
+    """Return True iff ``func`` is an attribute chain ``<alias>.util.find_spec``.
+
+    Walks the ``ast.Attribute`` chain and matches the three-segment path
+    ``<alias>.util.find_spec`` for every ``<alias>`` in ``importlib_aliases``.
+    Over-broad matching (any call whose attribute name is ``find_spec``)
+    would flag unrelated objects that expose a ``.find_spec(...)`` method —
+    e.g. a custom importer's ``obj.find_spec(...)`` — and produce false
+    positives for the dynamic-import containment gate.
+
+    PR #310 review follow-up: the alias set is threaded through so that
+    ``import importlib as il; il.util.find_spec(...)`` is recognised.
+
+    The literal name ``importlib`` is also always accepted, even when
+    the module-scope scan did not find an ``import importlib`` statement
+    at module scope. A function-local ``import importlib.util`` inside
+    an ``async def`` or ``def`` body binds ``importlib`` only within
+    that function, and the subsequent ``importlib.util.find_spec(...)``
+    call site would be missed by a module-scope-only alias set — a
+    straightforward bypass of the containment gate. Accepting the
+    literal root mirrors how ``__import__`` and ``import_module`` are
+    treated (always recognised regardless of surrounding import
+    context) and still avoids false positives because the matcher
+    requires the full three-segment ``<name>.util.find_spec`` chain.
+    """
+    if not isinstance(func, ast.Attribute) or func.attr != "find_spec":
+        return False
+    util = func.value
+    if not isinstance(util, ast.Attribute) or util.attr != "util":
+        return False
+    importlib_name = util.value
+    if not isinstance(importlib_name, ast.Name):
+        return False
+    return importlib_name.id == "importlib" or importlib_name.id in importlib_aliases
+
+
 def _collect_dynamic_import_targets(source: str) -> set[str]:
     """Find string-literal arguments to dynamic-import calls.
 
-    Covers both dynamic-import mechanisms named in this module's docstring:
-    ``importlib.import_module(...)`` and the ``__import__`` builtin. Missing
-    either one lets a file reach a contained package without import-linter
-    or this AST scan firing — ``__import__`` is an expression, not an
-    ``import`` statement, so import-linter cannot see it.
+    Covers the three dynamic-import-adjacent mechanisms that bypass
+    import-linter's static graph:
+
+    * ``importlib.import_module(...)`` — the canonical runtime import.
+    * ``__import__(...)`` — the builtin, an expression rather than an
+      ``import`` statement.
+    * ``importlib.util.find_spec(...)`` — probes module availability so a
+      caller can conditionally branch on whether a contained third-party
+      package is installed. Missing it lets a file stealth-escape the C1
+      gate by writing ``if find_spec("langextract") is not None: ...``
+      without tripping either import-linter or the dynamic-import branches
+      above.
+
+    ``find_spec`` matching is narrowed (PR #310 review follow-up) to avoid
+    false positives against unrelated callables that happen to share the
+    name:
+
+    * For the attribute form, the canonical chain
+      ``importlib.util.find_spec`` and equivalent alias-based chains such
+      as ``il.util.find_spec(...)``, ``util.find_spec(...)``, or
+      ``u.find_spec(...)`` are matched when those names are bound from
+      ``importlib`` / ``importlib.util`` at module scope (see
+      ``_importlib_aliases_from_module`` and
+      ``_importlib_util_aliases_from_module``). The literal root name
+      ``importlib`` is also always accepted so that a function-local
+      ``import importlib.util`` followed by
+      ``importlib.util.find_spec(...)`` is not a bypass.
+      ``obj.find_spec(...)`` on any unrelated object is ignored.
+    * For the bare-name form, the source must also contain a module-scope
+      ``from importlib.util import find_spec [as <alias>]`` binding for
+      the call to count as a containment target. ``<alias>(...)`` is
+      detected when aliased. A module that defines a local ``find_spec``
+      function (or imports one from a different package) is not flagged,
+      and a nested ``ImportFrom`` inside a ``def``/``class`` body is
+      intentionally NOT treated as module-scope binding.
 
     Returns the FULL dotted target (e.g. `"app.features.billing.foo"` or
     `"docling.datamodel.base_models"`), not just the root module. Storing
@@ -140,21 +398,84 @@ def _collect_dynamic_import_targets(source: str) -> set[str]:
     dotted-boundary prefix check (see `_target_matches_package`).
     """
     tree = ast.parse(source)
+    importlib_aliases = _importlib_aliases_from_module(tree)
+    importlib_util_aliases = _importlib_util_aliases_from_module(tree)
+    find_spec_local_bindings = _find_spec_bindings_from_importlib_util(tree)
     targets: set[str] = set()
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         func = node.func
-        is_dynamic_import = False
-        if (isinstance(func, ast.Attribute) and func.attr == "import_module") or (
-            isinstance(func, ast.Name) and func.id in {"import_module", "__import__"}
+        if not _call_is_dynamic_import(
+            func,
+            importlib_aliases=importlib_aliases,
+            importlib_util_aliases=importlib_util_aliases,
+            find_spec_local_bindings=find_spec_local_bindings,
         ):
-            is_dynamic_import = True
-        if is_dynamic_import and node.args:
+            continue
+        # Prefer the positional arg (canonical form); fall back to the
+        # ``name=`` keyword form so calls like
+        # ``importlib.util.find_spec(name="langextract")`` or
+        # ``importlib.import_module(name="app.features.billing.foo")``
+        # do not silently evade the gate (PR #310 re-review follow-up).
+        arg: ast.expr | None = None
+        if node.args:
             arg = node.args[0]
-            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
-                targets.add(arg.value)
+        else:
+            for kw in node.keywords:
+                if kw.arg == "name":
+                    arg = kw.value
+                    break
+        if arg is None:
+            continue
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+            targets.add(arg.value)
     return targets
+
+
+def _call_is_dynamic_import(
+    func: ast.expr,
+    *,
+    importlib_aliases: frozenset[str],
+    importlib_util_aliases: frozenset[str],
+    find_spec_local_bindings: frozenset[str],
+) -> bool:
+    """Return True iff ``func`` names one of the tracked dynamic-import callables.
+
+    Handles the callable shapes covered by the walker:
+
+    * ``<anything>.import_module(...)`` (attribute call; the ``importlib``
+      root is not verified because the canonical pattern
+      ``importlib.import_module`` is by far the dominant use and a false
+      positive is harmless for containment purposes — any string-literal
+      argument is still gated by the per-package allowlist),
+    * the 3-segment chain ``<alias>.util.find_spec(...)`` where
+      ``<alias>`` is any local name bound to the ``importlib`` package,
+    * the 2-segment chain ``<util-alias>.find_spec(...)`` where
+      ``<util-alias>`` is any local name bound directly to the
+      ``importlib.util`` submodule (PR #310 review follow-up:
+      ``import importlib.util as u; u.find_spec(...)`` and
+      ``from importlib import util; util.find_spec(...)`` are now
+      recognised),
+    * bare ``import_module(...)`` or ``__import__(...)`` calls, and
+    * bare ``<name>(...)`` calls where ``<name>`` is any module-scope
+      binding of ``importlib.util.find_spec`` — covers the canonical
+      ``from importlib.util import find_spec`` AND the aliased
+      ``from importlib.util import find_spec as fs`` form.
+    """
+    if isinstance(func, ast.Attribute):
+        if func.attr == "import_module":
+            return True
+        if _is_importlib_util_find_spec_attribute(func, importlib_aliases=importlib_aliases):
+            return True
+        if func.attr == "find_spec" and isinstance(func.value, ast.Name):
+            return func.value.id in importlib_util_aliases
+    if isinstance(func, ast.Name):
+        if func.id in {"import_module", "__import__"}:
+            return True
+        if func.id in find_spec_local_bindings:
+            return True
+    return False
 
 
 def _target_matches_package(target: str, package: str) -> bool:
@@ -450,6 +771,182 @@ def test_collect_dynamic_import_targets_records_builtin___import___with_dotted_p
     assert targets == {"app.features.billing.foo"}
 
 
+def test_collect_dynamic_import_targets_records_util_find_spec() -> None:
+    """The collector must also catch ``importlib.util.find_spec`` (issue #280).
+
+    ``importlib.util.find_spec("langextract")`` is a third dynamic-import-
+    adjacent mechanism: it probes module availability so a caller can
+    conditionally branch on whether a contained third-party package is
+    installed. A production file using it to reach Docling / PyMuPDF /
+    LangExtract / httpx would slip through both import-linter (the call
+    is an expression, not an ``import`` statement) and the previous AST
+    scan (which only looked for ``import_module`` and ``__import__``),
+    stealth-escaping the C1 gate. Treat the first string-literal argument
+    to ``find_spec`` as a containment target, mirroring the ``__import__``
+    and ``import_module`` handling.
+    """
+    source = 'import importlib.util\nimportlib.util.find_spec("langextract")\n'
+    targets = _collect_dynamic_import_targets(source)
+    assert "langextract" in targets
+
+
+def test_collect_dynamic_import_targets_records_util_find_spec_with_dotted_path() -> None:
+    """The ``find_spec`` branch must record the FULL dotted target (issue #280).
+
+    Mirrors the ``importlib.import_module`` and ``__import__`` invariants —
+    storing only the root would neutralise any sibling-feature guard whose
+    predicate uses a dotted-prefix check.
+    """
+    source = 'import importlib.util\nimportlib.util.find_spec("app.features.billing.foo")\n'
+    targets = _collect_dynamic_import_targets(source)
+    assert targets == {"app.features.billing.foo"}
+
+
+def test_collect_dynamic_import_targets_records_direct_find_spec_import() -> None:
+    """The collector must also catch the direct-import form of ``find_spec``.
+
+    ``from importlib.util import find_spec`` followed by a bare
+    ``find_spec("langextract")`` call reaches the symbol by ``ast.Name`` rather
+    than ``ast.Attribute``; treating the attribute form alone leaves an easy
+    containment-gate bypass. Mirrors the ``__import__`` / bare ``import_module``
+    branch already handled by the same walker. (PR #310 review follow-up.)
+    """
+    source = 'from importlib.util import find_spec\nfind_spec("langextract")\n'
+    targets = _collect_dynamic_import_targets(source)
+    assert "langextract" in targets
+
+
+def test_collect_dynamic_import_targets_records_direct_find_spec_with_dotted_path() -> None:
+    """Direct-import ``find_spec`` must also store the FULL dotted target.
+
+    Same invariant as the attribute form — storing only the package root would
+    let a containment rule whose predicate checks for ``app.features.<X>``
+    silently pass a probe against a sibling feature's submodule.
+    """
+    source = 'from importlib.util import find_spec\nfind_spec("app.features.billing.foo")\n'
+    targets = _collect_dynamic_import_targets(source)
+    assert targets == {"app.features.billing.foo"}
+
+
+def test_collect_dynamic_import_targets_ignores_local_find_spec_function() -> None:
+    """Bare ``find_spec(...)`` calls must be ignored when the name is not bound to ``importlib.util.find_spec``.
+
+    Copilot review feedback on PR #310: the previous walker matched ``ast.Name(id="find_spec")``
+    unconditionally, which over-approximates the intent (detect
+    ``importlib.util.find_spec``) and produces false positives any time an
+    unrelated local function named ``find_spec`` is called. Narrow to
+    treat a bare ``find_spec(...)`` call as a containment target ONLY when
+    ``find_spec`` is imported from ``importlib.util`` in the same source.
+    """
+    source = 'def find_spec(name: str) -> None:\n    return None\nfind_spec("langextract")\n'
+    targets = _collect_dynamic_import_targets(source)
+    assert "langextract" not in targets
+
+
+def test_collect_dynamic_import_targets_ignores_method_call_find_spec_on_other_object() -> None:
+    """Attribute-form ``obj.find_spec(...)`` must be ignored unless the chain is ``importlib.util.find_spec``.
+
+    Copilot review feedback on PR #310: the previous walker matched any
+    ``ast.Attribute`` call with ``attr == "find_spec"``, which flags unrelated
+    objects that happen to expose a ``.find_spec(...)`` method. The narrowed
+    rule is to require the full three-segment chain ``importlib.util.find_spec``
+    — ``func.attr == "find_spec"``, ``func.value`` is ``ast.Attribute`` with
+    ``attr == "util"``, and ``func.value.value`` is ``ast.Name(id="importlib")``.
+    """
+    source = (
+        "class Finder:\n"
+        "    def find_spec(self, name: str) -> None:\n"
+        "        return None\n"
+        "obj = Finder()\n"
+        'obj.find_spec("langextract")\n'
+    )
+    targets = _collect_dynamic_import_targets(source)
+    assert "langextract" not in targets
+
+
+def test_collect_dynamic_import_targets_records_aliased_importlib_attribute() -> None:
+    """``import importlib as il; il.util.find_spec(...)`` must be detected.
+
+    PR #310 review feedback: restricting the attribute-form detector to
+    the literal ``importlib.util.find_spec`` chain left an easy bypass —
+    renaming the ``importlib`` root binding via
+    ``import importlib as il`` made the same availability probe invisible
+    to the scanner. Tracking ``Import`` bindings at module scope fixes
+    this: the aliased root feeds into the attribute-chain matcher.
+    """
+    source = 'import importlib as il\nil.util.find_spec("langextract")\n'
+    targets = _collect_dynamic_import_targets(source)
+    assert "langextract" in targets
+
+
+def test_collect_dynamic_import_targets_records_aliased_from_import_find_spec() -> None:
+    """``from importlib.util import find_spec as fs; fs(...)`` must be detected.
+
+    PR #310 review feedback: requiring the local binding name to be
+    literally ``find_spec`` left a trivial bypass — aliasing the import
+    (``as fs``) meant ``fs("langextract")`` sailed past the scanner.
+    Tracking every local binding name from the ``ImportFrom`` and
+    matching bare calls to any of those names closes the hole.
+    """
+    source = 'from importlib.util import find_spec as fs\nfs("langextract")\n'
+    targets = _collect_dynamic_import_targets(source)
+    assert "langextract" in targets
+
+
+def test_collect_dynamic_import_targets_records_importlib_util_alias_find_spec() -> None:
+    """``import importlib.util as u; u.find_spec(...)`` must be detected.
+
+    PR #310 review follow-up: the first-pass alias-tracking only handled
+    root ``importlib`` aliases (matching the 3-segment
+    ``<alias>.util.find_spec`` chain). Binding the SUBMODULE directly
+    (``import importlib.util as u``) produces a shorter 2-segment call
+    (``u.find_spec(...)``) that the first-pass logic missed. The helper
+    `_importlib_util_aliases_from_module` collects those submodule
+    aliases and the matcher now checks them against 2-segment attribute
+    calls.
+    """
+    source = 'import importlib.util as u\nu.find_spec("langextract")\n'
+    targets = _collect_dynamic_import_targets(source)
+    assert "langextract" in targets
+
+
+def test_collect_dynamic_import_targets_records_from_importlib_import_util_find_spec() -> None:
+    """``from importlib import util; util.find_spec(...)`` must be detected.
+
+    Same 2-segment shape as the ``import importlib.util as u`` case,
+    but reached via ``ImportFrom``. The helper collects both. The
+    canonical local name ``util`` is covered; aliased forms
+    (``from importlib import util as u``) are also picked up.
+    """
+    source = 'from importlib import util\nutil.find_spec("langextract")\n'
+    targets = _collect_dynamic_import_targets(source)
+    assert "langextract" in targets
+
+
+def test_collect_dynamic_import_targets_ignores_nested_find_spec_import() -> None:
+    """An ``ImportFrom`` inside a function body does NOT bind a module-scope
+    name. A bare ``find_spec("pkg")`` called elsewhere must not be flagged
+    unless the module binds ``find_spec`` at module scope.
+
+    PR #310 review feedback: ``_find_spec_bindings_from_importlib_util``
+    used to call ``ast.walk`` and descend into function/class bodies,
+    which incorrectly treated a nested import as a module-scope binding.
+    The fix restricts the scan to ``tree.body``.
+
+    In this source, the bare ``find_spec("langextract")`` that runs at
+    module scope is an unbound reference at runtime (NameError), so the
+    containment scan must NOT claim the call targets ``langextract``.
+    """
+    source = (
+        "def helper():\n"
+        "    from importlib.util import find_spec\n"
+        "    return find_spec\n"
+        'find_spec("langextract")\n'
+    )
+    targets = _collect_dynamic_import_targets(source)
+    assert "langextract" not in targets
+
+
 def test_api_composition_root_predicate_flags_bare_app_features_package_import() -> None:
     """Issue #229: the predicate must also fire on bare-package feature imports.
 
@@ -545,3 +1042,105 @@ def test_api_composition_root_allowlist_rejects_subdir_namesake(tmp_path: Path) 
     assert _API_COMPOSITION_ROOT_FILES == frozenset(  # noqa: SIM300 - assertion pairs the constant on the left for readability
         {"deps.py", "health_router.py", "probe_cache.py"}
     )
+
+
+def test_collect_dynamic_import_targets_records_find_spec_under_top_level_try() -> None:
+    """A ``try:`` at module scope is still module scope — imports inside bind globally.
+
+    PR #310 re-review follow-up: the previous alias-tracking helpers scanned
+    only direct children of ``tree.body``, which missed
+    ``try: import importlib.util as u`` even though that ``try`` executes at
+    module scope and therefore binds ``u`` globally. The fix widens the scan
+    via ``_iter_module_scope_imports`` to descend into compound statements
+    (If/Try/With/For/While) whose bodies bind at module scope, while
+    correctly NOT descending into FunctionDef/AsyncFunctionDef/ClassDef
+    (which DO create their own scopes).
+    """
+    source = (
+        "try:\n"
+        "    import importlib.util as u\n"
+        "except ImportError:\n"
+        "    u = None\n"
+        'u.find_spec("langextract")\n'
+    )
+    assert "langextract" in _collect_dynamic_import_targets(source)
+
+
+def test_collect_dynamic_import_targets_records_find_spec_from_under_top_level_try() -> None:
+    """``try: from importlib.util import find_spec as fs`` at module scope still binds ``fs``.
+
+    Same PR #310 re-review follow-up as the previous test, but for the
+    ``ImportFrom`` form: ``_find_spec_bindings_from_importlib_util`` used
+    to iterate only ``tree.body`` direct children, missing imports nested
+    under a top-level ``try``/``if``/``with``/``for``/``while`` body. The
+    widened walker handles both.
+    """
+    source = (
+        "try:\n"
+        "    from importlib.util import find_spec as fs\n"
+        "except ImportError:\n"
+        "    fs = None\n"
+        'fs("langextract")\n'
+    )
+    assert "langextract" in _collect_dynamic_import_targets(source)
+
+
+def test_collect_dynamic_import_targets_records_find_spec_under_top_level_match() -> None:
+    """Module-scope ``match``/``case`` bodies bind at module scope too.
+
+    PR #310 re-review follow-up: Python 3.10 added structural pattern
+    matching; a top-level ``match`` executes its chosen ``case`` body at
+    module scope, so imports inside bind globally. Missing this path
+    let ``match sys.platform: case "linux": import importlib.util as u``
+    at module scope bypass alias tracking.
+    """
+    source = (
+        "import sys\n"
+        "match sys.platform:\n"
+        '    case "linux":\n'
+        "        import importlib.util as u\n"
+        "    case _:\n"
+        "        u = None\n"
+        'u.find_spec("langextract")\n'
+    )
+    assert "langextract" in _collect_dynamic_import_targets(source)
+
+
+def test_collect_dynamic_import_targets_records_function_local_importlib_util() -> None:
+    """A function-local ``import importlib.util`` still lets the file's
+    ``importlib.util.find_spec(...)`` calls be detected.
+
+    PR #310 re-review follow-up: previously the attribute-chain matcher
+    required ``importlib`` to be bound at module scope. A file that did
+    its ``import importlib.util`` inside a function (with a bare
+    ``importlib.util.find_spec(...)`` call elsewhere) would silently slip
+    the gate. The literal root name ``importlib`` is now always accepted
+    for the 3-segment chain; alias forms still need module-scope binding.
+    """
+    source = (
+        "def maybe_probe() -> None:\n"
+        "    import importlib.util\n"
+        '    importlib.util.find_spec("langextract")\n'
+    )
+    assert "langextract" in _collect_dynamic_import_targets(source)
+
+
+def test_collect_dynamic_import_targets_records_keyword_name_argument() -> None:
+    """``importlib.util.find_spec(name="pkg")`` and ``importlib.import_module(name="pkg")`` must be detected.
+
+    PR #310 re-review follow-up: the previous collector only inspected
+    ``node.args[0]``, so callers passing the module name as a keyword
+    argument (the canonical parameter name is ``name`` for both
+    ``importlib.import_module`` and ``importlib.util.find_spec``) bypassed
+    the gate. The fix falls back to ``node.keywords`` when ``node.args``
+    is empty and picks up a string-constant bound to ``name=``.
+    """
+    source = (
+        "import importlib\n"
+        "import importlib.util\n"
+        'importlib.util.find_spec(name="langextract")\n'
+        'importlib.import_module(name="docling.datamodel")\n'
+    )
+    targets = _collect_dynamic_import_targets(source)
+    assert "langextract" in targets
+    assert "docling.datamodel" in targets
