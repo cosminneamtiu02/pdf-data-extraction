@@ -189,16 +189,20 @@ earlier Ioana-as-author routing.)
 1. Run `gh api /user --jq .login` and verify the output is
    `cosminneamtiu02`. If it is anything else, run
    `gh auth switch --user cosminneamtiu02` and re-verify.
-2. If the PR touches `.github/workflows/**`, the cosmin gh token must
-   carry the `workflow` scope or the push is rejected server-side. One-
-   time refresh: `gh auth refresh -s workflow -h github.com -u cosminneamtiu02`.
+2. If the PR touches `.github/workflows/**` and you are pushing via
+   `gh`/HTTPS using cosminneamtiu02's classic token, that token must
+   carry the `workflow` scope or GitHub rejects the push server-side.
+   SSH pushes and fine-grained-token pushes are governed differently
+   (fine-grained tokens use permissions rather than scopes). One-time
+   refresh for the classic-token `gh` flow:
+   `gh auth refresh -s workflow -h github.com -u cosminneamtiu02`.
 3. Do NOT switch mid-session on unrelated projects — `gh auth switch`
    flips the global gh identity for every shell on this machine. Commit
    to the switch for the duration of work on this repo.
 4. VSCode's "GitHub" extension (Source Control sidebar, PR panel) uses a
    separate auth context from the gh CLI. If PR creation goes through
    the extension, sign out of it via VSCode → Accounts → Sign out and
-   sign in as cosmin. If PR creation goes through gh in the terminal,
+   sign in as `cosminneamtiu02`. If PR creation goes through gh in the terminal,
    the VSCode extension's identity is irrelevant.
 
 ### Git author identity
