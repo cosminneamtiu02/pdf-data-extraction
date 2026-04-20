@@ -88,17 +88,25 @@ NESTED_DUPLICATE_PARAMS_YAML = (
     "      widget_id: integer\n"
 )
 
-# Leading tab indentation on a flow-style mapping (PR #314 review follow-up).
-# The regex's ``^  (\w+):$`` pattern required exactly two spaces before the
-# key; a flow-style block with tab-separated duplicate keys sailed past it
-# because the key line started with a non-space prefix. YAML's scanner
-# accepts flow-style mappings with tab whitespace between tokens, so the
-# loader subclass is the only backstop.
-TAB_INDENTED_DUPLICATE_YAML = (
+# Duplicates across BOTH top-level error-code AND inside `params` in a
+# single YAML. The regex only walked the top-level-under-`errors:` indent,
+# so a file with duplicates at two different depths at once was only ever
+# half-detected (or entirely invisible, depending on indent shape). The
+# loader catches the FIRST duplicate it hits at parse time and raises —
+# we assert "duplicate" in the message regardless of which pair wins.
+MULTI_LEVEL_DUPLICATE_YAML = (
     "version: 1\n"
     "errors:\n"
-    "\t{ MY_KEY: {http_status: 404, params: {}}, "
-    "MY_KEY: {http_status: 500, params: {}} }\n"
+    "  FIRST_ERROR:\n"
+    "    http_status: 400\n"
+    "    description: First\n"
+    "    params:\n"
+    "      widget_id: string\n"
+    "      widget_id: integer\n"
+    "  FIRST_ERROR:\n"
+    "    http_status: 500\n"
+    "    description: Top-level dup\n"
+    "    params: {}\n"
 )
 
 
@@ -109,7 +117,7 @@ TAB_INDENTED_DUPLICATE_YAML = (
         pytest.param(TRAILING_WHITESPACE_DUPLICATE_YAML, id="trailing_whitespace"),
         pytest.param(QUOTED_FORM_DUPLICATE_YAML, id="quoted_form"),
         pytest.param(NESTED_DUPLICATE_PARAMS_YAML, id="nested_params_mapping"),
-        pytest.param(TAB_INDENTED_DUPLICATE_YAML, id="tab_indented_flow"),
+        pytest.param(MULTI_LEVEL_DUPLICATE_YAML, id="multi_level_duplicate"),
     ],
 )
 def test_duplicate_keys_are_rejected(tmp_path: Path, yaml_text: str) -> None:
@@ -136,3 +144,36 @@ def test_baseline_non_duplicate_yaml_passes(tmp_path: Path) -> None:
 
     data = load_and_validate(path)
     assert set(data["errors"].keys()) == {"FIRST_ERROR", "SECOND_ERROR"}
+
+
+def test_generic_yaml_error_is_wrapped_as_value_error_with_path_prefix(
+    tmp_path: Path,
+) -> None:
+    """Non-duplicate YAML-layer failures (ParserError/ScannerError) must also
+    surface as ValueError with the source path prepended.
+
+    `load_and_validate` catches every ``yaml.YAMLError`` (the superclass of
+    ConstructorError, ParserError, ScannerError, ReaderError, …) and
+    re-raises as ValueError with the path prefix so callers keep a single
+    except-ValueError handler regardless of which YAML-layer failure
+    occurred. Without this test, the duplicate-key tests pass but a
+    regression that unwrapped a ParserError (for example) would slip
+    through silently.
+    """
+    malformed_yaml = (
+        "version: 1\n"
+        "errors:\n"
+        "  BAD_ERROR:\n"
+        "    http_status: 400\n"
+        "    description: unclosed flow\n"
+        "    params: {unterminated\n"
+    )
+    path = tmp_path / "errors.yaml"
+    path.write_text(malformed_yaml)
+
+    from scripts.generate import load_and_validate
+
+    with pytest.raises(ValueError) as exc_info:
+        load_and_validate(path)
+
+    assert str(path) in str(exc_info.value)
