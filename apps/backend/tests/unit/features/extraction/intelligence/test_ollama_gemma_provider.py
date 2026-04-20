@@ -17,14 +17,11 @@ when `post` or `get` is awaited.
 from __future__ import annotations
 
 import asyncio
-import http.server
 import json
-import socketserver
-import threading
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
+    from collections.abc import Sequence
     from typing import Self
 
 import httpx
@@ -801,213 +798,14 @@ async def test_init_absorbs_unknown_langextract_kwargs() -> None:
         await provider.aclose()
 
 
-# ── Cross-loop regression tests (issue #132) ──────────────────────────
-#
-# Issue #132 is the follow-up to #47. PR #88 moved the `infer()` batch path to
-# a fresh `AsyncClient` per `asyncio.run` scope, but the instance-level
-# `self.http_client` that backs `generate()` is still constructed in `__init__`
-# and, once used, binds its connection pool to the first event loop it sees.
-# A second call on a fresh loop then fails with `RuntimeError: Event loop is
-# closed`. The fix rebinds the instance client lazily when the running loop
-# differs from the loop it was last bound to.
-#
-# These tests use a bare-metal `socketserver.ThreadingTCPServer` rather than
-# `respx` because `respx` intercepts at the transport layer before httpx
-# reaches its connection pool — the pool is exactly what carries the
-# loop-binding affinity, so mocking it out hides the very bug we need to pin.
-
-
-class _StaticOllamaHandler(http.server.BaseHTTPRequestHandler):
-    """Minimal Ollama stub that answers `POST /api/generate` with a fixed body.
-
-    The response body wraps a JSON payload that satisfies the LangExtract
-    wrapper schema (`{"extractions": []}`). For `generate()` scenarios that
-    need a different schema, callers override `_RESPONSE_BODY` before
-    constructing the server.
-    """
-
-    protocol_version = "HTTP/1.1"
-    _RESPONSE_BODY: bytes = json.dumps({"response": '{"extractions":[]}'}).encode()
-
-    def do_POST(self) -> None:
-        length = int(self.headers.get("Content-Length", 0))
-        _ = self.rfile.read(length)
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(self._RESPONSE_BODY)))
-        # `Connection: close` keeps the fixture teardown deterministic. Under
-        # `keep-alive`, httpx's per-loop connection pool lingers inside a
-        # closed event loop and the ThreadingTCPServer handler thread blocks
-        # in `rfile.read` waiting for the next request that never arrives,
-        # so `server.shutdown()` then hangs for minutes.
-        self.send_header("Connection", "close")
-        self.end_headers()
-        self.wfile.write(self._RESPONSE_BODY)
-
-    def log_message(self, *_args: object, **_kwargs: object) -> None:
-        # Silence the default stderr access log; tests treat the server as
-        # a transparent fixture.
-        return
-
-
-def _static_handler_with_body(body_bytes: bytes) -> type[_StaticOllamaHandler]:
-    """Build a handler subclass that answers with *body_bytes*."""
-
-    class _Handler(_StaticOllamaHandler):
-        _RESPONSE_BODY = body_bytes
-
-    return _Handler
-
-
-@pytest.fixture
-def local_ollama_stub() -> Iterator[str]:
-    """Start a local HTTP stub that answers `/api/generate` and yield its base URL.
-
-    The stub is a full in-process TCP server, not a transport mock, so httpx
-    opens real connections whose pool is bound to the running event loop — the
-    exact code path under test in the cross-loop regression.
-    """
-
-    # `allow_reuse_address` must be a *class* attribute to take effect (it's
-    # consulted inside `server_bind` before instantiation). Setting it on the
-    # instance after bind is a no-op, so subclass here instead.
-    class _ReusableThreadingTCPServer(socketserver.ThreadingTCPServer):
-        allow_reuse_address = True
-
-    server = _ReusableThreadingTCPServer(("127.0.0.1", 0), _StaticOllamaHandler)
-    port = server.server_address[1]
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        yield f"http://127.0.0.1:{port}"
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2.0)
-
-
-def test_generate_survives_rebinding_to_fresh_event_loop_across_calls(
-    local_ollama_stub: str,
-) -> None:
-    """Regression: issue #132 — a provider instance must survive N `generate()`
-    calls even when each lands on a freshly created event loop.
-
-    Before the fix, the first `generate()` on loop L1 binds `self.http_client`'s
-    connection pool to L1. L1 is then closed. The second `generate()` on a
-    brand-new loop L2 finds the cached client pinned to the now-dead L1 and
-    raises `RuntimeError: Event loop is closed`. The fix rebinds the instance
-    client lazily when the running loop differs from the one it is bound to.
-
-    Uses a real in-process HTTP stub (not respx) because loop binding only
-    manifests when httpx's connection pool is actually exercised — respx
-    intercepts above that layer.
-    """
-    settings = _build_settings(
-        base_url=local_ollama_stub,
-        timeout_seconds=5.0,
-    )
-    schema: dict[str, Any] = {
-        "type": "object",
-        "required": ["extractions"],
-        "properties": {"extractions": {"type": "array"}},
-    }
-    # Provider is built eagerly; `http_client` is the auto-constructed real
-    # `httpx.AsyncClient`. No DI override — exactly the production shape.
-    provider = OllamaGemmaProvider(
-        settings=settings,
-        validator=_build_validator(settings),
-    )
-
-    loop1 = asyncio.new_event_loop()
-    try:
-        first = loop1.run_until_complete(provider.generate("p1", schema))
-    finally:
-        loop1.close()
-    assert first.data == {"extractions": []}
-
-    loop2 = asyncio.new_event_loop()
-    try:
-        second = loop2.run_until_complete(provider.generate("p2", schema))
-        assert second.data == {"extractions": []}
-    finally:
-        # Close the provider on the same loop that just used it so the
-        # rebound `http_client` tears down cleanly instead of leaking a
-        # socket pool through `loop2.close()`.
-        loop2.run_until_complete(provider.aclose())
-        loop2.close()
-
-
-def test_infer_survives_repeated_calls_on_same_provider(
-    local_ollama_stub: str,
-) -> None:
-    """Regression guard for issue #132's stated reproduction.
-
-    The batch-level fresh-client fix landed in PR #88 made this pass; this
-    test pins the contract so the second `infer()` call on the same provider
-    never regresses back to `RuntimeError: Event loop is closed`. Uses a
-    real HTTP stub so the bug would actually manifest if the fresh-per-batch
-    invariant in `_validated_generate_batch` ever regressed.
-    """
-    settings = _build_settings(
-        base_url=local_ollama_stub,
-        timeout_seconds=5.0,
-        max_retries=1,
-    )
-    provider = OllamaGemmaProvider(
-        settings=settings,
-        validator=_build_validator(settings),
-    )
-
-    try:
-        first_results = list(provider.infer(["p1"]))
-        second_results = list(provider.infer(["p2"]))
-
-        assert len(first_results) == 1
-        assert len(second_results) == 1
-        assert json.loads(first_results[0][0].output) == {"extractions": []}
-        assert json.loads(second_results[0][0].output) == {"extractions": []}
-    finally:
-        # Close the eagerly-created instance `http_client` so the test
-        # does not leak a real `httpx.AsyncClient` (the `infer()` path
-        # uses its own per-batch client, but `__init__` still constructs
-        # the instance client for `generate()`/`health_check()` paths).
-        asyncio.run(provider.aclose())
-
-
-def test_generate_single_call_still_succeeds_positive_regression(
-    local_ollama_stub: str,
-) -> None:
-    """Positive regression: the single-call happy path must keep working.
-
-    The loop-aware rebind path added for issue #132 must not break the
-    steady-state case where the provider sees one event loop for its entire
-    lifetime.
-    """
-    settings = _build_settings(
-        base_url=local_ollama_stub,
-        timeout_seconds=5.0,
-    )
-    schema: dict[str, Any] = {
-        "type": "object",
-        "required": ["extractions"],
-        "properties": {"extractions": {"type": "array"}},
-    }
-    provider = OllamaGemmaProvider(
-        settings=settings,
-        validator=_build_validator(settings),
-    )
-
-    async def _run_generate() -> Any:
-        try:
-            return await provider.generate("p1", schema)
-        finally:
-            # Close the httpx client inside the same `asyncio.run` scope so
-            # it tears down cleanly rather than leaking once the loop exits.
-            await provider.aclose()
-
-    result = asyncio.run(_run_generate())
-
-    assert result.data == {"extractions": []}
+# Cross-loop regression tests that use a real ``socketserver.ThreadingTCPServer``
+# for issue #132 moved to the integration suite per issue #329 — binding a real
+# socket on 127.0.0.1 violates the unit-level "no network" boundary codified by
+# CLAUDE.md. See
+# ``tests/integration/features/extraction/intelligence/test_ollama_gemma_provider_integration.py``
+# for the migrated tests; they retain the bare-metal-HTTP-stub approach because
+# ``respx`` intercepts above httpx's connection pool, which is exactly the
+# per-loop binding surface those tests need to exercise.
 
 
 # ── Loop-switch leak regression tests (issue #234) ─────────────────────
