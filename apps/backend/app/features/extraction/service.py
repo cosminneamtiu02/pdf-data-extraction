@@ -273,8 +273,9 @@ class ExtractionService:
             # ``extraction_timeout`` event in the ``TimeoutError`` branch
             # below) gives operators a greppable breadcrumb to tell the
             # two apart in triage dashboards. We MUST re-raise —
-            # ``CancelledError`` is a ``BaseException`` on Python 3.8+ and
-            # swallowing it breaks cooperative task cancellation.
+            # ``CancelledError`` is a ``BaseException`` in supported
+            # runtimes, and swallowing it breaks cooperative task
+            # cancellation.
             elapsed_ms = int((time.monotonic() - t0) * 1000)
             _logger.info(
                 "extraction_cancelled",
