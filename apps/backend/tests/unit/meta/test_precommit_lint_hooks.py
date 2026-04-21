@@ -35,7 +35,6 @@ import re
 from pathlib import Path
 from typing import Any, Final
 
-import pytest
 import yaml
 
 _REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[5]
@@ -280,7 +279,25 @@ def test_exclude_matches_taskfile_rejects_malformed_regex() -> None:
     """
     # Unbalanced parenthesis: `re.compile` raises `re.error`, so any future
     # attempt to "fix" the helper by suppressing the error would show up
-    # here instead of silently passing.
+    # here instead of silently passing. We avoid `pytest.raises` in this
+    # file because the pre-push pyright hook runs from the repo root and
+    # cannot resolve `import pytest` without the apps/backend venv on
+    # its path — using a try/except keeps this meta-test independent of
+    # that pre-push-hook quirk.
     malformed_regex = "Task(file"
-    with pytest.raises(AssertionError, match=r"Invalid pre-commit exclude regex"):
+    raised_expected_assertion = False
+    try:
         _exclude_matches_taskfile(malformed_regex)
+    except AssertionError as exc:
+        if "Invalid pre-commit exclude regex" not in str(exc):
+            msg = (
+                f"AssertionError raised but message did not mention the "
+                f"malformed-regex invariant: {exc!r}"
+            )
+            raise AssertionError(msg) from exc
+        raised_expected_assertion = True
+    assert raised_expected_assertion, (
+        "_exclude_matches_taskfile silently accepted a malformed regex "
+        f"{malformed_regex!r}; the helper must raise AssertionError so "
+        "a broken .pre-commit-config.yaml is surfaced by `task check`."
+    )
