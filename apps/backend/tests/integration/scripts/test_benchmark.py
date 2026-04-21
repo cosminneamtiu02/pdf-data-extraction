@@ -277,7 +277,7 @@ def test_benchmark_unreachable_service_exits_nonzero(tmp_path: Path) -> None:
 
     assert code != 0
     assert elapsed < 30.0, f"benchmark hung for {elapsed:.1f}s"
-    assert "127.0.0.1" in err or "connect" in err.lower() or "error" in err.lower()
+    assert "127.0.0.1" in err, f"expected error message to name unreachable host: {err!r}"
 
 
 def test_benchmark_missing_fixtures_exits_nonzero(tmp_path: Path) -> None:
