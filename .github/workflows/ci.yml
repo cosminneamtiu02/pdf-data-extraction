@@ -115,6 +115,20 @@ jobs:
   error-contracts:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Job-level concurrency group (issue #410). The workflow-level group
+    # (`${{ github.workflow }}-${{ github.ref }}`) still cancels the entire
+    # prior workflow run when a second push arrives on the same ref,
+    # including both backend-checks and error-contracts. This job-level
+    # group does not change that stacked-push behavior; it only ensures
+    # error-contracts runs do not overlap with each other in any case where
+    # they are not already superseded by the workflow-level cancellation
+    # policy (e.g. a separate workflow introducing a similarly named
+    # group). The `${{ github.workflow }}` prefix namespaces the group so
+    # it cannot collide with groups defined in other workflows — global
+    # `concurrency.group` names are repository-wide, not per-workflow.
+    concurrency:
+      group: ${{ github.workflow }}-ci-error-contracts-${{ github.ref }}
+      cancel-in-progress: true
     defaults:
       run:
         working-directory: packages/error-contracts
