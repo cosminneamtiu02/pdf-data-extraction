@@ -1,0 +1,26 @@
+# CODEOWNERS for pdf-data-extraction
+#
+# GitHub matches the LAST matching pattern in this file per changed path, so
+# more specific patterns MUST sit below the global default. See
+# https://docs.github.com/en/repositories/managing-your-repositories-settings-and-security/customizing-your-repository/about-code-owners
+#
+# Enforcement note: the `main-protection` ruleset currently has
+# `require_code_owner_review: false`, so this file is advisory today — it
+# populates the "Reviewers" panel on PRs but does not block merges on its
+# own. Flipping the rule to `true` is a deliberate, separate decision that
+# should be made explicitly in the ruleset, not as a side effect of this PR.
+
+# Default: everything in this repo is owned by cosmin.
+* @cosminneamtiu02
+
+# CI workflows — explicit for safety, since a broken workflow can
+# silently disable required status checks across every downstream PR.
+/.github/workflows/ @cosminneamtiu02
+
+# Error-contract source of truth — every Python/TS/JSON artifact under
+# packages/error-contracts/_generated/ is derived from this YAML, so
+# review ownership follows the source rather than the generated tree.
+/packages/error-contracts/errors.yaml @cosminneamtiu02
+
+# Discipline contract for AI-assisted development on this repo.
+/CLAUDE.md @cosminneamtiu02
