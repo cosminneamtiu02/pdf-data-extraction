@@ -75,6 +75,7 @@ if TYPE_CHECKING:
 _CI_PROFILE = "ci"
 _DEV_PROFILE = "dev"
 _HYPOTHESIS_PROFILE_ENV_VAR = "HYPOTHESIS_PROFILE"
+_REGISTERED_PROFILES: tuple[str, ...] = (_CI_PROFILE, _DEV_PROFILE)
 
 # Register once at module import. `register_profile` is idempotent —
 # calling it twice with the same name just overwrites the earlier entry —
@@ -107,13 +108,31 @@ def _select_profile() -> str:
        whatever profile we loaded below, so CLI wins.
     2. ``HYPOTHESIS_PROFILE`` environment variable. Used by local
        tooling and CI jobs that want a specific profile without
-       threading a pytest flag through every invocation.
+       threading a pytest flag through every invocation. The value is
+       validated against the allow-list in ``_REGISTERED_PROFILES`` —
+       an unknown name raises ``ValueError`` here rather than
+       propagating through ``hypothesis_settings.load_profile`` as a
+       terse ``InvalidArgument`` from the library.
     3. Default: ``ci``. Safest because it has the tightest budget.
+
+    Raises:
+        ValueError: if ``HYPOTHESIS_PROFILE`` is set to something other
+            than a registered profile name. The message names the
+            offending value AND the allow-list so the caller knows
+            exactly what to fix.
     """
     env_choice = os.environ.get(_HYPOTHESIS_PROFILE_ENV_VAR)
-    if env_choice:
-        return env_choice
-    return _CI_PROFILE
+    if not env_choice:
+        return _CI_PROFILE
+    if env_choice not in _REGISTERED_PROFILES:
+        allowed = ", ".join(repr(name) for name in _REGISTERED_PROFILES)
+        msg = (
+            f"{_HYPOTHESIS_PROFILE_ENV_VAR}={env_choice!r} is not a registered "
+            f"Hypothesis profile. Allowed values: {allowed}. "
+            f"Unset the variable to use the default 'ci' profile."
+        )
+        raise ValueError(msg)
+    return env_choice
 
 
 # Load a profile at import time so any future ``@schema.parametrize``

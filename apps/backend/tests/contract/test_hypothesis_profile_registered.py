@@ -71,6 +71,15 @@ def test_ci_profile_budget_is_bounded() -> None:
     to tighten the example budget (so contract tests stay within the 300 s
     timeout declared on ``task test:contract``) AND loosen the deadline
     (so a slow CI runner doesn't fail an otherwise-valid example).
+
+    The deadline must be an actual positive duration, not ``None``.
+    ``deadline=None`` disables the per-example time limit entirely, which
+    is the opposite of "raise it" — a Hypothesis strategy that gets
+    pathologically slow (e.g. an unbounded text generator) would then
+    consume the entire 300 s contract-test budget before the runner
+    flagged anything. Requiring a concrete floor makes the invariant
+    match the docstring and catches a regression where somebody "fixes"
+    a flake by turning the deadline off entirely instead of raising it.
     """
     ci_profile = hypothesis_settings.get_profile("ci")
 
@@ -79,12 +88,17 @@ def test_ci_profile_budget_is_bounded() -> None:
         f"must be <= {_CI_MAX_EXAMPLES_CEILING} (Hypothesis default). Issue #353."
     )
 
-    deadline_ms = (
-        ci_profile.deadline.total_seconds() * 1000 if ci_profile.deadline is not None else None
+    assert ci_profile.deadline is not None, (
+        "ci Hypothesis profile has deadline=None (no deadline). The profile "
+        "must RAISE the deadline above Hypothesis' 200 ms default, not "
+        f"disable it — set deadline >= {_CI_DEADLINE_FLOOR_MS} ms so a "
+        "pathologically slow strategy still fails within the contract-test "
+        "budget. Issue #353."
     )
-    assert deadline_ms is None or deadline_ms >= _CI_DEADLINE_FLOOR_MS, (
+    deadline_ms = ci_profile.deadline.total_seconds() * 1000
+    assert deadline_ms >= _CI_DEADLINE_FLOOR_MS, (
         f"ci Hypothesis profile has deadline={deadline_ms} ms, "
-        f"must be None or >= {_CI_DEADLINE_FLOOR_MS} ms to survive a noisy CI runner. "
+        f"must be >= {_CI_DEADLINE_FLOOR_MS} ms to survive a noisy CI runner. "
         f"Issue #353."
     )
 
