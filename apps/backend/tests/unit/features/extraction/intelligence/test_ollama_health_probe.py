@@ -199,10 +199,69 @@ async def test_check_returns_false_on_timeout() -> None:
     assert await probe.check() is False
 
 
-async def test_aclose_closes_underlying_client() -> None:
+async def test_aclose_does_not_close_externally_owned_client() -> None:
+    """Probe must NOT ``aclose()`` a client it did not construct (issue #392).
+
+    The production DI chain injects the ``OllamaGemmaProvider``'s
+    ``http_client`` into the probe so both components share a single
+    connection pool. The provider owns that client's lifespan; the probe
+    must keep its hands off it. Without this invariant, the lifespan
+    cleanup would double-close (probe first, then provider) and either
+    race on the second close or — under a future refactor that shares the
+    pool more widely — close sockets the provider still wants to use on a
+    subsequent request.
+    """
     fake = _FakeAsyncClient(get_outcomes=[])
     probe = _build_probe(fake)
 
     await probe.aclose()
 
-    assert fake.aclose_calls == 1
+    assert fake.aclose_calls == 0
+
+
+async def test_probe_uses_injected_http_client_for_get() -> None:
+    """The probe routes ``GET /api/tags`` through the injected client (issue #392).
+
+    Pins that the probe does not surreptitiously construct its own
+    ``httpx.AsyncClient`` when one is injected: the provider already owns a
+    client bound to the same base URL, and the probe must reuse it to
+    halve connection-pool / DNS / TLS cost under 1 Hz readiness polling.
+    """
+    fake = _FakeAsyncClient(
+        get_outcomes=[_FakeResponse(body=_tags_body(_EXPECTED_MODEL))],
+    )
+    probe = _build_probe(fake)
+
+    result = await probe.check()
+
+    assert result is True
+    # The single `get` call went through the injected fake, not some
+    # freshly-constructed internal client — otherwise `get_calls` would be
+    # empty and the outcome queue would still contain the scripted response.
+    assert fake.get_calls == ["http://host.docker.internal:11434/api/tags"]
+
+
+async def test_aclose_closes_internally_owned_client() -> None:
+    """Probe owns and closes a client it constructed itself (issue #392).
+
+    Preserves the default-construction path used by
+    ``test_probe_aclose_is_idempotent`` and by any test harness that
+    instantiates a standalone probe without wiring through the provider.
+    When no ``http_client`` is injected, the probe constructs its own and
+    is responsible for tearing it down on ``aclose()``.
+    """
+    probe = OllamaHealthProbe(
+        tags_url="http://unused.example/api/tags",
+        expected_model="unused",
+    )
+
+    # The probe built its own AsyncClient; verify it is open before close
+    # and reports closed afterward. Reaches into the private attribute the
+    # way the existing lifespan integration test does — this pins the
+    # ownership contract rather than probing public behaviour.
+    internal_client = probe._http_client  # noqa: SLF001 — pinning owned-client close contract
+    assert internal_client.is_closed is False
+
+    await probe.aclose()
+
+    assert internal_client.is_closed is True

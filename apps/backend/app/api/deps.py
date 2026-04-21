@@ -223,6 +223,13 @@ def get_ollama_health_probe(request: Request) -> OllamaHealthProbe:
     The tags URL is built here (reusing ``build_tags_url`` from the
     provider module) so the probe class does not duplicate the URL
     construction logic.
+
+    Client sharing (issue #392): the probe reuses the intelligence
+    provider's ``httpx.AsyncClient`` so readiness polling does not open
+    a second connection pool / DNS / TLS handshake pair against Ollama.
+    Ownership stays with the provider — lifespan shutdown closes the
+    provider's client, and the probe's ``aclose()`` no-ops on a client
+    it did not create.
     """
     state = request.app.state
     probe: OllamaHealthProbe | None = getattr(state, "ollama_health_probe", None)
@@ -231,10 +238,12 @@ def get_ollama_health_probe(request: Request) -> OllamaHealthProbe:
             probe = getattr(state, "ollama_health_probe", None)
             if probe is None:
                 settings = get_settings(request)
+                provider = get_intelligence_provider(request)
                 probe = OllamaHealthProbe(
                     tags_url=build_tags_url(settings.ollama_base_url),
                     expected_model=settings.ollama_model,
                     timeout_seconds=settings.ollama_probe_timeout_seconds,
+                    http_client=provider.http_client,
                 )
                 state.ollama_health_probe = probe
     return probe

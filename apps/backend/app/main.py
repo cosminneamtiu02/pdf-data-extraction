@@ -13,11 +13,18 @@ from app.api.probe_cache import ProbeCache
 from app.core.config import Settings
 from app.core.logging import configure_logging
 from app.exceptions import SkillValidationFailedError
+from app.features.extraction.intelligence.correction_prompt_builder import (
+    CorrectionPromptBuilder,
+)
 from app.features.extraction.intelligence.ollama_gemma_provider import (
+    OllamaGemmaProvider,
     build_tags_url,
 )
 from app.features.extraction.intelligence.ollama_health_probe import (
     OllamaHealthProbe,
+)
+from app.features.extraction.intelligence.structured_output_validator import (
+    StructuredOutputValidator,
 )
 from app.features.extraction.router import router as extraction_router
 from app.features.extraction.skills import (
@@ -31,17 +38,47 @@ _logger = structlog.get_logger(__name__)
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncGenerator[None]:
-    # --- Startup: build probe + cache eagerly, prime with initial result ---
+    # --- Startup: build provider + probe + cache eagerly, prime with initial result ---
     # Respect a pre-existing probe on app.state (test seam: integration tests
     # pre-populate it with a FakeProbe for deterministic probe behaviour
     # without relying on host network state).  In production app.state has no
     # probe at this point, so the real one is always constructed here.
+    #
+    # Client sharing (issue #392): the intelligence provider is built
+    # eagerly here — previously it was constructed lazily on first
+    # extraction request — so the probe can reuse the provider's
+    # ``httpx.AsyncClient`` instead of opening a second one bound to the
+    # same Ollama base URL. Under 1 Hz Kubernetes-style readiness polling
+    # this halves connection pools, DNS lookups, and TLS handshakes
+    # against Ollama. Ownership stays with the provider: shutdown's
+    # ``intelligence_provider`` close-loop entry tears down the shared
+    # client, while the probe's ``aclose()`` is a no-op because it did
+    # not construct the client. Eager construction also means the cached
+    # ``intelligence_provider`` on ``app.state`` matches exactly what
+    # the ``/ready`` probe is pinging — no risk of the two drifting.
     settings: Settings = app.state.settings
+
+    # ``type: ignore[assignment]`` because the test-seam branch above may
+    # pre-populate ``app.state.intelligence_provider`` with a
+    # Protocol-conforming stub that is not an ``OllamaGemmaProvider``
+    # subclass. In production app.state has no provider at this point, so
+    # the real one is always constructed here.
+    provider: OllamaGemmaProvider = getattr(
+        app.state, "intelligence_provider", None
+    ) or OllamaGemmaProvider(  # type: ignore[assignment]
+        settings=settings,
+        validator=StructuredOutputValidator(
+            settings=settings,
+            correction_prompt_builder=CorrectionPromptBuilder(),
+        ),
+    )
+    app.state.intelligence_provider = provider
 
     probe: OllamaHealthProbe = getattr(app.state, "ollama_health_probe", None) or OllamaHealthProbe(  # type: ignore[assignment]  # test seam allows FakeProbe
         tags_url=build_tags_url(settings.ollama_base_url),
         expected_model=settings.ollama_model,
         timeout_seconds=settings.ollama_probe_timeout_seconds,
+        http_client=provider.http_client,
     )
     app.state.ollama_health_probe = probe
 
