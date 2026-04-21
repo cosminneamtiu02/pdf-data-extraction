@@ -9,15 +9,19 @@ required-status-checks gate: cancelled shows as "missing" to
 `gh pr merge --auto`, which then waits forever.
 
 The fix is to add a job-level `concurrency` block to the `error-contracts`
-job so its own short window (~1 min) is scoped independently of the
-workflow-level group, i.e. a second push cancels only the stale
-error-contracts run, not the whole workflow, and the fresh error-contracts
-run completes without getting cancelled on the next push while the long job
-is still finishing.
+job so it uses its own job-scoped group instead of reusing the
+workflow-level group. That keeps the short-lived `error-contracts`
+concurrency policy isolated at the job level, even though stacked pushes
+may still cancel the prior workflow run while workflow-level
+`cancel-in-progress: true` remains enabled. The job-scoped group also
+includes `${{ github.workflow }}` so it cannot collide with similarly
+named groups defined in other workflows — `concurrency.group` names are
+repository-global, not per-workflow.
 
 This test pins the invariant: if a future edit removes the job-level
-`concurrency` block or drops `cancel-in-progress: true`, CI fails loudly
-with a pointer back to #410.
+`concurrency` block, drops `cancel-in-progress: true`, or drops the
+`${{ github.workflow }}` prefix from the group, CI fails loudly with a
+pointer back to #410.
 """
 
 from __future__ import annotations
@@ -72,9 +76,10 @@ def test_error_contracts_job_has_concurrency_block() -> None:
     assert isinstance(concurrency, dict), (
         "error-contracts job is missing a `concurrency:` mapping in "
         f"{_CI_WORKFLOW_PATH}. Add a job-level block scoped to this job "
-        "(e.g. group: ci-error-contracts-${{ github.ref }}, "
-        "cancel-in-progress: true) so stacked pushes cancel only the "
-        "stale error-contracts run, not the full workflow. See issue #410."
+        "(e.g. group: ${{ github.workflow }}-ci-error-contracts-${{ github.ref }}, "
+        "cancel-in-progress: true) so error-contracts has its own "
+        "job-scoped concurrency policy isolated from the workflow-level "
+        "group. See issue #410."
     )
 
 
@@ -83,7 +88,9 @@ def test_error_contracts_concurrency_group_is_job_scoped() -> None:
 
     Using `${{ github.workflow }}-${{ github.ref }}` at the job level would
     collide with the workflow-level group and give no isolation. The group
-    string must identify the `error-contracts` job specifically.
+    string must identify the `error-contracts` job specifically, and must
+    include `${{ github.workflow }}` so the repo-global group namespace
+    cannot collide with similarly named groups in other workflows.
     """
     job = _get_job("error-contracts")
     concurrency = job.get("concurrency")
@@ -96,14 +103,24 @@ def test_error_contracts_concurrency_group_is_job_scoped() -> None:
     assert "error-contracts" in group, (
         f"error-contracts job's concurrency.group is {group!r}, which does "
         "not contain 'error-contracts'. Use a job-scoped identifier such as "
-        "`ci-error-contracts-${{ github.ref }}` so the group does not "
-        "collide with the workflow-level group. See issue #410."
+        "`${{ github.workflow }}-ci-error-contracts-${{ github.ref }}` so "
+        "the group does not collide with the workflow-level group. See "
+        "issue #410."
     )
     assert "github.ref" in group, (
         f"error-contracts job's concurrency.group is {group!r}, which does "
         "not include `${{ github.ref }}`. Scope the group per-ref so "
         "concurrent runs on different branches/PRs do not cancel each "
         "other. See issue #410."
+    )
+    assert "github.workflow" in group, (
+        f"error-contracts job's concurrency.group is {group!r}, which does "
+        "not include `${{ github.workflow }}`. `concurrency.group` names "
+        "are repository-global, so prefix the group with "
+        "`${{ github.workflow }}` (matching the workflow-level group and "
+        "other workflows in this repo such as deploy.yml, "
+        "dependabot-*.yml) to avoid cross-workflow collisions. See "
+        "issue #410."
     )
 
 
