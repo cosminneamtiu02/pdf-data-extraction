@@ -9,13 +9,16 @@ Performance note (issue #350): `copy_app_tree` maintains a module-level
 session cache of the real `app/` tree. The first call does one real
 `shutil.copytree`; subsequent calls build isolated per-test trees via
 `os.link` hardlinks, which is a cheap inode-level syscall rather than a
-byte-copy walk of ~113 `.py` files. `inject_import_line` detects shared
-hardlinks and breaks them (copy-on-write) before mutating, so per-test
-injections never leak back into the shared cache.
+byte-copy walk of ~113 `.py` files, with a portable byte-copy fallback for
+filesystems that do not support hardlinks. `inject_import_line` uses
+`os.replace` to atomically swap the file contents, which both keeps the
+rewrite atomic from concurrent readers and implicitly breaks any shared
+hardlink so per-test injections never leak back into the shared cache.
 """
 
 from __future__ import annotations
 
+import atexit
 import os
 import shutil
 import subprocess
@@ -94,15 +97,17 @@ def _ensure_app_tree_cache() -> Path:
 
     One real bytes-copy per pytest process. The cache lives under the system
     tempdir (not `tmp_path`, which is function-scoped and gets torn down
-    between tests) and is not cleaned up deliberately: pytest's tempdir
-    retention policy handles eviction of stale `_contract_enforcement_app_cache_*`
-    directories on subsequent runs, and the files are small (~612 KB total).
+    between tests) and is cleaned up on interpreter exit via `atexit` so we
+    do not leak `_contract_enforcement_app_cache_*` directories between
+    pytest runs (issue #350: Copilot review on PR #479 flagged that pytest
+    does not evict directories created via `tempfile.mkdtemp`).
     """
     global _app_tree_cache  # noqa: PLW0603 — module-level session cache, see issue #350
     if _app_tree_cache is not None and _app_tree_cache.exists():
         return _app_tree_cache
 
     cache_parent = Path(tempfile.mkdtemp(prefix="_contract_enforcement_app_cache_"))
+    atexit.register(shutil.rmtree, cache_parent, ignore_errors=True)
     cache_dest = cache_parent / "app"
     shutil.copytree(
         REAL_APP_TREE,
@@ -120,18 +125,38 @@ def copy_app_tree(tmp_path: Path) -> Path:
     pytest session does a single real `shutil.copytree(REAL_APP_TREE, ...)`;
     subsequent calls do `shutil.copytree(<cache>, dest, copy_function=os.link)`,
     which creates new directory entries pointing at the cache's inodes rather
-    than duplicating file bytes. `inject_import_line` is hardlink-aware and
-    breaks the link before rewriting, so per-test mutations stay isolated.
-    See issue #350 for the timing context (8 full copies per unit run pre-fix).
+    than duplicating file bytes.
+
+    Portability fallback: if the cache and `tmp_path` sit on different
+    filesystems (EXDEV) or the filesystem does not support hardlinks
+    (EPERM/EOPNOTSUPP on Windows shares, some sandboxed CI), `os.link` raises
+    `OSError` mid-walk and `shutil.copytree` aborts. We catch that, wipe the
+    partial destination, and fall back to a normal byte-copy so the suite
+    stays portable. `inject_import_line` uses `os.replace` to rewrite files,
+    which is hardlink-safe regardless of which code path produced `dest`.
+    See issue #350 for the timing context (8 full copies per unit run pre-fix)
+    and Copilot review on PR #479 for the fallback rationale.
     """
     cache = _ensure_app_tree_cache()
     dest = tmp_path / "app"
-    shutil.copytree(
-        cache,
-        dest,
-        copy_function=os.link,
-        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
-    )
+    try:
+        shutil.copytree(
+            cache,
+            dest,
+            copy_function=os.link,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+        )
+    except OSError:
+        # Hardlink not supported (EXDEV / EPERM / EOPNOTSUPP) — back out the
+        # partial tree and retry with a full byte-copy. The perf regression
+        # for this path is acceptable because it only triggers on the rare
+        # cross-filesystem / no-hardlink dev setup, not on CI Linux.
+        shutil.rmtree(dest, ignore_errors=True)
+        shutil.copytree(
+            cache,
+            dest,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+        )
     return dest
 
 
@@ -155,13 +180,15 @@ def inject_import_line(target: Path, line: str) -> None:
       1. Walks the file's leading lines, preserving any `from __future__`
          imports as a head block.
       2. Inserts the injected line directly after the head block.
-      3. Breaks any shared hardlink on `target` before writing so that
-         per-test mutations never leak back into the session cache
-         maintained by `copy_app_tree` (issue #350). The break is done by
-         unlinking the existing name and writing the new bytes as a fresh
-         inode, which is safe because the caller (`_assert_violation_caught`)
-         only reads the file via its path, not via a held file descriptor.
-      4. Writes the rebuilt file back atomically (single `write_text` call).
+      3. Writes the rebuilt content to a sibling temp file, then uses
+         `os.replace` to atomically move it into place. `os.replace` on POSIX
+         unlinks the old directory entry and installs the new inode in a
+         single syscall, so (a) the path never disappears from the reader's
+         point of view and (b) any hardlink from the session cache
+         maintained by `copy_app_tree` (issue #350) is broken automatically:
+         the cache keeps its original inode while our path now points at a
+         fresh one. This replaces an earlier `unlink() + write_text()`
+         sequence flagged by Copilot on PR #479 as non-atomic.
     """
     if not target.exists():
         msg = f"scratch-tree target does not exist: {target}"
@@ -183,9 +210,20 @@ def inject_import_line(target: Path, line: str) -> None:
             break
 
     rebuilt = "".join(head) + line + "\n" + "".join(original_lines[body_start:])
-    # Copy-on-write: if `target` is a hardlink shared with the session cache
-    # (or with any sibling per-test tree), unlink our path before rewriting
-    # so we allocate a fresh inode and leave the cache inode untouched.
-    if target.stat().st_nlink > 1:
-        target.unlink()
-    target.write_text(rebuilt)
+    # Write rebuilt content to a sibling temp file in the same directory so
+    # `Path.replace` (which delegates to `os.replace`) is an intra-filesystem
+    # atomic rename. Using the same parent dir is required: across filesystems
+    # `os.replace` falls back to a non-atomic copy+unlink.
+    tmp_fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{target.name}.inject-",
+        dir=str(target.parent),
+    )
+    try:
+        with os.fdopen(tmp_fd, "w") as handle:
+            handle.write(rebuilt)
+        Path(tmp_name).replace(target)
+    except BaseException:
+        # On any failure, clean up the temp file rather than leaking it into
+        # the scratch tree (which would confuse `lint-imports`' module walk).
+        Path(tmp_name).unlink(missing_ok=True)
+        raise

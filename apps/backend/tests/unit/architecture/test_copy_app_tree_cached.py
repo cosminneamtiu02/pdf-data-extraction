@@ -23,8 +23,8 @@ from pathlib import Path
 
 import pytest
 
-from tests.unit.architecture import _linter_subprocess
-from tests.unit.architecture._linter_subprocess import (
+from . import _linter_subprocess
+from ._linter_subprocess import (
     REAL_APP_TREE,
     copy_app_tree,
     inject_import_line,
