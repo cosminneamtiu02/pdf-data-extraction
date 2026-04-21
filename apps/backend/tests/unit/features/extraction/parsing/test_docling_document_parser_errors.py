@@ -20,7 +20,7 @@ import sys
 import time
 import types
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Self
 
 import pytest
 import structlog
@@ -447,17 +447,37 @@ class _FakeFitzDocument:
     _page_count: int = 1
     _needs_pass: bool = False
     closed: bool = False
+    needs_pass_exc: BaseException | None = None
+    page_count_exc: BaseException | None = None
+    entered: bool = False
+    exited: bool = False
 
     @property
     def page_count(self) -> int:
+        if self.page_count_exc is not None:
+            raise self.page_count_exc
         return self._page_count
 
     @property
     def needs_pass(self) -> bool:
+        if self.needs_pass_exc is not None:
+            raise self.needs_pass_exc
         return self._needs_pass
 
     def close(self) -> None:
         self.closed = True
+
+    def __enter__(self) -> Self:
+        self.entered = True
+        return self
+
+    def __exit__(self, exc_type: object, exc_val: object, exc_tb: object) -> None:
+        # Match PyMuPDF 1.27's Document.__exit__ which closes the document
+        # on context-manager exit — regardless of whether an exception was
+        # raised inside the `with` block.
+        del exc_type, exc_val, exc_tb
+        self.exited = True
+        self.close()
 
 
 def _build_fake_pymupdf_module() -> types.ModuleType:
@@ -818,3 +838,85 @@ def test_default_preflight_ignores_non_exception_class_file_data_error_attribute
 
     with pytest.raises(RuntimeError, match="unexpected"):
         _default_pdf_preflight(b"%PDF-fake")
+
+
+# ---------------------------------------------------------------------------
+# Issue #342: ``_default_pdf_preflight`` must not leak the PyMuPDF doc when
+# probes on the opened document raise. PyMuPDF 1.27's ``Document`` is a
+# context manager and the official docs recommend ``with pymupdf.open(...)``
+# to guarantee close on decompressor errors (e.g. ``needs_pass`` raising a
+# ``RuntimeError`` on some malformed PDFs). The annotator at
+# ``pdf_annotator.py:57`` already uses this pattern; the preflight must
+# match it.
+# ---------------------------------------------------------------------------
+
+
+def test_default_preflight_closes_doc_when_needs_pass_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression guard for #342: if ``doc.needs_pass`` raises, the doc still closes.
+
+    PyMuPDF 1.27 can raise a bare ``RuntimeError`` from the ``needs_pass``
+    probe on some malformed documents. The preflight must release the
+    underlying MuPDF resources via ``close()`` on that error path, not leak
+    the ``Document`` object. The ``RuntimeError`` itself must propagate
+    unchanged — it is not a 400 ``PdfInvalidError`` (that classification
+    path only applies to ``pymupdf.open`` failures per #278).
+    """
+    leaky_doc = _FakeFitzDocument(
+        _page_count=1,
+        needs_pass_exc=RuntimeError("decompressor error on needs_pass probe"),
+    )
+    fake_mod = _build_fake_pymupdf_module()
+    _set_open_returns(fake_mod, leaky_doc)
+    _install_fake_pymupdf(monkeypatch, fake_mod)
+
+    with pytest.raises(RuntimeError, match="decompressor error on needs_pass probe"):
+        _default_pdf_preflight(b"%PDF-decompressor-bomb")
+
+    assert leaky_doc.closed is True, "doc leaked: needs_pass raised but close() was not invoked"
+
+
+def test_default_preflight_closes_doc_when_page_count_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression guard for #342: if ``doc.page_count`` raises, the doc still closes.
+
+    Same leak-prevention contract as ``needs_pass``: any probe on the opened
+    document that fails must still release the underlying resources.
+    """
+    leaky_doc = _FakeFitzDocument(
+        _page_count=1,
+        page_count_exc=RuntimeError("page tree corruption"),
+    )
+    fake_mod = _build_fake_pymupdf_module()
+    _set_open_returns(fake_mod, leaky_doc)
+    _install_fake_pymupdf(monkeypatch, fake_mod)
+
+    with pytest.raises(RuntimeError, match="page tree corruption"):
+        _default_pdf_preflight(b"%PDF-broken-pages")
+
+    assert leaky_doc.closed is True, "doc leaked: page_count raised but close() was not invoked"
+
+
+def test_default_preflight_uses_document_as_context_manager(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The preflight must drive the doc through ``__enter__`` / ``__exit__``.
+
+    Pins the idiomatic fix for #342: rather than a bespoke ``try/finally``
+    pairing, the preflight uses ``with pymupdf.open(...) as doc:``. This
+    matches ``PdfAnnotator._annotate_sync`` and PyMuPDF's official
+    recommendation for guaranteed close on any error path.
+    """
+    doc = _FakeFitzDocument(_page_count=7, _needs_pass=False)
+    fake_mod = _build_fake_pymupdf_module()
+    _set_open_returns(fake_mod, doc)
+    _install_fake_pymupdf(monkeypatch, fake_mod)
+
+    result = _default_pdf_preflight(b"%PDF-ok")
+
+    assert result == 7
+    assert doc.entered is True, "doc.__enter__ was not called — use `with pymupdf.open(...)`"
+    assert doc.exited is True, "doc.__exit__ was not called — use `with pymupdf.open(...)`"
+    assert doc.closed is True

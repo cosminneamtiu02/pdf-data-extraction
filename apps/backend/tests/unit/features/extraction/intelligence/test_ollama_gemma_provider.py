@@ -1328,3 +1328,144 @@ def test_generate_does_not_hang_when_old_loop_stopped_but_not_closed(
         "outgoing client was not aclose()'d via the current-loop fallback "
         "when the old loop was stopped-but-not-closed"
     )
+
+
+# ── Stale-client aclose observability regression (issue #335) ─────────
+#
+# Before the fix, ``_aclose_stale_client``'s current-loop fallback
+# swallowed ``aclose()`` failures at ``_logger.debug`` with only
+# ``error=str(exc)`` attached. Operators running at the default
+# ``WARNING`` level saw nothing when a real httpx internal error
+# surfaced during teardown — the failure was invisible. The
+# ``run_coroutine_threadsafe`` branch was even weaker: non-TimeoutError
+# exceptions from ``aclose()`` scheduled on the old loop propagated up
+# through ``_get_http_client`` instead of being captured as
+# best-effort. Issue #335 pins both paths at ``warning`` with
+# ``exc_info=True`` so the full traceback reaches operators while
+# keeping the best-effort "don't crash on teardown" semantics.
+
+
+class _RaisingAcloseFakeClient(_CountingFakeClient):
+    """Counting fake whose ``aclose()`` raises a scripted exception.
+
+    Subclass rather than a flag-on-the-base because the raising is the
+    point of this fake — the base fake in the issue-#234 block tracks
+    ``aclose_calls`` and returns happy. Mixing a raise into that class
+    would muddle its invariant ("counts how many times the provider
+    closed me") with this one ("surfaces a teardown failure to the
+    provider's aclose handler").
+    """
+
+    def __init__(
+        self,
+        *,
+        aclose_error: BaseException,
+        timeout: httpx.Timeout | None = None,
+    ) -> None:
+        super().__init__(timeout=timeout)
+        self._aclose_error = aclose_error
+
+    async def aclose(self) -> None:
+        self.aclose_calls += 1
+        self.is_closed = True
+        raise self._aclose_error
+
+
+def test_stale_client_aclose_failure_logged_at_warning_with_exc_info(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: issue #335 — when the current-loop fallback in
+    ``_aclose_stale_client`` catches a teardown error, it must log at
+    ``warning`` with ``exc_info=True`` so operators see the failure.
+
+    Before the fix, the fallback only logged at ``debug`` with
+    ``error=str(exc)`` — invisible under the default ``WARNING`` log
+    level and missing the traceback. The best-effort "don't crash on
+    teardown" behaviour is preserved: the fresh client on the current
+    loop remains valid and ``generate()`` still returns successfully.
+    """
+    settings = _build_settings()
+
+    # Build the initial (soon-to-be-stale) client directly so we can
+    # inject one that raises on aclose. We do NOT inject via the
+    # constructor's ``http_client`` kwarg because that flips the
+    # provider into the "caller owns loop affinity" branch of
+    # ``_get_http_client`` (``self._injected_http_client is not
+    # None``), which skips the rebuild path entirely. Instead, we
+    # monkey-patch ``httpx.AsyncClient`` factory so the provider's
+    # own constructor and rebuild allocations both go through us.
+    built_clients: list[_CountingFakeClient] = []
+
+    def _factory(**kwargs: Any) -> _CountingFakeClient:
+        # First construction = the eagerly-built client in __init__
+        # that we want to raise on aclose. Subsequent constructions =
+        # the fresh rebuild client that should succeed so generate()
+        # completes. Scripting per-call outcomes via a list avoids
+        # global state and keeps the factory side-effect local.
+        if not built_clients:
+            client: _CountingFakeClient = _RaisingAcloseFakeClient(
+                aclose_error=RuntimeError("Event loop is closed"),
+                timeout=kwargs.get("timeout"),
+            )
+        else:
+            client = _CountingFakeClient(timeout=kwargs.get("timeout"))
+        built_clients.append(client)
+        return client
+
+    monkeypatch.setattr(
+        "app.features.extraction.intelligence.ollama_gemma_provider.httpx.AsyncClient",
+        _factory,
+    )
+
+    provider = OllamaGemmaProvider(
+        settings=settings,
+        validator=_build_validator(settings),
+    )
+    assert len(built_clients) == 1
+    initial_client = built_clients[0]
+    assert isinstance(initial_client, _RaisingAcloseFakeClient)
+
+    # Stamp a pre-closed loop onto ``_http_client_loop`` so the
+    # rebuild path's branch selector picks the current-loop fallback
+    # (``not old_loop.is_running()`` AND ``old_loop.is_closed()``).
+    # Creating and immediately closing a loop yields the exact state.
+    stale_loop = asyncio.new_event_loop()
+    stale_loop.close()
+    assert stale_loop.is_closed()
+    provider._http_client_loop = stale_loop  # noqa: SLF001 — exercising the rebuild-path invariant
+
+    current_loop = asyncio.new_event_loop()
+    try:
+        with capture_logs() as logs:
+            result = current_loop.run_until_complete(
+                provider.generate("p1", _NAME_STRING_SCHEMA),
+            )
+    finally:
+        current_loop.close()
+
+    # Best-effort semantics preserved: the fresh client on the
+    # current loop still served the request.
+    assert result.data == {"name": "Alice"}
+    assert initial_client.aclose_calls == 1, (
+        "stale client's aclose() was not invoked on the current-loop "
+        "fallback branch — test setup did not hit the target branch"
+    )
+
+    # The fix: the suppressed exception is logged at warning with
+    # full traceback metadata. ``capture_logs()`` records
+    # ``exc_info=True`` verbatim on the event dict because the
+    # in-test processor chain does not rewrite it — asserting on
+    # the flag is the stable contract here.
+    aclose_warnings = [
+        e
+        for e in logs
+        if e.get("event") == "stale_client_aclose_failed" and e.get("log_level") == "warning"
+    ]
+    assert len(aclose_warnings) == 1, (
+        f"expected exactly one 'stale_client_aclose_failed' warning event; captured logs: {logs!r}"
+    )
+    event = aclose_warnings[0]
+    assert event.get("exc_info") is True, (
+        "warning must set ``exc_info=True`` so structlog renders the full "
+        f"traceback into the 'exception' field for operators; got: {event!r}"
+    )
