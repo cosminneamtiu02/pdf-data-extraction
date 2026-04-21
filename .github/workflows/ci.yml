@@ -58,7 +58,25 @@ jobs:
         # unchanged while allowing CI to apply `-m "not slow"` only to the
         # integration suite. The previous combined step ran
         # `pytest tests/unit/ tests/integration/ -v` with no marker filter.
-        run: uv run pytest tests/unit/ -v
+        #
+        # Coverage wiring (issue #358): `--cov=app` collects coverage on
+        # the production tree and `--cov-fail-under=80` enforces the gate
+        # on PRs — mirror of `task test:unit` so the local and CI gates
+        # stay in lockstep. `coverage.xml` is uploaded as an artifact by
+        # the following step for post-run inspection.
+        run: uv run pytest tests/unit/ -v --cov=app --cov-report=term-missing --cov-report=xml --cov-fail-under=80
+
+      - name: Upload coverage report
+        # `if: always()` so a failing coverage gate still ships the XML
+        # for debugging — without this, a below-threshold run fails the
+        # job before the upload step runs and you're left guessing which
+        # modules regressed.
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: coverage-xml
+          path: apps/backend/coverage.xml
+          if-no-files-found: warn
 
       - name: Integration tests
         # Must match `task test:integration` locally: excludes
