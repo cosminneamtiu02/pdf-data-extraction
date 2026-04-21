@@ -909,6 +909,112 @@ async def test_extraction_service_admission_is_atomic_not_check_then_acquire() -
     assert isinstance(result, ExtractionResult)
 
 
+async def test_extraction_service_simultaneous_arrivals_fail_fast_not_queue() -> None:
+    """Regression guard for issue #340: N simultaneous arrivals beyond cap fail
+    fast, not after extraction time.
+
+    Issue #340 worries that when ``max_concurrent=1`` and N>1 requests arrive
+    truly simultaneously (scheduled in the same event-loop turn via
+    ``asyncio.gather``), the N-1 over-cap callers might queue on the
+    semaphore and serialize through the pipeline instead of fail-fasting
+    with ``ExtractionOverloadedError``.
+
+    The invariant under the atomic ``asyncio.timeout(0) + acquire`` pattern:
+    exactly ONE call acquires the permit synchronously and enters the slow
+    pipeline; every other call finds ``acquire`` has to suspend, at which
+    point ``timeout(0)`` fires and the admission path raises
+    ``ExtractionOverloadedError``. The rejections return in wall-clock time
+    far shorter than the gated engine's hold time — that wall-clock gap is
+    the fail-fast observable this test locks in.
+
+    A regression that reverted to an awaiting ``acquire`` (or any pattern
+    that queued over-cap callers behind the cap holder) would make the
+    N-1 callers wait on the gate, then complete the full fake pipeline
+    one at a time after ``gate.set()``. The test would then see
+    ``total_calls`` successes instead of one success + N-1 rejections,
+    failing the explicit counts assertion below.
+    """
+    gate = asyncio.Event()
+    engine = _GatedInFlightEngine(gate)
+    settings = _build_settings(max_concurrent_extractions=1)
+    service = _build_service(engine=engine, settings=settings)
+
+    async def _one_call() -> ExtractionResult | ExtractionOverloadedError:
+        try:
+            return await service.extract(
+                _PDF_BYTES,
+                "invoice",
+                "1",
+                OutputMode.JSON_ONLY,
+            )
+        except ExtractionOverloadedError as err:
+            return err
+
+    # Fire N concurrent arrivals in the same scheduling turn via
+    # ``asyncio.gather``. ``gather`` wraps each coroutine in a Task and
+    # schedules them all before awaiting any — this is the simultaneous-
+    # arrival scenario from #340. One will acquire the permit synchronously
+    # and block on the gate; the other N-1 must fail fast.
+    total_calls = 10
+    t0 = time.monotonic()
+    gather_task = asyncio.gather(*[_one_call() for _ in range(total_calls)])
+    # Yield until one call is in-flight, then capture wall-clock.
+    for _ in range(100):
+        await asyncio.sleep(0)
+        if engine.in_flight >= 1:
+            break
+    assert engine.in_flight == 1, "Exactly one call should have entered the pipeline"
+    elapsed_admission = time.monotonic() - t0
+
+    # Admission-phase wall-clock: the scheduler only spun long enough to
+    # dispatch each call's try-acquire decision. If any over-cap caller
+    # were queueing on the semaphore instead of rejecting, ``engine.in_flight``
+    # would still be 1 (cap), but the elapsed time to reach this point is
+    # bounded by the number of event-loop turns needed to drain the admission
+    # decisions, not by the pipeline hold.
+    assert elapsed_admission < 0.5, (
+        f"Admission-phase wall-clock {elapsed_admission:.3f}s — admission "
+        "path is queueing under concurrent arrivals instead of rejecting "
+        "immediately (issue #340)."
+    )
+
+    # Release the holder and await the full gather. The holder completes
+    # via the fake pipeline; the N-1 rejections were already decided.
+    gate.set()
+    results = await gather_task
+    elapsed_total = time.monotonic() - t0
+
+    successes = [r for r in results if isinstance(r, ExtractionResult)]
+    rejections = [r for r in results if isinstance(r, ExtractionOverloadedError)]
+    assert len(successes) == 1, (
+        f"Expected exactly one success under cap=1, got {len(successes)}. Results: {results!r}"
+    )
+    assert len(rejections) == total_calls - 1, (
+        f"Expected {total_calls - 1} fail-fast rejections, got {len(rejections)}. "
+        f"Results: {results!r}"
+    )
+    for rej in rejections:
+        assert rej.http_status == 503
+        assert rej.params is not None
+        assert rej.params.model_dump() == {"max_concurrent": 1}
+
+    # Outer wall-clock ceiling. With fake collaborators the pipeline is
+    # effectively instant, so even a queued regression would not balloon
+    # elapsed_total noticeably under these fakes — the primary signal is
+    # the successes/rejections count split above. This ceiling just pins
+    # a sanity bound to catch an obvious runaway.
+    assert elapsed_total < 1.0, (
+        f"Full concurrent burst took {elapsed_total:.3f}s — something is "
+        "queueing or sleeping unexpectedly."
+    )
+
+    # The gated engine must never observe more than one in-flight call.
+    assert engine.max_in_flight == 1, (
+        f"Admission cap violated: {engine.max_in_flight} concurrent pipelines "
+        "observed against max_concurrent_extractions=1."
+    )
+
+
 async def test_extraction_service_releases_semaphore_on_success() -> None:
     """After a successful extract, the semaphore permit is returned."""
     settings = _build_settings(max_concurrent_extractions=1)
