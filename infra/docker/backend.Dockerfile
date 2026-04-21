@@ -85,11 +85,11 @@ FROM ${PYTHON_IMAGE}
 #
 # Full reproducibility for these apt installs would require pointing
 # apt at a snapshot repository (for example `snapshot.debian.org` or
-# another dated mirror) and/or pinning exact package versions with
-# `=<version>`. We intentionally do not do that here because the
+# another dated mirror) and/or pinning exact package versions as
+# `pkg=version`. We intentionally do not do that here because the
 # desired policy is to keep apt packages floating for security updates.
 #
-# If a future contributor needs to pin a package with `=<version>`
+# If a future contributor needs to pin a package as `pkg=version`
 # and/or switch to a snapshot apt repository, the correct sequence is:
 #   1. Explain the reproducibility/security tradeoff in the PR
 #      description (pins buy determinism at the cost of Debian

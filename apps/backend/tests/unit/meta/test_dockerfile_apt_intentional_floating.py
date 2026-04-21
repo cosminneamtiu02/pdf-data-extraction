@@ -22,12 +22,13 @@ The intent is therefore:
    guard comment containing the stable marker
    `reproducibility-boundary:digest-only`, so future contributors who skim
    the Dockerfile see the rationale before reintroducing brittle pins.
-3. No `apt-get install` line may pin a package with `=<version>`. Any
-   contributor who wants to pin must first change the documented policy and
-   justify the tradeoff in review, rather than silently changing how package
-   drift and security updates are handled.
+3. No `apt-get install` line may pin a package as `pkg=version` (for
+   example, `tesseract-ocr=5.3.0-2`). Any contributor who wants to pin must
+   first change the documented policy and justify the tradeoff in review,
+   rather than silently changing how package drift and security updates are
+   handled.
 
-If this test fails, do NOT add `=<version>` pins to make it pass. Read the
+If this test fails, do NOT add `pkg=version` pins to make it pass. Read the
 guard comment in `infra/docker/backend.Dockerfile` and the rationale in the
 PR that closed issue #362.
 """
@@ -60,7 +61,11 @@ _APT_PIN_RE: Final[re.Pattern[str]] = re.compile(
     r"(?<![\w$-])[a-z0-9][a-z0-9.+\-]*=[a-zA-Z0-9][\w.:+~\-]*"
 )
 _FROM_DIGEST_RE: Final[re.Pattern[str]] = re.compile(r"^\s*FROM\s+\S*@sha256:[0-9a-f]{64}")
-_ARG_DIGEST_RE: Final[re.Pattern[str]] = re.compile(r"^\s*ARG\s+\w+\s*=\s*\S*@sha256:[0-9a-f]{64}")
+# Named `name` group exposes the ARG name so callers can refine the match to
+# a specific ARG without re-authoring the rest of the pattern.
+_ARG_DIGEST_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*ARG\s+(?P<name>\w+)\s*=\s*\S*@sha256:[0-9a-f]{64}"
+)
 
 
 def _dockerfile_lines() -> list[str]:
@@ -81,16 +86,39 @@ def _dockerfile_line_without_comment(line: str) -> str:
     return line.split("#", 1)[0].rstrip()
 
 
-def _apt_install_line_indices(lines: list[str]) -> list[int]:
-    return [
-        i
-        for i, line in enumerate(lines)
-        if _APT_INSTALL_RE.search(_dockerfile_line_without_comment(line))
-    ]
-
-
 def _from_line_indices(lines: list[str]) -> list[int]:
     return [i for i, line in enumerate(lines) if line.lstrip().startswith("FROM ")]
+
+
+def _runtime_stage_line_range(lines: list[str]) -> tuple[int, int]:
+    """Return ``(start, end)`` line indices covering the runtime stage.
+
+    The runtime stage is the *second* ``FROM`` directive onward. The builder
+    stage's apt installs are discarded at the end of the multi-stage build,
+    so a `=<version>` pin there does not ship with the image and is outside
+    this policy. Scoping the apt-install scan to the runtime stage matches
+    `tests/unit/architecture/test_dockerfile_hygiene.py::_runtime_stage_text`
+    and keeps this module's docstring (which talks about the *runtime*-stage
+    install) honest.
+    """
+    from_indices = _from_line_indices(lines)
+    if len(from_indices) < 2:
+        msg = (
+            f"expected at least two FROM directives (builder + runtime); "
+            f"found {len(from_indices)} in {_DOCKERFILE_PATH}"
+        )
+        raise AssertionError(msg)
+    return from_indices[1], len(lines)
+
+
+def _apt_install_line_indices(lines: list[str]) -> list[int]:
+    """Return line indices of `apt-get install` anchors in the runtime stage only."""
+    start, end = _runtime_stage_line_range(lines)
+    return [
+        i
+        for i in range(start, end)
+        if _APT_INSTALL_RE.search(_dockerfile_line_without_comment(lines[i]))
+    ]
 
 
 def _resolve_from_reference(lines: list[str], from_idx: int) -> str:
@@ -183,18 +211,30 @@ def test_from_lines_are_digest_pinned() -> None:
             f"updates and are guarded separately below."
         )
         # If the FROM goes via an ARG, also assert the ARG default itself
-        # matches the ARG-digest regex, so the module-level pattern is not
-        # dead code and any future drift in ARG formatting is caught.
+        # matches `_ARG_DIGEST_RE` AND is the *specific* ARG the FROM
+        # references. Using the module-level `_ARG_DIGEST_RE` (whose named
+        # `name` group exposes the ARG name) keeps the shared pattern
+        # authoritative, while filtering on `name == arg_name` catches the
+        # regression where an unrelated digest-pinned ARG further up the
+        # file would otherwise satisfy a generic check.
         tokens = lines[idx].split()
-        if len(tokens) >= 2 and re.fullmatch(r"\$\{(\w+)\}|\$(\w+)", tokens[1]):
+        arg_ref_match = (
+            re.fullmatch(r"\$\{(\w+)\}|\$(\w+)", tokens[1]) if len(tokens) >= 2 else None
+        )
+        if arg_ref_match is not None:
+            arg_name = arg_ref_match.group(1) or arg_ref_match.group(2)
             matching_arg = next(
-                (line for line in lines[:idx] if _ARG_DIGEST_RE.match(line)),
+                (
+                    line
+                    for line in lines[:idx]
+                    if (m := _ARG_DIGEST_RE.match(line)) is not None and m.group("name") == arg_name
+                ),
                 None,
             )
             assert matching_arg is not None, (
-                f"{_DOCKERFILE_PATH} line {idx + 1} FROM resolves via an ARG "
-                f"but no `ARG <NAME>=<image>@sha256:<64-hex>` default was "
-                f"found above it."
+                f"{_DOCKERFILE_PATH} line {idx + 1} FROM resolves via ARG "
+                f"{arg_name!r} but no `ARG {arg_name}=<image>@sha256:<64-hex>` "
+                f"default was found above it."
             )
 
 
@@ -204,8 +244,14 @@ def test_no_apt_install_line_pins_package_version() -> None:
     Enforces option (b) from issue #362: apt packages intentionally float so
     they can receive Debian security updates within the digest-pinned base
     image. Pinning defeats the point; if a future PR really needs to pin a
-    specific package, it must first remove the digest from the base image
-    and justify the tradeoff in its own review.
+    specific package, it must first update the documented policy (the
+    rationale block in `infra/docker/backend.Dockerfile` and the docstring
+    at the top of this file) and update these guard-rail tests to match,
+    justifying the reproducibility/security tradeoff in its own review.
+    Dropping the base-image `@sha256:` digest is NOT an acceptable escape
+    hatch: `test_from_lines_are_digest_pinned` is the sibling guard that
+    pins the base-image layers, and weakening it to unblock apt pinning
+    would reduce reproducibility, not increase it.
     """
     lines = _dockerfile_lines()
     install_indices = _apt_install_line_indices(lines)
@@ -230,6 +276,8 @@ def test_no_apt_install_line_pins_package_version() -> None:
         f"{_DOCKERFILE_PATH} has version-pinned apt packages, which contradicts "
         f"the issue #362 resolution (option b — intentional floating under a "
         f"digest-pinned base). Offending pins: {offending!r}. If you really do "
-        f"need to pin, remove the `@sha256:` digest from the base image first "
-        f"and justify the tradeoff in your PR."
+        f"need to pin, update the documented policy (the Dockerfile rationale "
+        f"block and this test's module docstring) and these guard-rail tests "
+        f"first, and justify the tradeoff in your PR — do NOT drop the "
+        f"`@sha256:` digest on the base image, which would merely widen drift."
     )
