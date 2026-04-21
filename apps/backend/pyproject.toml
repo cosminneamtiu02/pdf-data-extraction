@@ -112,7 +112,12 @@ testpaths = ["tests"]
 pythonpath = ["."]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
-asyncio_default_test_loop_scope = "session"
+# Per-test loop isolates async test state so leaked background tasks and
+# other loop-bound resources from one test cannot continue running in later
+# tests (see #343). FastAPI `app.dependency_overrides` is global state and
+# still needs explicit cleanup. Fixture loop scope stays "session" so
+# expensive async fixtures remain reusable across the test run.
+asyncio_default_test_loop_scope = "function"
 markers = [
     "slow: tests that require real heavy dependencies (Docling models, Ollama) and are excluded from the default fast check loop",
 ]
