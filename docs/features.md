@@ -30,9 +30,14 @@ code, and `perf_counter`-measured duration in milliseconds. Runs inside the
 request-id middleware so each line already carries the request ID.
 
 ### CORS ([app/api/middleware.py](../apps/backend/app/api/middleware.py))
-Standard FastAPI `CORSMiddleware` with origins driven by the `CORS_ORIGINS`
-setting (JSON-parsed list). Credentials are enabled and all methods/headers are
-allowed — adjust for stricter production needs.
+Standard FastAPI `CORSMiddleware` with origins, methods, headers, and the
+`allow_credentials` flag all driven by `Settings` (`CORS_ORIGINS`,
+`CORS_METHODS`, `CORS_HEADERS`, `CORS_ALLOW_CREDENTIALS`). Defaults are narrow
+— credentials are **off**, the method allowlist is `GET`/`HEAD`/`POST`, and
+the header allowlist covers what the app actually consumes. Pairing
+`CORS_ALLOW_CREDENTIALS=true` with `CORS_ORIGINS=["*"]` is rejected at
+startup (CORS spec forbids credentialed responses to wildcarded origins;
+issue #346).
 
 ### Health & Readiness Endpoints ([app/api/health_router.py](../apps/backend/app/api/health_router.py))
 `GET /health` is a pure liveness probe returning `{"status":"ok"}`. `GET /ready`
