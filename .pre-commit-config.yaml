@@ -4,8 +4,12 @@ repos:
     hooks:
       - id: trailing-whitespace
       - id: end-of-file-fixer
+      # Taskfile.yml is plain YAML (`version: '3'`); the previous
+      # `exclude: ^Taskfile\.yml$` was a historical leftover, removed in
+      # issue #359. A meta-test at
+      # apps/backend/tests/unit/meta/test_precommit_lint_hooks.py pins
+      # the invariant that no hook excludes Taskfile.yml.
       - id: check-yaml
-        exclude: ^Taskfile\.yml$
       - id: check-json
       - id: check-added-large-files
         args: ["--maxkb=500"]
@@ -15,6 +19,35 @@ repos:
     hooks:
       - id: ruff
       - id: ruff-format
+
+  # yamllint catches YAML style drift that `check-yaml` ignores (indentation,
+  # trailing whitespace in multi-line strings, duplicate keys at non-top
+  # levels). Rules live in `.yamllint` at the repo root.
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.38.0
+    hooks:
+      - id: yamllint
+        args: ["--strict", "-c", ".yamllint"]
+
+  # actionlint statically validates every GitHub Actions workflow under
+  # `.github/workflows/`. Catches the class of bug where someone writes
+  # `github.actor` expecting `github.event.pull_request.user.login` — see
+  # CLAUDE.md's Dependabot auto-merge section for the real-world incident.
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.12
+    hooks:
+      - id: actionlint
+
+  # hadolint lints `infra/docker/backend.Dockerfile` for common Dockerfile
+  # anti-patterns. We use the `hadolint-py` mirror (not the official
+  # `hadolint/hadolint` repo) because upstream only ships a Docker-based
+  # pre-commit hook, while `hadolint-py` packages the binary as a Python
+  # wheel — matching the "no Docker required in the local dev loop" default.
+  - repo: https://github.com/AleksaC/hadolint-py
+    rev: v2.14.0
+    hooks:
+      - id: hadolint
+        args: ["--config", ".hadolint.yaml"]
 
   # pyright is pinned to match apps/backend/uv.lock (guarded by
   # apps/backend/tests/unit/meta/test_precommit_pyright_hook_present.py).

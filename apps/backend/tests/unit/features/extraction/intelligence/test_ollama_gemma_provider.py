@@ -762,6 +762,213 @@ def test_infer_uses_a_single_asyncio_run_for_the_whole_batch(
     assert call_count == 1
 
 
+# ── LangExtract sampling-kwargs forwarding (issue #385) ────────────────
+#
+# Before the fix, ``infer(batch_prompts, **kwargs)`` absorbed and silently
+# dropped every kwarg LangExtract forwarded. A caller setting
+# ``temperature=0.7`` through ``lx.extract(..., language_model_params={
+# "temperature": 0.7})`` got deterministic ``temperature=0`` output with no
+# indication the override had been ignored. The fix threads a known
+# allowlist of Ollama-options sampling keys (temperature, top_p, top_k,
+# seed, num_ctx, num_predict, repeat_penalty, mirostat, mirostat_tau,
+# mirostat_eta) from the ``infer`` kwargs into the ``/api/generate``
+# ``options`` object, with caller-supplied values overriding defaults.
+# Unknown kwargs are logged at DEBUG so operators see drift if LangExtract
+# starts forwarding something new.
+
+
+def test_infer_forwards_temperature_kwarg_into_payload_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``infer(temperature=0.7, ...)`` must post ``options.temperature == 0.7``.
+
+    Before the fix, ``_build_payload`` hardcoded ``options={"temperature": 0}``
+    and ignored every LangExtract-forwarded kwarg. A caller overriding the
+    sampling temperature via LangExtract got deterministic output with no
+    indication their override was dropped. This test pins the new contract:
+    caller-supplied ``temperature`` wins over the provider default.
+    """
+    fake = _patch_infer_client(
+        monkeypatch,
+        post_outcomes=[_FakeResponse(body={"response": '{"extractions":[]}'})],
+    )
+    provider = _build_provider(fake_client=_FakeAsyncClient())
+
+    list(provider.infer(["p1"], temperature=0.7))
+
+    _, payload = fake.post_calls[0]
+    assert payload["options"]["temperature"] == 0.7
+
+
+def test_infer_forwards_multiple_sampling_kwargs_into_payload_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every sampling kwarg from the allowlist must land in payload.options.
+
+    Pins the full allowlist surface (top_p, top_k, seed, num_ctx,
+    num_predict, repeat_penalty, mirostat family) so silently dropping any
+    one of them is a regression caught here rather than at runtime.
+    """
+    fake = _patch_infer_client(
+        monkeypatch,
+        post_outcomes=[_FakeResponse(body={"response": '{"extractions":[]}'})],
+    )
+    provider = _build_provider(fake_client=_FakeAsyncClient())
+
+    list(
+        provider.infer(
+            ["p1"],
+            temperature=0.9,
+            top_p=0.95,
+            top_k=40,
+            seed=42,
+            num_ctx=8192,
+            num_predict=512,
+            repeat_penalty=1.1,
+            mirostat=2,
+            mirostat_tau=5.0,
+            mirostat_eta=0.1,
+        )
+    )
+
+    _, payload = fake.post_calls[0]
+    options = payload["options"]
+    assert options["temperature"] == 0.9
+    assert options["top_p"] == 0.95
+    assert options["top_k"] == 40
+    assert options["seed"] == 42
+    assert options["num_ctx"] == 8192
+    assert options["num_predict"] == 512
+    assert options["repeat_penalty"] == 1.1
+    assert options["mirostat"] == 2
+    assert options["mirostat_tau"] == 5.0
+    assert options["mirostat_eta"] == 0.1
+
+
+def test_infer_without_kwargs_keeps_deterministic_temperature_zero_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no caller-supplied kwargs, ``options.temperature`` stays 0.
+
+    This regression guard protects the issue #136 contract
+    (``test_generate_payload_includes_format_json_and_zero_temperature``)
+    for the ``infer()`` seam. The fix must add kwarg forwarding without
+    changing the existing default sampling behavior for callers who
+    forward nothing.
+    """
+    fake = _patch_infer_client(
+        monkeypatch,
+        post_outcomes=[_FakeResponse(body={"response": '{"extractions":[]}'})],
+    )
+    provider = _build_provider(fake_client=_FakeAsyncClient())
+
+    list(provider.infer(["p1"]))
+
+    _, payload = fake.post_calls[0]
+    assert payload["options"]["temperature"] == 0
+    assert payload["format"] == "json"
+
+
+def test_infer_drops_non_sampling_kwargs_and_logs_them_at_debug(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unknown kwargs must not leak into payload.options, and must be logged.
+
+    LangExtract also forwards orchestrator kwargs like ``format_type``,
+    ``constraint``, or ``model_url`` that are not Ollama sampling options.
+    Those must not end up in the HTTP payload (they would confuse Ollama
+    or leak unrelated state). The provider logs them at DEBUG under event
+    ``ollama_provider_ignored_kwargs`` so operators see drift.
+    """
+    fake = _patch_infer_client(
+        monkeypatch,
+        post_outcomes=[_FakeResponse(body={"response": '{"extractions":[]}'})],
+    )
+    provider = _build_provider(fake_client=_FakeAsyncClient())
+
+    with capture_logs() as logs:
+        list(
+            provider.infer(
+                ["p1"],
+                temperature=0.5,
+                format_type="json",
+                constraint=None,
+                model_url="http://other:11434",
+            )
+        )
+
+    _, payload = fake.post_calls[0]
+    # Only the allowlisted sampling key landed in options.
+    assert payload["options"]["temperature"] == 0.5
+    assert "format_type" not in payload["options"]
+    assert "constraint" not in payload["options"]
+    assert "model_url" not in payload["options"]
+    # And the ignored keys were logged so operators can see drift.
+    event = next(
+        (e for e in logs if e.get("event") == "ollama_provider_ignored_kwargs"),
+        None,
+    )
+    assert event is not None, "ignored-kwargs must be logged for observability"
+    ignored_keys = set(event["keys"])
+    assert {"format_type", "constraint", "model_url"} <= ignored_keys
+    assert "temperature" not in ignored_keys
+
+
+def test_infer_allowlisted_kwarg_with_none_value_preserves_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An allowlisted kwarg whose value is ``None`` must not clobber the default.
+
+    LangExtract orchestrator dicts may surface ``temperature=None`` (or
+    ``seed=None``, …) when a caller wires a config field that is optional
+    and left unset. Before the fix, ``_merge_sampling_options`` unconditionally
+    copied the value over the default baseline, so the payload reached Ollama
+    with ``options.temperature == null``. That breaks the determinism contract
+    (issue #136) for ``temperature`` and risks a server-side 400 for keys
+    Ollama validates as numeric (e.g. ``seed``). The contract is: treat an
+    allowlisted key whose value is ``None`` as "not provided" — preserve the
+    module-level default, do not forward ``null``.
+    """
+    fake = _patch_infer_client(
+        monkeypatch,
+        post_outcomes=[_FakeResponse(body={"response": '{"extractions":[]}'})],
+    )
+    provider = _build_provider(fake_client=_FakeAsyncClient())
+
+    list(provider.infer(["p1"], temperature=None, seed=None))
+
+    _, payload = fake.post_calls[0]
+    # Default ``temperature=0`` preserved, ``seed`` not injected as ``None``.
+    assert payload["options"]["temperature"] == 0
+    assert "seed" not in payload["options"]
+
+
+def test_infer_kwargs_propagate_across_every_prompt_in_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Per-call kwargs must apply to every prompt in the batch.
+
+    ``infer`` iterates the batch inside a single ``asyncio.run`` scope; the
+    sampling options the caller passed must decorate every POST, not just
+    the first.
+    """
+    fake = _patch_infer_client(
+        monkeypatch,
+        post_outcomes=[
+            _FakeResponse(body={"response": '{"extractions":[]}'}),
+            _FakeResponse(body={"response": '{"extractions":[]}'}),
+        ],
+    )
+    provider = _build_provider(fake_client=_FakeAsyncClient())
+
+    list(provider.infer(["p1", "p2"], temperature=0.3, seed=7))
+
+    assert len(fake.post_calls) == 2
+    for _url, payload in fake.post_calls:
+        assert payload["options"]["temperature"] == 0.3
+        assert payload["options"]["seed"] == 7
+
+
 # The two constructor tests below pin the LangExtract plugin-instantiation
 # path. `langextract.factory.create_model` calls `provider_class(**kwargs)`
 # where `kwargs["model_id"]` is the model tag from `ModelConfig`. Any
