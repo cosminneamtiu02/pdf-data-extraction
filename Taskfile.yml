@@ -170,11 +170,13 @@ tasks:
       - uv run --with pyyaml python -m scripts.check
 
   errors:generate:
-    desc: Generate error classes from errors.yaml
+    desc: Regenerate Python exception classes, TypeScript types, and required-keys.json from errors.yaml
     dir: packages/error-contracts
     cmds:
-      - |
-        uv run --with pyyaml python -c "from pathlib import Path; from scripts.generate import generate_python, generate_typescript, generate_required_keys; p = Path('errors.yaml'); generate_python(p, Path('../../apps/backend/app/exceptions/_generated')); generate_typescript(p, Path('src/generated.ts')); generate_required_keys(p, Path('src/required-keys.json')); print('Generated all error contract files')"
+      # Single shared entry point; .github/workflows/ci.yml calls the same
+      # `python -m scripts.generate_all` so local and CI generation can never
+      # drift. See issue #365 for the deduplication context.
+      - uv run --with pyyaml python -m scripts.generate_all
 
   errors:test:
     desc: Run error-contracts package tests (codegen + validator); CI parity with .github/workflows/ci.yml error-contracts job
