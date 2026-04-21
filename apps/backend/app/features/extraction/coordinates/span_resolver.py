@@ -255,11 +255,11 @@ def _collect_multi_block_bboxes(
     # grounded response with identical rectangles. The `seen` set keys on
     # block_id so each unique block is emitted exactly once per call.
     #
-    # Invariant (issue #339): `start_block_id` must appear in the offset-index
-    # order at or before `end_block_id`. `RawExtraction.__post_init__` enforces
-    # `start_offset < end_offset` on the caller side, so reaching this function
-    # with the wrong ordering implies the OffsetIndex itself is corrupt or a
-    # caller bypassed the RawExtraction constructor.
+    # Invariant (issue #339): once `start_block_id` is reached, there must be
+    # a later index entry for `end_block_id`. `RawExtraction.__post_init__`
+    # enforces `start_offset < end_offset` on the caller side, so reaching
+    # this function with the wrong ordering implies the OffsetIndex itself is
+    # corrupt or a caller bypassed the RawExtraction constructor.
     #
     # Before this guard, two shapes of invariant violation produced different
     # silent failures:
@@ -270,33 +270,69 @@ def _collect_multi_block_bboxes(
     #   - If `end_block_id` appeared *before* `start_block_id`, the unguarded
     #     `if entry.block_id == end_block_id: break` tripped before the span
     #     started and returned an empty list — still wrong, still silent.
-    # Both shapes violate the ordering invariant; both must be surfaced.
+    # Both shapes violate the ordering invariant; both must be surfaced, and
+    # the two shapes are now distinguished by distinct `reason` codes so a
+    # production log consumer can tell them apart:
+    #   - `end_block_seen_before_start_block` — detected synchronously at the
+    #     moment we reach `start_block_id`: if the last index position of
+    #     `end_block_id` is before the current entry, no future `end_block_id`
+    #     exists, so we short-circuit without scanning through trailing
+    #     entries on a known-corrupt input. Note: a legitimate multi-chunk
+    #     end block whose chunks straddle `start_block_id` (one before, one
+    #     after) is NOT flagged — `last_end_idx` tracks the LAST occurrence,
+    #     not the first, so the presence of a later chunk keeps us on the
+    #     happy path.
+    #   - `end_block_not_seen_after_start` — detected post-hoc after the loop
+    #     finishes without ever reaching `end_block_id`. In practice this
+    #     fires only when `end_block_id` is absent from the index entirely;
+    #     the end-before-start-only shape is caught synchronously by the
+    #     first branch above. The post-hoc check remains as a belt-and-braces
+    #     guarantee that a fallback fires for any residual shape.
+    # Both paths log and fall back to a single whole-block bbox for the start
+    # block — correctness over silent fan-out.
     #
-    # Detect that the invariant held by tracking whether `end_block_id` was
-    # actually encountered after entering the span. If not, log and fall back
-    # to a single whole-block bbox for the start block — correctness over
-    # silent fan-out.
+    # Pre-scan for the LAST index position of `end_block_id` so the
+    # end-before-start short-circuit can tell "no future end block exists"
+    # from "end block reappears later (legal multi-chunk)". Cost: one extra
+    # O(n) pass; the main loop is still O(n); total amortized O(n) with a
+    # 2x constant. Acceptable: offset indices are bounded by block count.
+    last_end_idx = -1
+    for i, entry in enumerate(offset_index.entries):
+        if entry.block_id == end_block_id:
+            last_end_idx = i
+
     refs: list[BoundingBoxRef] = []
     seen: set[str] = set()
     in_span = False
-    end_seen = False
-    for entry in offset_index.entries:
-        if entry.block_id == start_block_id:
+    for i, entry in enumerate(offset_index.entries):
+        if entry.block_id == start_block_id and not in_span:
+            # Short-circuit only when we have *positive* evidence that
+            # `end_block_id` appeared strictly before this `start_block_id`
+            # with no later occurrence (last_end_idx >= 0 and < i). If
+            # `last_end_idx == -1` the end block is absent from the index
+            # entirely — a different violation shape that the post-hoc check
+            # below catches with its own `reason` code.
+            if 0 <= last_end_idx < i:
+                _logger.warning(
+                    "span_resolver_multi_block_invariant_violated",
+                    start_block_id=start_block_id,
+                    end_block_id=end_block_id,
+                    reason="end_block_seen_before_start_block",
+                    collected_bbox_count=len(refs),
+                )
+                return [_whole_block_bbox(blocks_by_id[start_block_id])]
             in_span = True
         if in_span and entry.start < entry.end and entry.block_id not in seen:
             refs.append(_whole_block_bbox(blocks_by_id[entry.block_id]))
             seen.add(entry.block_id)
         if in_span and entry.block_id == end_block_id:
-            end_seen = True
-            break
+            return refs
 
-    if not end_seen:
-        _logger.warning(
-            "span_resolver_multi_block_invariant_violated",
-            start_block_id=start_block_id,
-            end_block_id=end_block_id,
-            reason="end_block_not_seen_after_start",
-            collected_bbox_count=len(refs),
-        )
-        return [_whole_block_bbox(blocks_by_id[start_block_id])]
-    return refs
+    _logger.warning(
+        "span_resolver_multi_block_invariant_violated",
+        start_block_id=start_block_id,
+        end_block_id=end_block_id,
+        reason="end_block_not_seen_after_start",
+        collected_bbox_count=len(refs),
+    )
+    return [_whole_block_bbox(blocks_by_id[start_block_id])]
