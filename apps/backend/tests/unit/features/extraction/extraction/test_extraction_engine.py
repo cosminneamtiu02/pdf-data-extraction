@@ -21,6 +21,9 @@ from typing import Any
 import pytest
 from langextract.core.data import AnnotatedDocument, CharInterval, Extraction
 
+from app.features.extraction.extraction import (
+    _validating_langextract_adapter as adapter_module,
+)
 from app.features.extraction.extraction import extraction_engine as engine_module
 from app.features.extraction.extraction.extraction_engine import (
     ExtractionEngine,
@@ -844,7 +847,42 @@ async def test_validating_adapter_infer_raises_intelligence_timeout_when_generat
     assert exc_info.value.code == "INTELLIGENCE_TIMEOUT"
 
 
-async def test_validating_adapter_logs_timeout_event_before_raising_intelligence_timeout() -> None:
+class _AdapterSpyLogger:
+    """Test double for ``adapter_module._logger`` (Copilot-review #472).
+
+    Why we don't use ``structlog.testing.capture_logs()`` here: the
+    adapter module defines ``_logger = structlog.get_logger(__name__)``
+    at import time, and ``app.core.logging.configure_logging()``
+    registers ``cache_logger_on_first_use=True``. Sibling tests in this
+    file — notably
+    ``test_validating_adapter_infer_raises_intelligence_timeout_when_generate_hangs``
+    and
+    ``test_validating_adapter_infer_returns_settled_result_on_boundary_race``
+    — drive the adapter's timeout path without a ``capture_logs()``
+    context, which can cause structlog to cache a bound logger that
+    subsequent ``capture_logs()`` contexts won't see — making the log
+    assertion order-dependent. A direct monkeypatched spy sidesteps
+    structlog's global state entirely, mirroring
+    ``tests/unit/features/extraction/test_extraction_service.py``'s
+    ``_SpyLogger`` (Copilot-review #439, same root cause).
+    """
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, str, dict[str, object]]] = []
+
+    def info(self, event: str, **kwargs: object) -> None:  # pragma: no cover
+        self.events.append(("info", event, kwargs))
+
+    def warning(self, event: str, **kwargs: object) -> None:
+        self.events.append(("warning", event, kwargs))
+
+    def error(self, event: str, **kwargs: object) -> None:  # pragma: no cover
+        self.events.append(("error", event, kwargs))
+
+
+async def test_validating_adapter_logs_timeout_event_before_raising_intelligence_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Regression for issue #334. Every other timeout/failure path in the
     pipeline (`OllamaGemmaProvider`, `SpanResolver`, `StructuredOutputValidator`)
     emits a structlog event so operators can see the upstream breadcrumb
@@ -858,9 +896,10 @@ async def test_validating_adapter_logs_timeout_event_before_raising_intelligence
     """
     import asyncio as _asyncio
 
-    from structlog.testing import capture_logs
-
     from app.exceptions import IntelligenceTimeoutError
+
+    spy = _AdapterSpyLogger()
+    monkeypatch.setattr(adapter_module, "_logger", spy)
 
     hang_started = _asyncio.Event()
 
@@ -884,14 +923,8 @@ async def test_validating_adapter_logs_timeout_event_before_raising_intelligence
         timeout_seconds=0.2,
     )
 
-    captured: list[dict[str, Any]] = []
-
     def _run_infer() -> None:
-        with capture_logs() as logs:
-            try:
-                list(adapter.infer(["prompt-that-hangs", "second-prompt"]))
-            finally:
-                captured.extend(logs)
+        list(adapter.infer(["prompt-that-hangs", "second-prompt"]))
 
     infer_task = _asyncio.create_task(_asyncio.to_thread(_run_infer))
     await _asyncio.wait_for(hang_started.wait(), timeout=1.0)
@@ -899,11 +932,21 @@ async def test_validating_adapter_logs_timeout_event_before_raising_intelligence
     with pytest.raises(IntelligenceTimeoutError):
         await _asyncio.wait_for(infer_task, timeout=5.0)
 
-    event = next(e for e in captured if e.get("event") == "langextract_adapter_timeout")
-    assert event["budget_seconds"] == 0.2
-    assert event["prompts_in_batch"] == 2
-    assert event["original_exc_type"] == "TimeoutError"
-    assert event["log_level"] == "warning"
+    timeout_events = [
+        (level, kwargs)
+        for level, event, kwargs in spy.events
+        if event == "langextract_adapter_timeout"
+    ]
+    assert len(timeout_events) == 1, (
+        f"Expected exactly one langextract_adapter_timeout event; got {spy.events!r}"
+    )
+    level, kwargs = timeout_events[0]
+    # `warning` level is load-bearing: operators filter triage dashboards
+    # on level, and a silent drop to `info` would bury the 504 breadcrumb.
+    assert level == "warning"
+    assert kwargs["budget_seconds"] == 0.2
+    assert kwargs["prompts_in_batch"] == 2
+    assert kwargs["original_exc_type"] == "TimeoutError"
 
 
 async def test_validating_adapter_infer_propagates_inner_timeout_error_distinct_from_adapter_timeout() -> (
