@@ -320,3 +320,39 @@ def test_settings_log_level_error_lists_valid_options() -> None:
     message = str(exc_info.value)
     for level in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
         assert level in message
+
+
+# -- app_env validation (issue #370) ----------------------------------------
+#
+# Prior to #370, ``app_env`` was a free-form ``str`` default-init'ed to
+# ``"development"``. A typoed env var such as ``APP_ENV=Production`` (wrong
+# case) or ``APP_ENV=prod`` (wrong word) landed a non-``"production"`` value,
+# which the ``main.py`` ``app_env == "production"`` branches treated as dev
+# and exposed ``/docs``, ``/redoc``, and ``/openapi.json`` in a live prod
+# deployment. Narrowing to a ``Literal`` makes Pydantic refuse unknown
+# spellings at ``Settings()`` construction, turning a silent misconfiguration
+# into a loud startup failure.
+
+
+def test_settings_app_env_rejects_typo_casing() -> None:
+    """``APP_ENV=Production`` (wrong case) must fail validation.
+
+    Pydantic's ``Literal`` matching is case-sensitive, so a capitalised
+    spelling fails fast instead of silently landing in a non-production
+    branch with ``/docs`` exposed.
+    """
+    with pytest.raises(ValidationError, match="app_env"):
+        Settings(app_env="Production")  # type: ignore[arg-type]
+
+
+def test_settings_app_env_rejects_unknown_value() -> None:
+    """``APP_ENV=prod`` (unknown value) must fail validation."""
+    with pytest.raises(ValidationError, match="app_env"):
+        Settings(app_env="prod")  # type: ignore[arg-type]
+
+
+def test_settings_app_env_accepts_three_known_values() -> None:
+    """The three canonical ``app_env`` values must construct without error."""
+    for value in ("development", "production", "testing"):
+        s = Settings(app_env=value)  # type: ignore[arg-type]
+        assert s.app_env == value

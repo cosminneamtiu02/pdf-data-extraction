@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from typing import Annotated, Self
+from typing import Annotated, Literal, Self
 from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator, model_validator
@@ -116,7 +116,16 @@ class Settings(BaseSettings):
             file_secret_settings,
         )
 
-    app_env: str = "development"
+    # ``Literal`` narrowing (issue #370) forces Pydantic to reject typoed
+    # values such as ``APP_ENV=Production`` (wrong case) or ``APP_ENV=prod``
+    # at ``Settings()`` construction. Previously the field was a free-form
+    # ``str``, so a typoed shell env var silently landed in a non-production
+    # branch — and ``main.py`` uses ``app_env == "production"`` to disable
+    # ``/docs``, ``/redoc``, and ``/openapi.json`` in production, so a typo
+    # exposed the interactive docs UI in a live deploy. Pydantic's
+    # ``Literal`` matching is case-sensitive by design, which is what we
+    # want here: "Production" is not the same production.
+    app_env: Literal["development", "production", "testing"] = "development"
     log_level: str = "info"
     cors_origins: list[str] = ["http://localhost:5173"]
     # CORS method / header allowlists. Default to the current route surface
