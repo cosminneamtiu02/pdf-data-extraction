@@ -19,6 +19,7 @@ Invocation
 from __future__ import annotations
 
 import argparse
+import contextlib
 import platform
 import subprocess
 import sys
@@ -513,10 +514,14 @@ def parse_args(argv: list[str], *, err: TextIO | None = None) -> BenchConfig:
     Explicit CLI flags still win over env vars.
 
     ``err`` defaults to ``sys.stderr`` when ``None``. Callers (notably
-    :func:`main`) inject an :class:`io.StringIO` so the pydantic-driven
-    ValidationError operator messages land on the same stream as every
+    :func:`main`) inject an :class:`io.StringIO` so both the pydantic-driven
+    ValidationError operator messages *and* argparse's own
+    "invalid int/float value" messages land on the same stream as every
     other ``main`` error path instead of leaking onto the process-global
-    ``sys.stderr`` (issue #318).
+    ``sys.stderr`` (issue #318). Argparse's internal writes go through
+    ``sys.stderr`` directly; we redirect that stream via
+    :func:`contextlib.redirect_stderr` for the duration of ``parse_args``
+    so the leak is closed for all CLI error paths, not just the pydantic one.
 
     Implementation note: argv is parsed *first* with ``argparse.SUPPRESS`` as
     the default for every ``BENCH_*``-backed flag, so only flags the operator
@@ -603,7 +608,14 @@ def parse_args(argv: list[str], *, err: TextIO | None = None) -> BenchConfig:
         help="HTTP request timeout in seconds (default: 300)",
     )
 
-    args = parser.parse_args(argv)
+    # Redirect argparse's internal ``sys.stderr`` writes (e.g. "invalid int
+    # value: 'banana'" from a failed ``type=int`` callable, or the usage
+    # banner on ``--help``) onto ``err_stream`` so every CLI-error path
+    # honors the caller-supplied buffer. Without this, argparse's
+    # ``self._print_message(message, _sys.stderr)`` bypasses ``err_stream``
+    # and leaks onto the process-global ``sys.stderr`` (issue #318).
+    with contextlib.redirect_stderr(err_stream):
+        args = parser.parse_args(argv)
 
     # argparse returns per-flag values whose static type varies by the ``type=``
     # callable (``int`` / ``float`` / ``Path`` / ``str``); ``Any`` lets pyright
@@ -654,9 +666,11 @@ def main(
     Integration tests inject ``io.StringIO`` instances so they can capture the
     report and error messages without mutating the process-global streams
     (issue #326). The ``err`` stream is also threaded into :func:`parse_args`
-    so pydantic-ValidationError operator messages from ``BenchmarkSettings``
-    land on the same injected buffer rather than leaking onto the process-
-    global ``sys.stderr`` (issue #318).
+    so every CLI-error path — pydantic-ValidationError operator messages from
+    ``BenchmarkSettings`` *and* argparse's own "invalid int/float value"
+    messages from failed ``type=`` callables — lands on the same injected
+    buffer rather than leaking onto the process-global ``sys.stderr``
+    (issue #318).
     """
     out_stream = sys.stdout if out is None else out
     err_stream = sys.stderr if err is None else err

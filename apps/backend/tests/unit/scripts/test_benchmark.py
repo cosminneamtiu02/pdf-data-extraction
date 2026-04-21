@@ -505,6 +505,40 @@ def test_main_invalid_cli_flag_writes_error_to_injected_err_not_process_stderr(
     assert fake_out.getvalue() == ""
 
 
+def test_main_argparse_type_error_writes_error_to_injected_err_not_process_stderr(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """main(out=, err=) routes argparse type-callable errors to injected err.
+
+    Regression guard for issue #318 (PR #474 round-3 feedback): ``--iterations
+    banana`` fails inside argparse's own ``type=int`` callable *before*
+    pydantic validation runs. Argparse writes its "invalid int value" message
+    directly to ``sys.stderr`` via ``self._print_message``, bypassing our
+    injected ``err`` kwarg unless the ``parser.parse_args`` call runs inside
+    ``contextlib.redirect_stderr(err_stream)``. This test pins that contract
+    so the argparse leak cannot silently regress.
+    """
+    fake_out = io.StringIO()
+    fake_err = io.StringIO()
+
+    code = main(["--iterations", "banana"], out=fake_out, err=fake_err)
+
+    assert code == 2
+    err_text = fake_err.getvalue()
+    # argparse's own message format: "argument --iterations: invalid int value: 'banana'"
+    assert "--iterations" in err_text
+    assert "banana" in err_text
+
+    # No leakage to process-global stderr — the whole point of the err kwarg.
+    # ``banana`` is a unique token that can only come from the failed argparse
+    # type-callable, so it is specific enough to guard against leakage without
+    # risking false trips from unrelated stderr log lines.
+    captured = capsys.readouterr()
+    assert "banana" not in captured.err
+    assert "--iterations" not in captured.err
+    assert fake_out.getvalue() == ""
+
+
 # ---------------------------------------------------------------------------
 # Warm-up discard
 # ---------------------------------------------------------------------------
