@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import structlog
 
 from app.features.extraction.parsing import (
     _real_docling_converter_adapter as converter_adapter_mod,
@@ -1252,3 +1253,126 @@ def test_iter_text_items_fallback_accepts_empty_iterable_texts() -> None:
     items = list(adapter.iter_text_items())
 
     assert items == []
+
+
+def test_iter_text_items_raises_when_texts_is_string() -> None:
+    """Issue #341 (Copilot follow-up): a `.texts` attribute whose value is a
+    `str` must surface as `PdfParserUnavailableError`. `str` is technically
+    iterable (has `__iter__`), so a naive `hasattr(texts, "__iter__")` guard
+    would accept it and then `yield from "..."` would yield characters —
+    every character has no `.text`/`.prov` so the adapter silently produces
+    zero items, exactly the "empty output with no error" failure mode this
+    guard exists to prevent. Explicitly rejected even though `iter(str)`
+    succeeds.
+    """
+    from app.exceptions import PdfParserUnavailableError
+
+    @dataclass
+    class _StringTextsDoclingDocument:
+        # `.texts` is a string sentinel (e.g., a "lazy placeholder" from a
+        # Docling shape change). Must raise, not yield characters.
+        texts: str
+        pages: dict[int, _FakeDoclingPageItem]
+
+    raw_doc = _StringTextsDoclingDocument(
+        texts="some-unexpected-string",
+        pages={1: _FakeDoclingPageItem(size=_FakeDoclingPageSize(height=1000.0))},
+    )
+    adapter = RealDoclingDocumentAdapter(raw_doc)
+
+    with pytest.raises(PdfParserUnavailableError) as excinfo:
+        list(adapter.iter_text_items())
+
+    assert excinfo.value.params is not None
+    assert excinfo.value.params.model_dump() == {"dependency": "docling"}
+
+
+def test_iter_text_items_raises_when_texts_is_bytes() -> None:
+    """Issue #341 (Copilot follow-up): same as the `str` case for `bytes` /
+    `bytearray`. Iterating bytes yields integer byte values — also silently
+    drops to zero items after the `.text`/`.prov` filter. Rejected
+    explicitly.
+    """
+    from app.exceptions import PdfParserUnavailableError
+
+    @dataclass
+    class _BytesTextsDoclingDocument:
+        texts: bytes
+        pages: dict[int, _FakeDoclingPageItem]
+
+    raw_doc = _BytesTextsDoclingDocument(
+        texts=b"some-unexpected-bytes",
+        pages={1: _FakeDoclingPageItem(size=_FakeDoclingPageSize(height=1000.0))},
+    )
+    adapter = RealDoclingDocumentAdapter(raw_doc)
+
+    with pytest.raises(PdfParserUnavailableError) as excinfo:
+        list(adapter.iter_text_items())
+
+    assert excinfo.value.params is not None
+    assert excinfo.value.params.model_dump() == {"dependency": "docling"}
+
+
+def test_iter_text_items_raises_when_texts_is_mapping() -> None:
+    """Issue #341 (Copilot follow-up): a `.texts` attribute whose value is a
+    `dict` (or any `Mapping`) must surface as `PdfParserUnavailableError`.
+    Iterating a dict yields keys — which have no `.text` / `.prov` — so the
+    adapter silently produces zero items. Mappings are rejected explicitly
+    to pin this failure mode at the true failure site.
+    """
+    from app.exceptions import PdfParserUnavailableError
+
+    @dataclass
+    class _MappingTextsDoclingDocument:
+        texts: dict[str, Any]
+        pages: dict[int, _FakeDoclingPageItem]
+
+    raw_doc = _MappingTextsDoclingDocument(
+        texts={"unexpected-key": "unexpected-value"},
+        pages={1: _FakeDoclingPageItem(size=_FakeDoclingPageSize(height=1000.0))},
+    )
+    adapter = RealDoclingDocumentAdapter(raw_doc)
+
+    with pytest.raises(PdfParserUnavailableError) as excinfo:
+        list(adapter.iter_text_items())
+
+    assert excinfo.value.params is not None
+    assert excinfo.value.params.model_dump() == {"dependency": "docling"}
+
+
+def test_iter_text_items_shape_drift_log_distinguishes_iterate_items_states() -> None:
+    """Issue #341 (Copilot follow-up): the `docling_shape_unrecognized` log
+    must distinguish "attribute missing" from "attribute present but not
+    callable". A non-callable `iterate_items` attribute is a plausible
+    shape-drift scenario (Docling renamed the method to a property, say),
+    and operators need the log to surface that exactly.
+
+    Fail-safely: the adapter must still raise `PdfParserUnavailableError`
+    in that case (non-callable `iterate_items` falls through to the
+    `.texts` branch, and an absent `.texts` then triggers the guard).
+    """
+    from app.exceptions import PdfParserUnavailableError
+
+    @dataclass
+    class _NonCallableIterateItemsDocument:
+        # `iterate_items` is a non-callable attribute (a string sentinel),
+        # and `.texts` is absent — must raise AND the log must record
+        # `has_iterate_items_attr=True` with `iterate_items_callable=False`.
+        iterate_items: str
+        pages: dict[int, _FakeDoclingPageItem]
+
+    raw_doc = _NonCallableIterateItemsDocument(
+        iterate_items="not-callable",
+        pages={1: _FakeDoclingPageItem(size=_FakeDoclingPageSize(height=1000.0))},
+    )
+    adapter = RealDoclingDocumentAdapter(raw_doc)
+
+    with structlog.testing.capture_logs() as captured, pytest.raises(PdfParserUnavailableError):
+        list(adapter.iter_text_items())
+
+    drift_events = [e for e in captured if e["event"] == "docling_shape_unrecognized"]
+    assert len(drift_events) == 1
+    event = drift_events[0]
+    assert event["has_iterate_items_attr"] is True
+    assert event["iterate_items_callable"] is False
+    assert event["has_texts"] is False

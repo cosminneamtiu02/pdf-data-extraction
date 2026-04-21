@@ -16,7 +16,8 @@ Docling would ripple here.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any, cast
 
 import structlog
 
@@ -125,41 +126,79 @@ class RealDoclingDocumentAdapter:
         robust against shape drift. Real Docling-produced documents always
         expose ``iterate_items()``.
 
-        If neither ``iterate_items()`` nor an iterable ``.texts`` is
-        available — a Docling shape change that the adapter does not
-        understand — the method raises ``PdfParserUnavailableError`` with
-        ``dependency='docling'`` so operators see the drift at the true
-        failure site. An earlier revision returned ``[]`` in that case
+        If neither a callable ``iterate_items()`` nor a proper iterable
+        ``.texts`` sequence is available — a Docling shape change that the
+        adapter does not understand — the method raises
+        ``PdfParserUnavailableError`` with ``dependency='docling'`` so
+        operators see the drift at the true failure site. An earlier
+        revision returned ``[]`` in that case
         (``getattr(..., "texts", None) or []``), which silently truncated
         the reading-order stream and let the parser misattribute the
         failure to the PDF (surfacing as ``PDF_NO_TEXT_EXTRACTABLE``).
-        Issue #341.
+        ``str`` / ``bytes`` / ``bytearray`` / ``Mapping`` values of
+        ``.texts`` are rejected explicitly because iterating them yields
+        characters / byte-ints / dict keys, each of which has no ``.text``
+        / ``.prov`` and so re-introduces the same silent-truncation
+        failure mode. The emitted ``docling_shape_unrecognized`` log
+        distinguishes ``has_iterate_items_attr`` (attribute present at
+        all) from ``iterate_items_callable`` (present AND callable) so
+        operators can tell a rename-to-property shape drift from a
+        removed-entirely shape drift. Issue #341.
         """
-        iterate_items: Any = getattr(self._docling_document, "iterate_items", None)
-        if callable(iterate_items):
+        sentinel = object()
+        iterate_items: Any = getattr(self._docling_document, "iterate_items", sentinel)
+        has_iterate_items_attr: bool = iterate_items is not sentinel
+        iterate_items_callable: bool = callable(iterate_items)
+        if iterate_items_callable:
             iterator: Any = iterate_items()
             for pair in iterator:
                 item: Any = pair[0]
                 yield item
             return
-        # Fallback path: `.texts` must be present AND iterable. An empty
-        # iterable is fine (legitimately empty document); a missing attr or
-        # a scalar value signals a Docling shape change.
-        sentinel = object()
+        # Fallback path: `.texts` must be present AND a *proper* iterable of
+        # node items. An empty iterable is fine (legitimately empty
+        # document); a missing attribute, a scalar value, a `str` / `bytes`
+        # / `bytearray`, or a `Mapping` all signal a Docling shape change.
+        # `str`-like and `Mapping` types are technically iterable but
+        # iterating them yields characters / byte-ints / dict keys, every
+        # one of which has no `.text` / `.prov` so the adapter would
+        # silently yield zero items — exactly the failure mode this guard
+        # exists to prevent (Issue #341, Copilot follow-up). Validate with
+        # an explicit `iter(texts)` attempt so the check rejects non-
+        # iterables uniformly even if they happen to expose a stray
+        # `__iter__` attribute.
         texts: Any = getattr(self._docling_document, "texts", sentinel)
-        if texts is sentinel or not hasattr(texts, "__iter__"):
+        is_rejected_texts_type: bool = isinstance(texts, str | bytes | bytearray | Mapping)
+        iter_failed: bool = False
+        if texts is not sentinel and not is_rejected_texts_type:
+            try:
+                iter(texts)
+            except TypeError:
+                iter_failed = True
+        if texts is sentinel or is_rejected_texts_type or iter_failed:
             document_type: str = type(self._docling_document).__name__
-            texts_type: str = "<missing>" if texts is sentinel else type(texts).__name__
+            # ``texts`` is narrowed to
+            # ``Any | str | bytes | bytearray | Mapping[Unknown, Unknown]``
+            # after the ``isinstance`` guard above, so cast back to ``Any``
+            # before asking Pyright to resolve ``type(...).__name__``; we
+            # only want the runtime class name, not a parameterised
+            # generic type.
+            texts_type: str = (
+                "<missing>" if texts is sentinel else type(cast("Any", texts)).__name__
+            )
             _log.error(
                 "docling_shape_unrecognized",
                 document_type=document_type,
-                has_iterate_items=False,
+                has_iterate_items_attr=has_iterate_items_attr,
+                iterate_items_callable=iterate_items_callable,
                 has_texts=texts is not sentinel,
                 texts_type=texts_type,
                 detail=(
                     "DoclingDocument exposes neither a callable `iterate_items` "
-                    "nor an iterable `.texts` attribute. This indicates Docling "
-                    "shape drift; the adapter cannot surface any text items."
+                    "nor a proper iterable `.texts` attribute (str/bytes/Mapping "
+                    "are rejected because iterating them yields non-node values). "
+                    "This indicates Docling shape drift; the adapter cannot "
+                    "surface any text items."
                 ),
             )
             raise PdfParserUnavailableError(dependency="docling")
