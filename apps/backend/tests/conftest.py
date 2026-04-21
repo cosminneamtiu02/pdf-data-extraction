@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
-
 from app.features.extraction.skills import Skill, SkillDoclingConfig, SkillExample
 from app.features.extraction.skills.deep_freeze import deep_freeze_mapping
 
@@ -24,9 +22,14 @@ class FakeProbe:
 
     async def check(self) -> bool:
         if self.call_count >= len(self._results):
-            pytest.fail(
-                f"FakeProbe.check called more times than scripted (call #{self.call_count + 1})"
-            )
+            # Raise AssertionError rather than calling pytest.fail(): under
+            # pytest-asyncio's session-scoped event loop, pytest.fail()
+            # surfaces a Failed report on whichever async test consumed the
+            # probe, not the logically-wrong call site. A plain
+            # AssertionError propagates through the await and pytest reports
+            # the stack at the offending caller. (Issue #396.)
+            msg = f"FakeProbe.check called more times than scripted (call #{self.call_count + 1})"
+            raise AssertionError(msg)
         result = self._results[self.call_count]
         self.call_count += 1
         return result
