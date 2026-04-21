@@ -2,10 +2,10 @@
 
 import json
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Self
 from urllib.parse import urlsplit
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -127,6 +127,16 @@ class Settings(BaseSettings):
     # ``cors_origins`` — see issue #211.
     cors_methods: list[str] = ["GET", "HEAD", "POST"]
     cors_headers: list[str] = ["Authorization", "Content-Type", "X-Request-Id"]
+    # Whether the CORS middleware returns ``Access-Control-Allow-Credentials:
+    # true``. Defaults to ``False`` because this service has no cookie or
+    # session authentication — opting in is extra attack surface for no
+    # functional gain. Additionally, the CORS spec forbids combining
+    # ``allow_credentials=True`` with ``Access-Control-Allow-Origin: *``;
+    # ``_reject_credentials_with_wildcard_origin`` below enforces that
+    # invariant at config-load time so the failure is loud rather than
+    # Starlette silently dropping credentials in that configuration.
+    # Issue #346.
+    cors_allow_credentials: bool = False
 
     log_max_value_length: int = 500
     log_redacted_keys: list[str] = [
@@ -214,6 +224,29 @@ class Settings(BaseSettings):
                     msg = 'cors_origins must be a JSON array string (e.g. ["https://example.com"])'
                     raise ValueError(msg) from exc
         return v
+
+    @model_validator(mode="after")
+    def _reject_credentials_with_wildcard_origin(self) -> Self:
+        """Reject ``cors_allow_credentials=True`` combined with wildcard origin.
+
+        The CORS spec forbids returning ``Access-Control-Allow-Credentials:
+        true`` together with ``Access-Control-Allow-Origin: *``. Starlette's
+        ``CORSMiddleware`` silently drops credentials in that configuration,
+        which masks the misconfiguration — and the combination is a
+        well-known CVE pattern (credentials leaking to any origin). Raising
+        at config-load time surfaces the problem loudly so the operator
+        narrows ``cors_origins`` to an explicit allowlist before the
+        service boots. Issue #346.
+        """
+        if self.cors_allow_credentials and "*" in self.cors_origins:
+            msg = (
+                "cors_allow_credentials=True is incompatible with a wildcard "
+                "cors_origins entry ('*'). The CORS spec forbids credentialed "
+                "responses to wildcarded origins. Either scope cors_origins "
+                "to an explicit allowlist, or set cors_allow_credentials=False."
+            )
+            raise ValueError(msg)
+        return self
 
     @field_validator("ollama_base_url")
     @classmethod
