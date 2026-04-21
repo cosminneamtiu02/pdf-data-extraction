@@ -95,7 +95,9 @@ def test_inject_import_line_does_not_mutate_the_shared_cache(
     canary = "import canary_module_issue_350"
     inject_import_line(first_target, canary)
 
-    assert canary in first_target.read_text(), "injection did not land in the first tree"
+    assert canary in first_target.read_text(encoding="utf-8"), (
+        "injection did not land in the first tree"
+    )
     assert second_target.read_bytes() == second_original_bytes, (
         "injection leaked across per-test trees — the session cache is being "
         "mutated in place instead of copy-on-write from hardlinks. See issue #350."

@@ -149,10 +149,13 @@ def _hardlinks_supported(cache: Path, probe_dir: Path) -> bool:
        fallback rmtree + byte-copy retry. Copilot review on PR #479
        flagged the earlier catch-all as a footgun.
 
-    `probe_dir` must be an existing directory on the same filesystem as
-    the eventual copy destination. The caller passes `tmp_path.parent`
-    (pytest's `tmp_path` is under the session-wide base dir, which
-    always exists and shares the filesystem with the per-test subtree).
+    `probe_dir` must be any existing directory on the same filesystem as
+    the eventual copy destination. `copy_app_tree` passes `tmp_path`
+    itself when that directory already exists, and falls back to
+    `tmp_path.parent` otherwise (pytest's `tmp_path` is under the
+    session-wide base dir, which always exists and shares the filesystem
+    with the per-test subtree). The only requirement is that `probe_dir`
+    be an existing directory sharing the destination filesystem.
 
     Returns True iff `os.link` succeeds on at least one file from `cache`
     into `probe_dir`. A False result funnels the caller into the byte-copy
