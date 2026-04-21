@@ -64,9 +64,9 @@ rules:
     check-keys: true
 
   # Comment spacing: the default requires `# comment` (one space after `#`).
-  # A handful of banner-style comments in this repo use `#─` for ASCII-art
-  # section separators (e.g. Taskfile.yml). Relax the min-spaces-from-content
-  # so those banners don't have to be rewritten.
+  # A handful of banner-style comments in this repo use `# ── ...` for
+  # section separators (e.g. Taskfile.yml). Keep the rule compatible with
+  # that existing style so those banners don't have to be rewritten.
   comments:
     min-spaces-from-content: 1
     require-starting-space: true

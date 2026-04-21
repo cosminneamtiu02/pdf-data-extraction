@@ -24,8 +24,9 @@ This module parses `.pre-commit-config.yaml` and asserts:
   which clashes with the repo's 2-space-indented YAML style).
 
 The tests are deliberately structural — they assert hook registration, not
-hook behaviour. Hook behaviour is exercised by `pre-commit run --all-files`
-in CI / local `task check`.
+hook behaviour. To validate hook behaviour, run `pre-commit run --all-files`
+separately; `task check` does not invoke pre-commit (by design — pre-commit
+owns the git-hook lifecycle, `task check` owns the single-command gate).
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ import re
 from pathlib import Path
 from typing import Any, Final
 
+import pytest
 import yaml
 
 _REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[5]
@@ -182,16 +184,25 @@ def _exclude_matches_taskfile(exclude: object) -> bool:
     pre-commit applies `exclude` regexes via `re.search` against the
     forward-slash-normalised path of each candidate file, so evaluating the
     actual regex against the literal path is the load-bearing check — not
-    pattern-string equality. A malformed regex is treated as "does not
-    match" (pre-commit itself would raise at load time, so the repo cannot
-    reach a state where a malformed exclude hides the Taskfile).
+    pattern-string equality. A malformed regex is treated as a test
+    failure, mirroring pre-commit's load-time behaviour: pre-commit itself
+    would raise on load, so any `re.error` here means the repo is shipping
+    a broken `.pre-commit-config.yaml` and this meta-test must catch it
+    loudly instead of silently masking the Taskfile exclude by returning
+    False.
     """
     if not isinstance(exclude, str) or not exclude:
         return False
     try:
         return re.search(exclude, _TASKFILE_LITERAL_PATH) is not None
-    except re.error:
-        return False
+    except re.error as exc:
+        msg = (
+            f"Invalid pre-commit exclude regex {exclude!r} in "
+            f"{_PRECOMMIT_PATH}: {exc}. pre-commit would reject this at "
+            "load time; fix the regex rather than letting this meta-test "
+            "ignore it."
+        )
+        raise AssertionError(msg) from exc
 
 
 def test_taskfile_is_not_excluded_from_any_hook() -> None:
@@ -254,3 +265,22 @@ def test_taskfile_is_not_excluded_from_any_hook() -> None:
         "parses as valid YAML, so `check-yaml` and other hooks should "
         "cover it.\nOffenders:\n" + "\n".join(f"  - {o}" for o in offenders)
     )
+
+
+def test_exclude_matches_taskfile_rejects_malformed_regex() -> None:
+    """A malformed `exclude` regex must fail this meta-test loudly.
+
+    Regression guard for the Copilot review on PR #434: the earlier
+    implementation swallowed `re.error` and returned False, which would
+    let a broken `.pre-commit-config.yaml` (malformed `exclude`) pass
+    this meta-test silently even though pre-commit itself would reject
+    the config at load time. The helper now re-raises as AssertionError;
+    this test pins that behaviour so a future revert cannot reintroduce
+    the silent-swallow failure mode.
+    """
+    # Unbalanced parenthesis: `re.compile` raises `re.error`, so any future
+    # attempt to "fix" the helper by suppressing the error would show up
+    # here instead of silently passing.
+    malformed_regex = "Task(file"
+    with pytest.raises(AssertionError, match=r"Invalid pre-commit exclude regex"):
+        _exclude_matches_taskfile(malformed_regex)

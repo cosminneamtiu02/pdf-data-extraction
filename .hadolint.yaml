@@ -3,16 +3,21 @@
 # hadolint lints `infra/docker/backend.Dockerfile`. The Dockerfile is
 # deliberately pinned by digest (see the `ARG PYTHON_IMAGE=...@sha256:...`
 # header) and runs `apt-get install --no-install-recommends` without a
-# version pin on `tesseract-ocr` because the pin is anchored at the
-# base-image digest level, not at package level. That makes DL3008
-# (`Pin versions in apt-get install`) a false positive for this project.
+# version pin on `tesseract-ocr`. This does NOT make DL3008 a false
+# positive: `apt-get update` still resolves packages from the current
+# Debian repository state at build time, so the installed apt package
+# set can drift even though the base image digest is fixed. We ignore
+# DL3008 here as an intentional tradeoff — the alternative (per-package
+# version pins, or snapshot/dated apt repositories) would require
+# rebuilding the pin list on every base-image digest bump for a marginal
+# determinism gain on top of the base-image digest.
 #
 # ignored: list of rule IDs explicitly disabled.
 
 ignored:
-  # DL3008: Pin versions in apt-get install. We pin the base image by
-  # digest (`python:3.13-slim@sha256:...`), which locks the apt package
-  # set to exactly one state — re-pinning each package per-install would
-  # double-pin without adding determinism and would require rebuilding
-  # the pin list on every base-image digest bump.
+  # DL3008: Pin versions in apt-get install. The base image is pinned by
+  # digest (`python:3.13-slim@sha256:...`), but `apt-get update` can still
+  # pull newer repository metadata at build time. We intentionally accept
+  # that tradeoff instead of maintaining explicit package version pins for
+  # each base-image digest bump.
   - DL3008
