@@ -1,6 +1,7 @@
 """Tests for the exception handler."""
 
 import ast
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import patch
 
@@ -270,7 +271,9 @@ def test_handle_domain_error_emits_info_for_4xx(test_client: TestClient) -> None
 # so a future refactor that special-cases any of them cannot regress the
 # contract unnoticed. Class-construction is deferred to a factory because
 # several of these take required kwargs (``budget_seconds``, etc.).
-_NAMED_5XX_DOMAIN_ERROR_FACTORIES: list[tuple[str, type[DomainError], object]] = [
+_NAMED_5XX_DOMAIN_ERROR_FACTORIES: list[
+    tuple[str, type[DomainError], Callable[[], DomainError]]
+] = [
     # Parameterless errors: the class itself is a zero-arg callable, so no
     # lambda wrapper is needed (ruff PLW0108).
     (
@@ -310,7 +313,7 @@ _NAMED_5XX_DOMAIN_ERROR_FACTORIES: list[tuple[str, type[DomainError], object]] =
 def test_handle_domain_error_logs_warning_for_each_named_5xx_subclass(
     name: str,
     error_cls: type[DomainError],
-    factory: object,
+    factory: Callable[[], DomainError],
 ) -> None:
     """Each 5xx DomainError subclass called out in issue #317 must emit the warning log.
 
@@ -330,7 +333,7 @@ def test_handle_domain_error_logs_warning_for_each_named_5xx_subclass(
 
     @app.get("/boom")
     async def boom() -> None:
-        raise factory()  # type: ignore[operator]  # factory is callable at runtime (parametrized lambda)
+        raise factory()
 
     client = TestClient(app, raise_server_exceptions=False)
 
