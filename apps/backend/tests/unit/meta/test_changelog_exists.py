@@ -25,6 +25,11 @@ import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[5]
 _CHANGELOG_PATH = _REPO_ROOT / "CHANGELOG.md"
+_MISSING_CHANGELOG_MESSAGE = (
+    f"Expected CHANGELOG.md at {_CHANGELOG_PATH}. "
+    "See issue #413: the repo must track release history in a Keep a "
+    "Changelog file, not only in the commit log."
+)
 
 
 def _read_changelog_or_fail() -> str:
@@ -35,23 +40,17 @@ def _read_changelog_or_fail() -> str:
     ``FileNotFoundError`` traceback when ``CHANGELOG.md`` is absent.
     The existence invariant itself is owned by
     ``test_changelog_file_exists_at_repo_root``; this helper mirrors the
-    check so downstream tests remain independently readable.
+    check so downstream tests remain independently readable. The diagnostic
+    string lives in ``_MISSING_CHANGELOG_MESSAGE`` so both call sites share
+    wording and cannot drift apart.
     """
     if not _CHANGELOG_PATH.is_file():
-        pytest.fail(
-            f"Expected CHANGELOG.md at {_CHANGELOG_PATH}. "
-            "See issue #413: the repo must track release history in a Keep a "
-            "Changelog file, not only in the commit log."
-        )
+        pytest.fail(_MISSING_CHANGELOG_MESSAGE)
     return _CHANGELOG_PATH.read_text(encoding="utf-8")
 
 
 def test_changelog_file_exists_at_repo_root() -> None:
-    assert _CHANGELOG_PATH.is_file(), (
-        f"Expected CHANGELOG.md at {_CHANGELOG_PATH}. "
-        "See issue #413: the repo must track release history in a Keep a "
-        "Changelog file, not only in the commit log."
-    )
+    assert _CHANGELOG_PATH.is_file(), _MISSING_CHANGELOG_MESSAGE
 
 
 def test_changelog_has_top_level_header() -> None:
@@ -69,8 +68,10 @@ def test_changelog_has_top_level_header() -> None:
 
 def test_changelog_has_unreleased_section() -> None:
     content = _read_changelog_or_fail()
-    assert "## [Unreleased]" in content, (
-        f"CHANGELOG.md at {_CHANGELOG_PATH} is missing the '## [Unreleased]' "
-        "section. New changes must land under [Unreleased] until a version "
-        "is cut."
+    has_unreleased_header = any(line.strip() == "## [Unreleased]" for line in content.splitlines())
+    assert has_unreleased_header, (
+        f"CHANGELOG.md at {_CHANGELOG_PATH} is missing a line that is exactly "
+        "'## [Unreleased]'. Substring matches are rejected so code blocks or "
+        "explanatory prose cannot satisfy this invariant. New changes must "
+        "land under [Unreleased] until a version is cut."
     )
