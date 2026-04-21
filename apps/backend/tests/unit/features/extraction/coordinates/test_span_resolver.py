@@ -263,6 +263,13 @@ def test_cross_page_span_returns_bboxes_with_mixed_page_numbers() -> None:
 
 
 def test_hallucinated_offsets_outside_any_block_returns_grounded_false() -> None:
+    # Issue #338: a value whose offsets do not land in any parsed block cannot
+    # honestly claim `source="document"` — the model said it was grounded, but
+    # the resolver proved the claim wrong. Route through the same
+    # `source="inferred"` branch the `not raw.grounded` case uses, following
+    # the same consistency/contract motivation discussed in #279 without
+    # asserting that broader failed-resolution behavior has already changed
+    # in the resolver.
     resolver = SpanResolver()
     block = _block(block_id="b0", text="hello", bbox=(0, 0, 50, 10))
     doc = _doc(block)
@@ -282,7 +289,7 @@ def test_hallucinated_offsets_outside_any_block_returns_grounded_false() -> None
     assert field.value == "hello"
     assert field.grounded is False
     assert field.bbox_refs == []
-    assert field.source == "document"
+    assert field.source == "inferred"
     assert field.status == FieldStatus.extracted
 
 
@@ -306,6 +313,8 @@ def test_hallucinated_offsets_in_separator_gap_returns_grounded_false() -> None:
 
     assert result[0].grounded is False
     assert result[0].bbox_refs == []
+    # Issue #338: hallucinated offsets must not claim `source="document"`.
+    assert result[0].source == "inferred"
 
 
 def test_start_offset_exactly_on_exclusive_end_of_block_returns_grounded_false() -> None:
@@ -331,6 +340,8 @@ def test_start_offset_exactly_on_exclusive_end_of_block_returns_grounded_false()
 
     assert result[0].grounded is False
     assert result[0].bbox_refs == []
+    # Issue #338: hallucinated offsets must not claim `source="document"`.
+    assert result[0].source == "inferred"
 
 
 def test_hallucinated_end_offset_past_block_returns_grounded_false() -> None:
@@ -351,6 +362,8 @@ def test_hallucinated_end_offset_past_block_returns_grounded_false() -> None:
 
     assert result[0].grounded is False
     assert result[0].bbox_refs == []
+    # Issue #338: hallucinated offsets must not claim `source="document"`.
+    assert result[0].source == "inferred"
 
 
 def test_hallucinated_offsets_emit_info_log() -> None:
