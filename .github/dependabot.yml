@@ -47,6 +47,24 @@ updates:
           - "fastapi"
           - "starlette"
           - "uvicorn*"
+      # Docling + torch + torchvision are an interlocking ML cluster.
+      # Docling pulls torch/torchvision as transitives; they're declared
+      # direct in apps/backend/pyproject.toml so `[tool.uv.sources]`
+      # CPU-index routing takes effect (ADR-012, issue #139). The three
+      # sit on adjacent lines of that manifest and move in lockstep, so a
+      # weekly sequence that bumps `docling` first and `torch` second is
+      # the exact rebase-conflict cascade pattern documented in
+      # docs/automerge.md Incident 3. Grouping them ships the cluster as
+      # one atomic PR and prevents the cascade. `transformers` rides
+      # along — it is a docling transitive that moves on the same cadence
+      # and shares version ranges with docling's pinned upper bounds.
+      docling-stack:
+        patterns:
+          - "docling"
+          - "docling-*"
+          - "torch"
+          - "torchvision"
+          - "transformers"
 
   - package-ecosystem: "pip"
     directory: "/packages/error-contracts"
