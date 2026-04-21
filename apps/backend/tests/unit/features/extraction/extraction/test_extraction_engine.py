@@ -21,6 +21,9 @@ from typing import Any
 import pytest
 from langextract.core.data import AnnotatedDocument, CharInterval, Extraction
 
+from app.features.extraction.extraction import (
+    _validating_langextract_adapter as adapter_module,
+)
 from app.features.extraction.extraction import extraction_engine as engine_module
 from app.features.extraction.extraction.extraction_engine import (
     ExtractionEngine,
@@ -842,6 +845,108 @@ async def test_validating_adapter_infer_raises_intelligence_timeout_when_generat
     with pytest.raises(IntelligenceTimeoutError) as exc_info:
         await _asyncio.wait_for(infer_task, timeout=5.0)
     assert exc_info.value.code == "INTELLIGENCE_TIMEOUT"
+
+
+class _AdapterSpyLogger:
+    """Test double for ``adapter_module._logger`` (Copilot-review #472).
+
+    Why we don't use ``structlog.testing.capture_logs()`` here: the
+    adapter module defines ``_logger = structlog.get_logger(__name__)``
+    at import time, and ``app.core.logging.configure_logging()``
+    registers ``cache_logger_on_first_use=True``. Sibling tests in this
+    file — notably
+    ``test_validating_adapter_infer_raises_intelligence_timeout_when_generate_hangs``
+    and
+    ``test_validating_adapter_infer_returns_settled_result_on_boundary_race``
+    — drive the adapter's timeout path without a ``capture_logs()``
+    context, which can cause structlog to cache a bound logger that
+    subsequent ``capture_logs()`` contexts won't see — making the log
+    assertion order-dependent. A direct monkeypatched spy sidesteps
+    structlog's global state entirely, mirroring
+    ``tests/unit/features/extraction/test_extraction_service.py``'s
+    ``_SpyLogger`` (Copilot-review #439, same root cause).
+    """
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, str, dict[str, object]]] = []
+
+    def info(self, event: str, **kwargs: object) -> None:  # pragma: no cover
+        self.events.append(("info", event, kwargs))
+
+    def warning(self, event: str, **kwargs: object) -> None:
+        self.events.append(("warning", event, kwargs))
+
+    def error(self, event: str, **kwargs: object) -> None:  # pragma: no cover
+        self.events.append(("error", event, kwargs))
+
+
+async def test_validating_adapter_logs_timeout_event_before_raising_intelligence_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression for issue #334. Every other timeout/failure path in the
+    pipeline (`OllamaGemmaProvider`, `SpanResolver`, `StructuredOutputValidator`)
+    emits a structlog event so operators can see the upstream breadcrumb
+    explaining a 504. The adapter's timeout remap was silent — a hung
+    LangExtract inference loop surfaced only as a middleware 504 with no
+    cause logged. This test pins a `langextract_adapter_timeout` warning
+    event with the configured budget and the batch prompt count BEFORE the
+    `IntelligenceTimeoutError` is raised. Naming mirrors
+    `ollama_gemma_provider.py`'s `intelligence_timeout` event for
+    discoverability.
+    """
+    import asyncio as _asyncio
+
+    from app.exceptions import IntelligenceTimeoutError
+
+    spy = _AdapterSpyLogger()
+    monkeypatch.setattr(adapter_module, "_logger", spy)
+
+    hang_started = _asyncio.Event()
+
+    class _HangingProvider:
+        async def generate(
+            self,
+            prompt: str,
+            output_schema: dict[str, Any],
+        ) -> GenerationResult:
+            _ = prompt
+            _ = output_schema
+            hang_started.set()
+            await _asyncio.sleep(3)
+            msg = "unreachable — adapter should have timed out"  # pragma: no cover
+            raise AssertionError(msg)  # pragma: no cover
+
+    main_loop = _asyncio.get_running_loop()
+    adapter = _ValidatingLangExtractAdapter(
+        _HangingProvider(),
+        main_loop,
+        timeout_seconds=0.2,
+    )
+
+    def _run_infer() -> None:
+        list(adapter.infer(["prompt-that-hangs", "second-prompt"]))
+
+    infer_task = _asyncio.create_task(_asyncio.to_thread(_run_infer))
+    await _asyncio.wait_for(hang_started.wait(), timeout=1.0)
+
+    with pytest.raises(IntelligenceTimeoutError):
+        await _asyncio.wait_for(infer_task, timeout=5.0)
+
+    timeout_events = [
+        (level, kwargs)
+        for level, event, kwargs in spy.events
+        if event == "langextract_adapter_timeout"
+    ]
+    assert len(timeout_events) == 1, (
+        f"Expected exactly one langextract_adapter_timeout event; got {spy.events!r}"
+    )
+    level, kwargs = timeout_events[0]
+    # `warning` level is load-bearing: operators filter triage dashboards
+    # on level, and a silent drop to `info` would bury the 504 breadcrumb.
+    assert level == "warning"
+    assert kwargs["budget_seconds"] == 0.2
+    assert kwargs["prompts_in_batch"] == 2
+    assert kwargs["original_exc_type"] == "TimeoutError"
 
 
 async def test_validating_adapter_infer_propagates_inner_timeout_error_distinct_from_adapter_timeout() -> (
