@@ -4,6 +4,7 @@ Tests cover:
 - ``read_with_byte_limit`` streaming guard (scenarios 1-4)
 - ``_build_multipart_mixed`` response builder (scenarios 5-6)
 - Handler output-mode branching (scenarios 7-9)
+- Structured log context on ``InternalError`` raises (issue #337)
 """
 
 from __future__ import annotations
@@ -221,3 +222,62 @@ def test_handler_both_raises_internal_error_when_bytes_none() -> None:
 
     with pytest.raises(InternalError):
         _serialize_result(result, OutputMode.BOTH)
+
+
+# ---------------------------------------------------------------------------
+# Structured log context on InternalError raises (issue #337)
+# ---------------------------------------------------------------------------
+
+
+def test_handler_pdf_only_emits_log_context_before_internal_error() -> None:
+    """PDF_ONLY invariant violation emits a structured log event before raising.
+
+    Issue #337: ``raise InternalError()`` in ``_serialize_result`` was silent —
+    operators reading a 500 had no idea whether it was a bug or a dependency
+    issue. The fix attaches structlog context (event name, output_mode,
+    has_annotated_pdf) immediately before the raise.
+    """
+    from structlog.testing import capture_logs
+
+    from app.exceptions import InternalError
+    from app.features.extraction.router import _serialize_result
+    from app.features.extraction.schemas.output_mode import OutputMode
+
+    result = _make_extraction_result(annotated_pdf_bytes=None)
+
+    with capture_logs() as logs, pytest.raises(InternalError):
+        _serialize_result(result, OutputMode.PDF_ONLY)
+
+    event = next(
+        (e for e in logs if e.get("event") == "router_serialization_invariant_violated"),
+        None,
+    )
+    assert event is not None, (
+        f"expected 'router_serialization_invariant_violated' log event, got {logs!r}"
+    )
+    assert event["output_mode"] == OutputMode.PDF_ONLY.value
+    assert event["has_annotated_pdf"] is False
+
+
+def test_handler_both_emits_log_context_before_internal_error() -> None:
+    """BOTH invariant violation emits a structured log event before raising."""
+    from structlog.testing import capture_logs
+
+    from app.exceptions import InternalError
+    from app.features.extraction.router import _serialize_result
+    from app.features.extraction.schemas.output_mode import OutputMode
+
+    result = _make_extraction_result(annotated_pdf_bytes=None)
+
+    with capture_logs() as logs, pytest.raises(InternalError):
+        _serialize_result(result, OutputMode.BOTH)
+
+    event = next(
+        (e for e in logs if e.get("event") == "router_serialization_invariant_violated"),
+        None,
+    )
+    assert event is not None, (
+        f"expected 'router_serialization_invariant_violated' log event, got {logs!r}"
+    )
+    assert event["output_mode"] == OutputMode.BOTH.value
+    assert event["has_annotated_pdf"] is False
