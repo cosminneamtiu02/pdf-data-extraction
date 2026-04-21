@@ -71,25 +71,37 @@ FROM ${PYTHON_IMAGE}
 # reproducibility-boundary:digest-only (issue #362)
 # -------------------------------------------------
 # The apt packages below are INTENTIONALLY not pinned to `pkg=version`
-# tuples. The reproducibility boundary for this image is the
-# `@sha256:…` digest on the `python:3.13-slim` base declared at the top
-# of this file — the digest always resolves to the exact same Debian
-# suite snapshot, so the same `apt-get install` run inside the same
-# digest produces the same layers. Pinning apt on top of that would NOT
-# add reproducibility the digest doesn't already provide; it would only
-# block Debian security updates between base-image pin bumps.
+# tuples. That means rebuilds are expected to pick up newer Debian
+# package versions over time, by design, when `apt-get update` reads
+# from the default moving apt repositories. This is how the image
+# receives Debian security fixes between base-image pin bumps.
 #
-# If a future contributor needs to pin a package with `=<version>`, the
-# correct sequence is:
-#   1. Remove the `@sha256:` digest from `ARG PYTHON_IMAGE` above
-#      (otherwise the pin adds no value — see paragraph above).
-#   2. Explain the tradeoff in the PR description.
-#   3. Update the `apps/backend/tests/unit/meta/`
-#      `test_dockerfile_apt_intentional_floating.py` guard rails to match
-#      the new policy.
-# Skipping any of those steps means the test below will fire. That is the
-# intended behavior — the marker string on the first line of this block
-# (`reproducibility-boundary:digest-only`) is the anchor the test greps.
+# The `@sha256:…` digest on the `python:3.13-slim` base declared at the
+# top of this file pins the starting filesystem for both stages, but it
+# does NOT pin the apt repository snapshot consulted during
+# `apt-get update`. So an unchanged base-image digest does not
+# guarantee identical apt results or byte-for-byte identical layers
+# across rebuilds.
+#
+# Full reproducibility for these apt installs would require pointing
+# apt at a snapshot repository (for example `snapshot.debian.org` or
+# another dated mirror) and/or pinning exact package versions with
+# `=<version>`. We intentionally do not do that here because the
+# desired policy is to keep apt packages floating for security updates.
+#
+# If a future contributor needs to pin a package with `=<version>`
+# and/or switch to a snapshot apt repository, the correct sequence is:
+#   1. Explain the reproducibility/security tradeoff in the PR
+#      description (pins buy determinism at the cost of Debian
+#      security updates, and can become brittle as repositories rotate
+#      older builds).
+#   2. Update the `apps/backend/tests/unit/meta/`
+#      `test_dockerfile_apt_intentional_floating.py` guard rails to
+#      match the new policy.
+# Skipping any of those steps means the test below will fire. That is
+# the intended behavior — the marker string on the first line of this
+# block (`reproducibility-boundary:digest-only`) is the anchor the
+# test greps.
 RUN apt-get update \
     && apt-get install --no-install-recommends -y \
         tesseract-ocr \
