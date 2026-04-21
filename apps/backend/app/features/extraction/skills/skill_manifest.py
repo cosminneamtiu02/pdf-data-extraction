@@ -10,6 +10,8 @@ from __future__ import annotations
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
 
+import structlog
+
 from app.exceptions import SkillNotFoundError
 
 if TYPE_CHECKING:
@@ -18,6 +20,8 @@ if TYPE_CHECKING:
     from app.features.extraction.skills.skill import Skill
 
 _LATEST: Final = "latest"
+
+_logger = structlog.get_logger(__name__)
 
 
 class SkillManifest:
@@ -53,7 +57,22 @@ class SkillManifest:
         shape — a non-numeric string, an integer-like but missing version, or
         a name not present at all — raises `SkillNotFoundError` so callers
         never see partial results.
+
+        If the manifest is empty (no skills ever loaded), a
+        `skill_lookup_on_empty_manifest` warning is emitted before the raise
+        so operators see the root-cause signal in-stream with the failing
+        request instead of having to correlate with the `/ready` probe
+        (issue #386). The raised error type stays `SkillNotFoundError` so the
+        response payload is unchanged.
         """
+        if not self._skills:
+            _logger.warning(
+                "skill_lookup_on_empty_manifest",
+                requested_name=name,
+                requested_version=version,
+            )
+            raise SkillNotFoundError(name=name, version=version)
+
         if version == _LATEST:
             resolved = self._latest.get(name)
             if resolved is None:
