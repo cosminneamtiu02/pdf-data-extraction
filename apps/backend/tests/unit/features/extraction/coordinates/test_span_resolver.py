@@ -819,6 +819,103 @@ def test_multi_block_dedups_repeated_block_ids_in_offset_index() -> None:
     ]
 
 
+def test_multi_block_end_before_start_falls_back_to_start_block_bbox() -> None:
+    # Issue #339: if the offset index is corrupt or a caller misuses the
+    # resolver such that end_block_id appears BEFORE start_block_id in the
+    # index order (which `start_offset < end_offset` is supposed to prevent),
+    # `_collect_multi_block_bboxes` used to set `in_span=True` on the start
+    # block and then run off the end of the iterator, silently emitting bboxes
+    # for every block from start through the end of the document. The guard
+    # must catch the invariant violation and fall back to a single whole-block
+    # bbox for the start block rather than silently emit wrong geometry.
+    #
+    # `RawExtraction.__post_init__` prevents the bug shape from being
+    # constructed via the public constructor (it enforces start_offset <
+    # end_offset), so we drive `_collect_multi_block_bboxes` directly —
+    # exactly the misuse surface the invariant guard is there to catch.
+    from app.features.extraction.coordinates.span_resolver import (
+        _collect_multi_block_bboxes,
+    )
+
+    # Index order: end_block_id ("b_end") at position 0, start_block_id
+    # ("b_start") at position 1, then two unrelated trailing blocks. In the
+    # pre-fix implementation, encountering `end_block_id` before
+    # `start_block_id` would break iteration immediately and yield no refs.
+    # The separate "leak trailing blocks through the end of the document"
+    # behavior applied when `end_block_id` was missing from the index, which
+    # is covered by the next test. The fixed implementation emits exactly one
+    # bbox here — the start block's whole-block bbox.
+    b_end = _block(block_id="b_end", text="first", bbox=(0, 0, 50, 10))
+    b_start = _block(block_id="b_start", text="second", bbox=(0, 20, 50, 30))
+    b_middle = _block(block_id="b_middle", text="third", bbox=(0, 40, 50, 50))
+    b_trail = _block(block_id="b_trail", text="fourth", bbox=(0, 60, 50, 70))
+    doc = _doc(b_end, b_start, b_middle, b_trail)
+    index = _index(
+        (0, 5, "b_end"),
+        (7, 13, "b_start"),
+        (15, 20, "b_middle"),
+        (22, 28, "b_trail"),
+    )
+
+    blocks_by_id = {b.block_id: b for b in doc.blocks}
+    with capture_logs() as logs:
+        refs = _collect_multi_block_bboxes(
+            start_block_id="b_start",
+            end_block_id="b_end",
+            offset_index=index,
+            blocks_by_id=blocks_by_id,
+        )
+
+    # Guard: exactly one bbox (the start block), NOT the three trailing
+    # entries the pre-fix implementation leaked.
+    assert len(refs) == 1, (
+        f"Expected fallback to a single start-block bbox; got {len(refs)} bboxes. "
+        "Pre-fix behavior leaked trailing blocks because the end_block_id was "
+        "never seen after start_block_id."
+    )
+    assert (refs[0].x0, refs[0].y0, refs[0].x1, refs[0].y1) == (0.0, 20.0, 50.0, 30.0)
+
+    # And the invariant-violation log event must have fired.
+    invariant_events = [
+        e for e in logs if e.get("event") == "span_resolver_multi_block_invariant_violated"
+    ]
+    assert len(invariant_events) == 1
+    assert invariant_events[0]["start_block_id"] == "b_start"
+    assert invariant_events[0]["end_block_id"] == "b_end"
+
+
+def test_multi_block_end_block_missing_from_index_falls_back_to_start_block_bbox() -> None:
+    # Issue #339, variant: end_block_id never appears in the index at all
+    # (e.g. because the OffsetIndex was truncated). Same invariant — emit
+    # one bbox for the start block, not everything from start onwards.
+    from app.features.extraction.coordinates.span_resolver import (
+        _collect_multi_block_bboxes,
+    )
+
+    b_start = _block(block_id="b_start", text="first", bbox=(1.0, 2.0, 3.0, 4.0))
+    b_trail = _block(block_id="b_trail", text="second", bbox=(0, 20, 50, 30))
+    doc = _doc(b_start, b_trail)
+    index = _index((0, 5, "b_start"), (7, 13, "b_trail"))
+    blocks_by_id = {b.block_id: b for b in doc.blocks}
+
+    with capture_logs() as logs:
+        refs = _collect_multi_block_bboxes(
+            start_block_id="b_start",
+            end_block_id="b_ghost",
+            offset_index=index,
+            blocks_by_id=blocks_by_id,
+        )
+
+    assert len(refs) == 1
+    assert (refs[0].x0, refs[0].y0, refs[0].x1, refs[0].y1) == (1.0, 2.0, 3.0, 4.0)
+
+    invariant_events = [
+        e for e in logs if e.get("event") == "span_resolver_multi_block_invariant_violated"
+    ]
+    assert len(invariant_events) == 1
+    assert invariant_events[0]["end_block_id"] == "b_ghost"
+
+
 def test_happy_path_emits_no_span_resolver_logs() -> None:
     resolver = SpanResolver()
     block = _block(block_id="b0", text="Total: $1,847.50 due", bbox=(0, 0, 200, 20))

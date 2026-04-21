@@ -254,15 +254,45 @@ def _collect_multi_block_bboxes(
     # loop would emit one `BoundingBoxRef` per repeated entry, polluting the
     # grounded response with identical rectangles. The `seen` set keys on
     # block_id so each unique block is emitted exactly once per call.
+    #
+    # Invariant (issue #339): `start_block_id` must appear in the offset-index
+    # order at or before `end_block_id`. `RawExtraction.__post_init__` enforces
+    # `start_offset < end_offset` on the caller side, so reaching this function
+    # with the wrong ordering implies the OffsetIndex itself is corrupt or a
+    # caller bypassed the RawExtraction constructor.
+    #
+    # Before this guard, if `end_block_id` was never encountered after
+    # `start_block_id`, the loop would run off the end of the iterator and
+    # silently return bboxes for every block from start through the document
+    # tail. If `end_block_id` appeared earlier than `start_block_id`, the old
+    # behavior returned an empty list instead. Both outcomes violate the
+    # ordering invariant and provide poor observability.
+    #
+    # Detect that the invariant held by tracking whether `end_block_id` was
+    # actually encountered after entering the span. If not, log and fall back
+    # to a single whole-block bbox for the start block — correctness over
+    # silent fan-out.
     refs: list[BoundingBoxRef] = []
     seen: set[str] = set()
     in_span = False
+    end_seen = False
     for entry in offset_index.entries:
         if entry.block_id == start_block_id:
             in_span = True
         if in_span and entry.start < entry.end and entry.block_id not in seen:
             refs.append(_whole_block_bbox(blocks_by_id[entry.block_id]))
             seen.add(entry.block_id)
-        if entry.block_id == end_block_id:
+        if in_span and entry.block_id == end_block_id:
+            end_seen = True
             break
+
+    if not end_seen:
+        _logger.warning(
+            "span_resolver_multi_block_invariant_violated",
+            start_block_id=start_block_id,
+            end_block_id=end_block_id,
+            reason="end_block_not_seen_after_start",
+            collected_bbox_count=len(refs),
+        )
+        return [_whole_block_bbox(blocks_by_id[start_block_id])]
     return refs
