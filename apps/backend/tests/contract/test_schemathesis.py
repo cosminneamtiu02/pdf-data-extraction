@@ -37,6 +37,7 @@ matching how the real handler short-circuits the pipeline.
 
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
@@ -104,6 +105,28 @@ def test_health_endpoint_conforms_to_spec() -> None:
     assert response.json() == {"status": "ok"}
 
 
+def test_schema_is_module_level_constant_not_fixture() -> None:
+    """`SCHEMA` is loaded once at module import as a `schemathesis.BaseSchema` (issue #287).
+
+    Pins the hoist in place: if a future refactor reverts ``SCHEMA`` back to a
+    module-scoped sync fixture calling ``from_asgi`` inside pytest's
+    session-loop scope, this assertion fails at collection time — before the
+    rest of the contract suite tries to use the (now-missing) constant.
+    """
+    import sys
+
+    module_under_test = sys.modules[__name__]
+
+    assert hasattr(module_under_test, "SCHEMA"), (
+        "`SCHEMA` must exist as a module-level constant in test_schemathesis; "
+        "reintroducing an `extract_schema` fixture regresses issue #287."
+    )
+    assert isinstance(module_under_test.SCHEMA, schemathesis.BaseSchema)
+    # Load-bearing for every contract test below — the /api/v1/extract
+    # operation must be reachable off the hoisted schema.
+    assert "/api/v1/extract" in module_under_test.SCHEMA
+
+
 # ---------------------------------------------------------------------------
 # /api/v1/extract contract coverage (issue #117)
 # ---------------------------------------------------------------------------
@@ -167,10 +190,24 @@ async def _post_extract(  # noqa: PLR0913 — kwargs-only test helper with per-c
         return await client.send(request)
 
 
-# The `extract_schema` fixture lives in `tests/contract/conftest.py` and
-# is session-scoped per issue #352 (previously module-scoped here, which
-# still rebuilt the schema for every contract module and — prior to the
-# #352 fix — leaked a `tempfile.mkdtemp` skills directory per invocation).
+# Module constant — OpenAPI shape is settings-independent; avoids sync-TestClient-in-async-loop fragility (issue #287)
+# `schemathesis.openapi.from_asgi` drives `starlette_testclient.TestClient`
+# synchronously under the hood. Holding the schema in a module-level constant
+# (instead of a sync fixture under ``asyncio_default_fixture_loop_scope =
+# "session"``) keeps TestClient's event-loop portal off any async fixture path
+# and removes the "loop is already running" refactor hazard flagged in #287.
+# The `TemporaryDirectory` is bound to a module-level variable so its
+# finalizer runs at interpreter shutdown, avoiding the leaked-tempdir
+# regression from the pre-#352 `mkdtemp` pattern.
+_SCHEMA_TMPDIR = tempfile.TemporaryDirectory(prefix="pdfx_contract_extract_schema_")
+_SCHEMA_SKILLS_DIR = Path(_SCHEMA_TMPDIR.name)
+_write_valid_skill(_SCHEMA_SKILLS_DIR)
+# `app_env="development"` via `_settings` keeps `/openapi.json` served even
+# when the ambient environment has `APP_ENV=production` set.
+SCHEMA: schemathesis.BaseSchema = schemathesis.openapi.from_asgi(
+    "/openapi.json",
+    create_app(_settings(_SCHEMA_SKILLS_DIR)),
+)
 
 
 def _validate(
@@ -198,19 +235,17 @@ def canned_success_stub() -> AsyncMock:
 async def test_extract_200_conforms_to_openapi_schema(
     tmp_path: Path,
     canned_success_stub: AsyncMock,
-    extract_schema: schemathesis.BaseSchema,
 ) -> None:
     """200 JSON_ONLY response validates against the schemathesis contract."""
     app_under_test = _build_app_with_stub(tmp_path, canned_success_stub)
     response = await _post_extract(app_under_test)
 
     assert response.status_code == 200
-    _validate(extract_schema, response)
+    _validate(SCHEMA, response)
 
 
 async def test_extract_400_pdf_invalid_conforms_to_openapi_schema(
     tmp_path: Path,
-    extract_schema: schemathesis.BaseSchema,
 ) -> None:
     """400 PDF_INVALID response validates against the schemathesis contract."""
     stub = AsyncMock(spec=ExtractionService)
@@ -220,12 +255,11 @@ async def test_extract_400_pdf_invalid_conforms_to_openapi_schema(
     response = await _post_extract(app_under_test)
 
     assert response.status_code == 400
-    _validate(extract_schema, response)
+    _validate(SCHEMA, response)
 
 
 async def test_extract_400_pdf_password_protected_conforms_to_openapi_schema(
     tmp_path: Path,
-    extract_schema: schemathesis.BaseSchema,
 ) -> None:
     """400 PDF_PASSWORD_PROTECTED response validates against the schemathesis contract."""
     stub = AsyncMock(spec=ExtractionService)
@@ -235,12 +269,11 @@ async def test_extract_400_pdf_password_protected_conforms_to_openapi_schema(
     response = await _post_extract(app_under_test)
 
     assert response.status_code == 400
-    _validate(extract_schema, response)
+    _validate(SCHEMA, response)
 
 
 async def test_extract_404_skill_not_found_conforms_to_openapi_schema(
     tmp_path: Path,
-    extract_schema: schemathesis.BaseSchema,
 ) -> None:
     """404 SKILL_NOT_FOUND response validates against the schemathesis contract."""
     stub = AsyncMock(spec=ExtractionService)
@@ -250,12 +283,11 @@ async def test_extract_404_skill_not_found_conforms_to_openapi_schema(
     response = await _post_extract(app_under_test, skill_name="nonexistent")
 
     assert response.status_code == 404
-    _validate(extract_schema, response)
+    _validate(SCHEMA, response)
 
 
 async def test_extract_413_pdf_too_large_conforms_to_openapi_schema(
     tmp_path: Path,
-    extract_schema: schemathesis.BaseSchema,
 ) -> None:
     """413 PDF_TOO_LARGE response validates against the schemathesis contract.
 
@@ -268,12 +300,11 @@ async def test_extract_413_pdf_too_large_conforms_to_openapi_schema(
     response = await _post_extract(app_under_test)
 
     assert response.status_code == 413
-    _validate(extract_schema, response)
+    _validate(SCHEMA, response)
 
 
 async def test_extract_413_pdf_too_many_pages_conforms_to_openapi_schema(
     tmp_path: Path,
-    extract_schema: schemathesis.BaseSchema,
 ) -> None:
     """413 PDF_TOO_MANY_PAGES response validates against the schemathesis contract."""
     stub = AsyncMock(spec=ExtractionService)
@@ -283,13 +314,12 @@ async def test_extract_413_pdf_too_many_pages_conforms_to_openapi_schema(
     response = await _post_extract(app_under_test)
 
     assert response.status_code == 413
-    _validate(extract_schema, response)
+    _validate(SCHEMA, response)
 
 
 async def test_extract_422_request_validation_conforms_to_openapi_schema(
     tmp_path: Path,
     canned_success_stub: AsyncMock,
-    extract_schema: schemathesis.BaseSchema,
 ) -> None:
     """422 VALIDATION_FAILED envelope (missing form field) validates against the contract."""
     app_under_test = _build_app_with_stub(tmp_path, canned_success_stub)
@@ -299,12 +329,11 @@ async def test_extract_422_request_validation_conforms_to_openapi_schema(
     response = await _post_extract(app_under_test, include_output_mode=False)
 
     assert response.status_code == 422
-    _validate(extract_schema, response)
+    _validate(SCHEMA, response)
 
 
 async def test_extract_422_no_extractable_text_conforms_to_openapi_schema(
     tmp_path: Path,
-    extract_schema: schemathesis.BaseSchema,
 ) -> None:
     """422 PDF_NO_TEXT_EXTRACTABLE response validates against the schemathesis contract."""
     stub = AsyncMock(spec=ExtractionService)
@@ -314,12 +343,11 @@ async def test_extract_422_no_extractable_text_conforms_to_openapi_schema(
     response = await _post_extract(app_under_test)
 
     assert response.status_code == 422
-    _validate(extract_schema, response)
+    _validate(SCHEMA, response)
 
 
 async def test_extract_502_structured_output_failed_conforms_to_openapi_schema(
     tmp_path: Path,
-    extract_schema: schemathesis.BaseSchema,
 ) -> None:
     """502 STRUCTURED_OUTPUT_FAILED response validates against the schemathesis contract."""
     stub = AsyncMock(spec=ExtractionService)
@@ -329,12 +357,11 @@ async def test_extract_502_structured_output_failed_conforms_to_openapi_schema(
     response = await _post_extract(app_under_test)
 
     assert response.status_code == 502
-    _validate(extract_schema, response)
+    _validate(SCHEMA, response)
 
 
 async def test_extract_503_intelligence_unavailable_conforms_to_openapi_schema(
     tmp_path: Path,
-    extract_schema: schemathesis.BaseSchema,
 ) -> None:
     """503 INTELLIGENCE_UNAVAILABLE response validates against the schemathesis contract."""
     stub = AsyncMock(spec=ExtractionService)
@@ -344,12 +371,11 @@ async def test_extract_503_intelligence_unavailable_conforms_to_openapi_schema(
     response = await _post_extract(app_under_test)
 
     assert response.status_code == 503
-    _validate(extract_schema, response)
+    _validate(SCHEMA, response)
 
 
 async def test_extract_504_intelligence_timeout_conforms_to_openapi_schema(
     tmp_path: Path,
-    extract_schema: schemathesis.BaseSchema,
 ) -> None:
     """504 INTELLIGENCE_TIMEOUT response validates against the schemathesis contract."""
     stub = AsyncMock(spec=ExtractionService)
@@ -359,4 +385,4 @@ async def test_extract_504_intelligence_timeout_conforms_to_openapi_schema(
     response = await _post_extract(app_under_test)
 
     assert response.status_code == 504
-    _validate(extract_schema, response)
+    _validate(SCHEMA, response)
