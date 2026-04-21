@@ -122,8 +122,9 @@ _OLLAMA_SAMPLING_OPTION_KEYS: frozenset[str] = frozenset(
 # Default sampling options applied when the caller does not override them.
 # Pinning ``temperature=0`` keeps the validator-retry determinism contract from
 # issue #136 intact for callers (including the ``generate()`` path and plain
-# ``infer()`` with no kwargs). Caller overrides win — see
-# ``_merge_sampling_options``.
+# ``infer()`` with no kwargs). This is a module-level constant, not a
+# ``Settings``-backed field — operators who need to change the baseline do so
+# here, not via env var. Caller overrides win — see ``_merge_sampling_options``.
 _DEFAULT_SAMPLING_OPTIONS: dict[str, Any] = {"temperature": 0}
 
 
@@ -171,13 +172,13 @@ def _build_payload(
     # server returns well-formed JSON on the first attempt instead of forcing
     # ``StructuredOutputValidator`` to re-prompt for parse errors on every
     # request. ``options`` pins sampling parameters; without overrides it keeps
-    # the settings-backed ``temperature=0`` default from issue #136 so validator
-    # retries repeat from a stable baseline rather than drifting between
-    # attempts. When the caller supplies ``sampling_options`` (the ``infer()``
-    # path on a LangExtract-forwarded kwarg — issue #385), those values replace
-    # the baseline per-key. The validator still enforces our downstream schema
-    # shape, but it no longer pays the malformed-output retry cost on the happy
-    # path.
+    # the module-level ``_DEFAULT_SAMPLING_OPTIONS`` baseline (``temperature=0``
+    # from issue #136) so validator retries repeat from a stable baseline
+    # rather than drifting between attempts. When the caller supplies
+    # ``sampling_options`` (the ``infer()`` path on a LangExtract-forwarded
+    # kwarg — issue #385), those values replace the baseline per-key. The
+    # validator still enforces our downstream schema shape, but it no longer
+    # pays the malformed-output retry cost on the happy path.
     options = sampling_options if sampling_options is not None else dict(_DEFAULT_SAMPLING_OPTIONS)
     return {
         "model": model,
@@ -468,7 +469,8 @@ class OllamaGemmaProvider(BaseLanguageModel):
         # ``sampling_options`` is threaded through from ``infer()`` so
         # LangExtract-forwarded sampling kwargs land in the Ollama payload
         # (issue #385). When ``None`` (the ``generate()`` path), ``_build_payload``
-        # falls back to the settings-backed ``temperature=0`` default.
+        # falls back to the module-level default sampling options, including
+        # ``temperature=0``.
         payload = _build_payload(self._model, prompt, sampling_options=sampling_options)
         try:
             response = await client.post(self._generate_url, json=payload)
@@ -589,7 +591,7 @@ class OllamaGemmaProvider(BaseLanguageModel):
 
         LangExtract's orchestrator forwards ``language_model_params`` (from
         ``lx.extract(..., language_model_params={"temperature": 0.7})``) to
-        this method as ``**kwargs``. The provider thread the allowlisted
+        this method as ``**kwargs``. The provider threads the allowlisted
         Ollama sampling options (temperature, top_p, top_k, seed, num_ctx,
         num_predict, repeat_penalty, mirostat family) into the
         ``/api/generate`` payload so caller overrides actually reach Ollama
