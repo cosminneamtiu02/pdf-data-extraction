@@ -1,5 +1,7 @@
 """Unit tests for `SkillLoader` — filesystem walk + aggregated validation."""
 
+import os
+import stat
 import time
 from pathlib import Path
 from typing import Any
@@ -217,6 +219,36 @@ def test_load_skill_override_beats_default(tmp_path: Path) -> None:
     skill = loaded[("invoice", 1)]
     assert skill.docling_config.ocr == "off"  # override wins
     assert skill.docling_config.table_mode == "fast"  # default fills gap
+
+
+def test_load_unreadable_skill_file_raises_permission_error_not_validation_error(
+    tmp_path: Path,
+) -> None:
+    """A filesystem permission failure must NOT masquerade as a skill validation
+    error. Previously the loader's broad `except Exception` swallowed OSError /
+    PermissionError from `SkillYamlSchema.load_from_file`'s `path.read_text`
+    call into a `SkillValidationFailedError`, hiding the real (I/O) root cause
+    behind a misleading "skill validation failed" label (issue #348).
+    """
+    if not hasattr(os, "geteuid"):
+        pytest.skip("POSIX-only test: Windows lacks `os.geteuid` and `chmod(0o000)` semantics")
+    if os.geteuid() == 0:
+        pytest.skip("root bypasses 0o000 file permissions; test requires non-root uid")
+
+    _write_skill(tmp_path, dir_name="invoice", file_name="1.yaml", version=1)
+    path = tmp_path / "invoice" / "1.yaml"
+    # `stat().st_mode` includes the file-type bits (e.g. `S_IFREG`); `chmod`
+    # only wants permission bits, so mask via `stat.S_IMODE` to avoid relying
+    # on platform-specific silent masking of the high bits.
+    original_mode = stat.S_IMODE(path.stat().st_mode)
+    path.chmod(0o000)
+
+    try:
+        with pytest.raises(PermissionError):
+            SkillLoader().load(tmp_path)
+    finally:
+        # Restore mode so tmp_path teardown can remove the file.
+        path.chmod(original_mode)
 
 
 @pytest.mark.slow
