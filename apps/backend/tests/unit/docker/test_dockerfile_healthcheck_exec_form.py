@@ -105,13 +105,7 @@ def test_healthcheck_present() -> None:
 
 
 def _parse_healthcheck_argv(cmd_line: str) -> list[str]:
-    """Parse the HEALTHCHECK `CMD [...]` JSON array into a Python list.
-
-    Failures are surfaced via ``AssertionError`` (rather than ``pytest.fail``)
-    for the same reason as ``_read_dockerfile_text``: this module deliberately
-    avoids importing ``pytest`` so the ``pyright-python`` pre-push hook's
-    isolated venv does not trip on ``reportMissingImports``.
-    """
+    """Parse the HEALTHCHECK `CMD [...]` JSON array into a Python list."""
     argv_text = cmd_line.removeprefix("CMD").strip()
     if not argv_text.startswith("["):
         shell_form_msg = (
