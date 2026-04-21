@@ -19,6 +19,7 @@ hardlink so per-test injections never leak back into the shared cache.
 from __future__ import annotations
 
 import atexit
+import errno
 import os
 import shutil
 import subprocess
@@ -26,6 +27,20 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Final
+
+# errno values that indicate `os.link` itself is unsupported or refused,
+# rather than a generic I/O fault. On those errnos we fall back to a
+# normal byte-copy so the suite stays portable across filesystems.
+# On others we re-raise so real setup bugs (notably `FileExistsError`
+# when `dest` already exists) are surfaced instead of silently masked.
+_HARDLINK_UNSUPPORTED_ERRNOS: Final[frozenset[int]] = frozenset(
+    {
+        errno.EXDEV,  # cross-device link
+        errno.EPERM,  # operation not permitted (e.g. Windows share, sandboxed CI)
+        errno.EOPNOTSUPP,  # operation not supported on fs
+        errno.EINVAL,  # some fs report "invalid" instead of EOPNOTSUPP
+    }
+)
 
 # parents[5] resolves the repo root by walking five levels up from this file:
 # _linter_subprocess.py -> architecture/ -> unit/ -> tests/ -> backend/ -> apps/ -> repo
@@ -118,6 +133,59 @@ def _ensure_app_tree_cache() -> Path:
     return cache_dest
 
 
+def _hardlinks_supported(cache: Path, probe_dir: Path) -> bool:
+    """Probe whether we can `os.link` from `cache` into `probe_dir`.
+
+    We test this up-front with one tiny sample file rather than letting
+    `shutil.copytree(..., copy_function=os.link)` fail mid-walk, for two
+    reasons:
+
+    1. `shutil.copytree` wraps per-file copy_function errors in
+       `shutil.Error` (not a subclass of `OSError`), so the error taxonomy
+       after the fact is awkward to unpack.
+    2. A probe keeps the fast-path `except`-free: real I/O failures
+       (disk full, permission denied on `dest`, `FileExistsError` when the
+       caller reused a non-empty dest) are never silently masked by a
+       fallback rmtree + byte-copy retry. Copilot review on PR #479
+       flagged the earlier catch-all as a footgun.
+
+    `probe_dir` must be an existing directory on the same filesystem as
+    the eventual copy destination. The caller passes `tmp_path.parent`
+    (pytest's `tmp_path` is under the session-wide base dir, which
+    always exists and shares the filesystem with the per-test subtree).
+
+    Returns True iff `os.link` succeeds on at least one file from `cache`
+    into `probe_dir`. A False result funnels the caller into the byte-copy
+    code path for the rest of the tree. Worst case (probe succeeds but a
+    later `os.link` still fails) raises the original `shutil.Error`
+    untouched — the suite aborts loudly, which is the intended behavior
+    for a setup fault in CI.
+    """
+    # Find one regular file in the cache. Any file works; we just need a
+    # real inode to try linking. The cache always has at least one.
+    probe_src: Path | None = None
+    for candidate in cache.rglob("*"):
+        if candidate.is_file():
+            probe_src = candidate
+            break
+    if probe_src is None:
+        return False
+    # Use an unambiguously unique filename so we never collide with an
+    # existing file in `probe_dir`. `tempfile.mktemp` would race, but we
+    # want a plain predictable path we can `unlink` afterward; the pid +
+    # `id()` combo is sufficient because `probe_dir` is caller-scoped.
+    probe_dst = probe_dir / f".hardlink-probe-{os.getpid()}-{id(cache)}"
+    try:
+        os.link(probe_src, probe_dst)
+    except OSError as exc:
+        if exc.errno in _HARDLINK_UNSUPPORTED_ERRNOS:
+            return False
+        raise
+    else:
+        probe_dst.unlink()
+        return True
+
+
 def copy_app_tree(tmp_path: Path) -> Path:
     """Copy the real `apps/backend/app/` tree into `tmp_path/app` and return its root.
 
@@ -129,34 +197,29 @@ def copy_app_tree(tmp_path: Path) -> Path:
 
     Portability fallback: if the cache and `tmp_path` sit on different
     filesystems (EXDEV) or the filesystem does not support hardlinks
-    (EPERM/EOPNOTSUPP on Windows shares, some sandboxed CI), `os.link` raises
-    `OSError` mid-walk and `shutil.copytree` aborts. We catch that, wipe the
-    partial destination, and fall back to a normal byte-copy so the suite
-    stays portable. `inject_import_line` uses `os.replace` to rewrite files,
-    which is hardlink-safe regardless of which code path produced `dest`.
-    See issue #350 for the timing context (8 full copies per unit run pre-fix)
-    and Copilot review on PR #479 for the fallback rationale.
+    (EPERM/EOPNOTSUPP/EINVAL on Windows shares, some sandboxed CI), a tiny
+    up-front probe (`_hardlinks_supported`) returns False and we use a
+    normal byte-copy so the suite stays portable. `inject_import_line`
+    uses `os.replace` to rewrite files, which is hardlink-safe regardless
+    of which code path produced `dest`. See issue #350 for the timing
+    context (8 full copies per unit run pre-fix) and Copilot review on
+    PR #479 for the fallback rationale.
     """
     cache = _ensure_app_tree_cache()
     dest = tmp_path / "app"
-    try:
-        shutil.copytree(
-            cache,
-            dest,
-            copy_function=os.link,
-            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
-        )
-    except OSError:
-        # Hardlink not supported (EXDEV / EPERM / EOPNOTSUPP) — back out the
-        # partial tree and retry with a full byte-copy. The perf regression
-        # for this path is acceptable because it only triggers on the rare
-        # cross-filesystem / no-hardlink dev setup, not on CI Linux.
-        shutil.rmtree(dest, ignore_errors=True)
-        shutil.copytree(
-            cache,
-            dest,
-            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
-        )
+    # Probe in a parent that is guaranteed to exist: callers pass
+    # `tmp_path` subdirs (e.g. `pytest.tmp_path / "first"`) that may not
+    # have been created yet. The tree we probe with will live on the same
+    # filesystem as `dest` because `tmp_path` inherits that property from
+    # its parent.
+    probe_dir = tmp_path if tmp_path.exists() else tmp_path.parent
+    copy_function = os.link if _hardlinks_supported(cache, probe_dir) else shutil.copy2
+    shutil.copytree(
+        cache,
+        dest,
+        copy_function=copy_function,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
     return dest
 
 
@@ -194,7 +257,12 @@ def inject_import_line(target: Path, line: str) -> None:
         msg = f"scratch-tree target does not exist: {target}"
         raise FileNotFoundError(msg)
 
-    original_lines = target.read_text().splitlines(keepends=True)
+    # Use explicit UTF-8 on both read and write so the helper is locale-
+    # independent. The `app/` tree is pure Python source, which PEP 3120
+    # pins to UTF-8, so round-tripping through the default locale encoding
+    # on non-UTF-8 systems (Windows cp1252, some CJK locales) would silently
+    # corrupt non-ASCII module docstrings. Copilot review on PR #479.
+    original_lines = target.read_text(encoding="utf-8").splitlines(keepends=True)
     head: list[str] = []
     body_start = 0
     for idx, raw_line in enumerate(original_lines):
@@ -218,8 +286,19 @@ def inject_import_line(target: Path, line: str) -> None:
         prefix=f".{target.name}.inject-",
         dir=str(target.parent),
     )
+    # Ownership of `tmp_fd` is transferred to `os.fdopen` iff that call
+    # succeeds. On the (extremely rare) path where `os.fdopen` itself
+    # raises before wrapping, the raw fd would leak. Guard that with a
+    # nested try/except that closes `tmp_fd` on the pre-wrap failure path
+    # only, then re-raises so the outer cleanup removes the temp file.
+    # Copilot review on PR #479 flagged the fd-leak window.
     try:
-        with os.fdopen(tmp_fd, "w") as handle:
+        try:
+            handle = os.fdopen(tmp_fd, "w", encoding="utf-8")
+        except BaseException:
+            os.close(tmp_fd)
+            raise
+        with handle:
             handle.write(rebuilt)
         Path(tmp_name).replace(target)
     except BaseException:
