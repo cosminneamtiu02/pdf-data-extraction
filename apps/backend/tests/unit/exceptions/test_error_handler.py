@@ -1,6 +1,7 @@
 """Tests for the exception handler."""
 
 import ast
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import patch
 
@@ -9,7 +10,17 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import app.api.errors as errors_module
-from app.exceptions import InternalError, NotFoundError, ValidationFailedError
+from app.exceptions import (
+    DomainError,
+    ExtractionOverloadedError,
+    IntelligenceTimeoutError,
+    IntelligenceUnavailableError,
+    InternalError,
+    NotFoundError,
+    PdfParserUnavailableError,
+    StructuredOutputFailedError,
+    ValidationFailedError,
+)
 
 
 def _create_test_app_with_handler() -> FastAPI:
@@ -304,3 +315,101 @@ def test_handle_domain_error_emits_info_for_4xx(test_client: TestClient) -> None
     assert "exc_info" not in kwargs
 
     mock_logger.warning.assert_not_called()
+
+
+# Issue #317 regression guard: the handler must emit a warning with
+# ``exc_info=True`` for every 5xx ``DomainError`` subclass listed in the
+# original report (``StructuredOutputFailedError``,
+# ``IntelligenceUnavailableError``, ``IntelligenceTimeoutError``,
+# ``PdfParserUnavailableError``, ``ExtractionOverloadedError``). These are
+# the concrete pipeline errors an on-call responder needs to see with
+# code+http_status+traceback; a 5xx that degrades to a silent access-log
+# line is the exact footgun #317 flagged. The in-flight test above covers
+# the generic ``InternalError``; this one pins the specific named classes
+# so a future refactor that special-cases any of them cannot regress the
+# contract unnoticed. Class-construction is deferred to a factory because
+# several of these take required kwargs (``budget_seconds``, etc.).
+_NAMED_5XX_DOMAIN_ERROR_FACTORIES: list[
+    tuple[str, type[DomainError], Callable[[], DomainError]]
+] = [
+    # Parameterless errors: the class itself is a zero-arg callable, so no
+    # lambda wrapper is needed (ruff PLW0108).
+    (
+        "StructuredOutputFailedError",
+        StructuredOutputFailedError,
+        StructuredOutputFailedError,
+    ),
+    (
+        "IntelligenceUnavailableError",
+        IntelligenceUnavailableError,
+        IntelligenceUnavailableError,
+    ),
+    # Parameterised errors: wrap kwargs construction in a lambda.
+    (
+        "IntelligenceTimeoutError",
+        IntelligenceTimeoutError,
+        lambda: IntelligenceTimeoutError(budget_seconds=30.0),
+    ),
+    (
+        "PdfParserUnavailableError",
+        PdfParserUnavailableError,
+        lambda: PdfParserUnavailableError(dependency="docling"),
+    ),
+    (
+        "ExtractionOverloadedError",
+        ExtractionOverloadedError,
+        lambda: ExtractionOverloadedError(max_concurrent=4),
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("name", "error_cls", "factory"),
+    _NAMED_5XX_DOMAIN_ERROR_FACTORIES,
+    ids=[name for name, _cls, _factory in _NAMED_5XX_DOMAIN_ERROR_FACTORIES],
+)
+def test_handle_domain_error_logs_warning_for_each_named_5xx_subclass(
+    name: str,
+    error_cls: type[DomainError],
+    factory: Callable[[], DomainError],
+) -> None:
+    """Each 5xx DomainError subclass called out in issue #317 must emit the warning log.
+
+    Registers a fresh app so each subclass is actually raised through the
+    FastAPI exception handler path (not just constructed and asserted on).
+    This catches a failure mode the ``InternalError``-only test cannot:
+    a handler that special-cases particular subclasses (e.g. a hypothetical
+    future early-return for a specific ``.code``) would silently strip the
+    observability event, and only a parametrized pass catches it.
+    """
+    from app.api.errors import register_exception_handlers
+    from app.api.request_id_middleware import RequestIdMiddleware
+
+    app = FastAPI()
+    register_exception_handlers(app)
+    app.add_middleware(RequestIdMiddleware)
+
+    @app.get("/boom")
+    async def boom() -> None:
+        raise factory()
+
+    client = TestClient(app, raise_server_exceptions=False)
+
+    with patch.object(errors_module, "logger") as mock_logger:
+        response = client.get("/boom")
+
+    assert response.status_code == error_cls.http_status, (
+        f"{name} should surface http_status={error_cls.http_status}"
+    )
+    assert error_cls.http_status >= 500, f"{name} must be in the 5xx range for this test"
+
+    mock_logger.warning.assert_called_once()
+    args, kwargs = mock_logger.warning.call_args
+    assert args == ("domain_error",), f"{name} must emit the 'domain_error' warning event"
+    assert kwargs["code"] == error_cls.code
+    assert kwargs["http_status"] == error_cls.http_status
+    assert kwargs["exc_info"] is True, (
+        f"{name} must include exc_info=True so the traceback reaches the aggregator"
+    )
+    assert "request_id" in kwargs
+    mock_logger.info.assert_not_called()
