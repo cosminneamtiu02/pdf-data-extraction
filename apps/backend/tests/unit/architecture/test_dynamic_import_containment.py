@@ -704,9 +704,12 @@ def test_dynamic_imports_of_contained_packages_are_allowlisted(
     Scoped to `_CONTAINMENT_ROOTS` (both `app/` and `scripts/`) rather than
     just `app/`. The import-linter C3-C6 contracts set
     `source_modules = app`, which leaves `scripts/benchmark.py` and
-    `scripts/validate_skills.py` free to `import docling` / `import httpx`
-    without tripping any gate (issue #327). Walking both containment roots
-    here closes that stealth-escape path.
+    `scripts/validate_skills.py` free to dynamically import or probe for
+    `docling` / `httpx` (for example via `importlib.import_module`,
+    `__import__`, or `find_spec`) without tripping any gate (issue #327).
+    Walking both containment roots here closes that stealth-escape path;
+    see the companion static containment test below for plain `import ...`
+    statements.
     """
     offenders = _find_dynamic_import_containment_offenders(
         _CONTAINMENT_ROOTS,
@@ -1480,12 +1483,18 @@ def test_containment_scan_rejects_basename_namesake_in_wrong_root(tmp_path: Path
     and evaded containment despite living in an entirely different root.
 
     Plants ``scripts/ollama_gemma_provider.py`` that dynamically imports
-    ``httpx`` and a clean
+    ``httpx`` and an allowlisted
     ``app/features/extraction/intelligence/ollama_gemma_provider.py``
-    under ``tmp_path``, then allowlists only the real file's relative path
-    and asserts the namesake under ``scripts/`` is flagged by the dynamic
-    scan. Red-fails under the basename-keyed scheme because both files
-    share ``py_file.name``. The static-branch counterpart is covered by
+    that *also* dynamically imports ``httpx`` under ``tmp_path``, then
+    allowlists only the real file's relative path and asserts the namesake
+    under ``scripts/`` is flagged by the dynamic scan while the allowlisted
+    real file is not. Both planted files must contain a dynamic import for
+    the regression test to actually exercise the dynamic allowlist branch
+    — a static ``import httpx`` in the allowlisted file would be invisible
+    to the dynamic scan regardless of allowlisting, making the "not
+    flagged" assertion vacuously true. Red-fails under the basename-keyed
+    scheme because both files share ``py_file.name``. The static-branch
+    counterpart is covered by
     ``test_containment_scan_rejects_basename_namesake_in_subdir``.
     """
     app_root = tmp_path / "app"
@@ -1494,7 +1503,7 @@ def test_containment_scan_rejects_basename_namesake_in_wrong_root(tmp_path: Path
     intelligence_dir.mkdir(parents=True)
     scripts_root.mkdir(parents=True)
     (intelligence_dir / "ollama_gemma_provider.py").write_text(
-        "import httpx\n",
+        'import importlib\nimportlib.import_module("httpx")\n',
         encoding="utf-8",
     )
     (scripts_root / "ollama_gemma_provider.py").write_text(
