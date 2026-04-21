@@ -263,14 +263,13 @@ def _collect_multi_block_bboxes(
     #
     # Before this guard, two shapes of invariant violation produced different
     # silent failures:
-    #   - If `end_block_id` was absent from the index (or appeared after
-    #     `start_block_id` but the loop never reached it), the iterator ran
-    #     off the end with `in_span=True` and emitted bboxes for every block
-    #     from start through the document tail — wrong geometry with
-    #     `grounded=True` and no observability.
+    #   - If `end_block_id` was absent from the index after the span started,
+    #     the iterator ran off the end with `in_span=True` and emitted bboxes
+    #     for every block from start through the document tail — wrong
+    #     geometry with `grounded=True` and no observability.
     #   - If `end_block_id` appeared *before* `start_block_id`, the unguarded
-    #     `if entry.block_id == end_block_id: break` tripped on the first
-    #     iteration and returned an empty list — still wrong, still silent.
+    #     `if entry.block_id == end_block_id: break` tripped before the span
+    #     started and returned an empty list — still wrong, still silent.
     # Both shapes violate the ordering invariant; both must be surfaced.
     #
     # Detect that the invariant held by tracking whether `end_block_id` was
