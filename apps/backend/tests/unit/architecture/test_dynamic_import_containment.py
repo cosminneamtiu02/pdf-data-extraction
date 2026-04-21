@@ -1144,3 +1144,31 @@ def test_collect_dynamic_import_targets_records_keyword_name_argument() -> None:
     targets = _collect_dynamic_import_targets(source)
     assert "langextract" in targets
     assert "docling.datamodel" in targets
+
+
+def test_collect_dynamic_import_targets_records_aliased_find_spec_docling_issue_401() -> None:
+    """Issue #401: ``from importlib.util import find_spec as fs; fs("docling")`` must be flagged.
+
+    The issue audit flagged a stale detection branch that matched
+    ``isinstance(func, ast.Attribute) and func.attr in {"import_module", "find_spec"}``
+    and would therefore miss the bare-``Name``-call shape produced by
+    ``from importlib.util import find_spec as fs``, whose call site
+    ``fs("docling")`` presents as ``ast.Name(id="fs")`` with no attribute
+    chain. The scan had to track the ``asname`` binding (``fs``) rather than
+    only the imported symbol name (``find_spec``) or the alias would let a
+    containment-gate-bypassing availability probe for Docling slip through
+    both import-linter (the call is an expression, not an ``import``
+    statement) and the AST scan.
+
+    Overlaps in intent with
+    ``test_collect_dynamic_import_targets_records_aliased_from_import_find_spec``
+    (which uses ``"langextract"``), but pins the EXACT example string from
+    the issue body (``"docling"``) so a regression against the specific
+    scenario the audit flagged fails loudly with a direct reference back
+    to issue #401.
+    """
+    source = 'from importlib.util import find_spec as fs; fs("docling")\n'
+    targets = _collect_dynamic_import_targets(source)
+    assert "docling" in targets, (
+        f"issue #401 regression: aliased `fs('docling')` not detected; targets={targets!r}"
+    )
