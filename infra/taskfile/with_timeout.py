@@ -27,15 +27,19 @@ import signal
 import subprocess
 import sys
 from collections.abc import Callable, Iterator
-from typing import Any, NoReturn
+from typing import Any, NoReturn, Union
 
 # signal.signal returns the previous handler, which may be:
 #   - a user-installed callable (Callable[[int, FrameType | None], Any])
 #   - signal.SIG_DFL (int 0) or signal.SIG_IGN (int 1)
 #   - None when the default was never retrievable (rare)
 # Spell it as a Callable union rather than signal.Handlers (which is a
-# module attribute, not a generic type).
-_PreviousHandler = Callable[[int, Any], Any] | int | None
+# module attribute, not a generic type). Uses `typing.Union` instead of
+# PEP 604 `X | Y` because this file sits outside any package's pyright
+# config (infra/taskfile/ has no pyproject.toml to supply
+# `pythonVersion`), so pyright's pre-push hook falls back to its own
+# default target where PEP 604 is a runtime type-alias error.
+_PreviousHandler = Union[Callable[[int, Any], Any], int, None]
 
 # GNU timeout(1) exits 124 when the deadline fires. Mirror that so
 # Taskfile consumers can special-case the timeout case without parsing
