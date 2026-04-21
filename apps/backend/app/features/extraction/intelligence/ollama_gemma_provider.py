@@ -93,12 +93,14 @@ _STALE_CLIENT_ACLOSE_TIMEOUT_SECONDS = 2.0
 # before this allowlist the provider silently dropped every entry. Keeping the
 # list explicit (rather than forwarding ``**kwargs`` wholesale) means:
 #
+#   * only kwargs whose names appear in this allowlist can affect Ollama
+#     sampling; all other caller-supplied kwargs are ignored and logged at
+#     DEBUG rather than forwarded,
 #   * unknown / future Ollama options do not leak into the payload without a
 #     deliberate code change (and a matching test),
-#   * LangExtract orchestrator kwargs that happen to share a name with a valid
-#     Ollama option cannot accidentally mutate sampling behavior,
 #   * the ``generate()`` path is unaffected — it never receives caller kwargs,
-#     so the settings-backed defaults remain in force for validator retries.
+#     so the module-level ``_DEFAULT_SAMPLING_OPTIONS`` baseline (below)
+#     remains in force for validator retries.
 #
 # Sampling keys only (seed, temperature, top_p, top_k, num_ctx, num_predict,
 # repeat_penalty, mirostat family). Streaming / format / keep_alive / raw are
@@ -141,9 +143,14 @@ def _merge_sampling_options(**kwargs: Any) -> tuple[dict[str, Any], list[str]]:
 
     Splits the raw LangExtract-forwarded kwargs dict into two buckets:
 
-    * keys in ``_OLLAMA_SAMPLING_OPTION_KEYS`` are copied over the
-      ``_DEFAULT_SAMPLING_OPTIONS`` baseline (caller wins) and returned as
-      the first element of the tuple,
+    * keys in ``_OLLAMA_SAMPLING_OPTION_KEYS`` whose value is not ``None``
+      are copied over the ``_DEFAULT_SAMPLING_OPTIONS`` baseline (caller
+      wins) and returned as the first element of the tuple. An allowlisted
+      key whose value IS ``None`` is treated as "not provided" — the
+      default is preserved rather than being clobbered with ``None``.
+      Forwarding ``null`` to Ollama would break the determinism contract
+      for ``temperature`` and risks a server-side 400 for keys Ollama
+      validates (e.g. ``seed``),
     * keys NOT in the allowlist are collected into a list and returned as
       the second element so the caller can log them for observability
       (issue #385: operators need to see drift when LangExtract forwards
@@ -156,7 +163,8 @@ def _merge_sampling_options(**kwargs: Any) -> tuple[dict[str, Any], list[str]]:
     ignored: list[str] = []
     for key, value in kwargs.items():
         if key in _OLLAMA_SAMPLING_OPTION_KEYS:
-            options[key] = value
+            if value is not None:
+                options[key] = value
         else:
             ignored.append(key)
     return options, ignored

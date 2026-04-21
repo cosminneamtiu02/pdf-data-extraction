@@ -786,8 +786,7 @@ def test_infer_forwards_temperature_kwarg_into_payload_options(
     and ignored every LangExtract-forwarded kwarg. A caller overriding the
     sampling temperature via LangExtract got deterministic output with no
     indication their override was dropped. This test pins the new contract:
-    caller-supplied ``temperature`` wins over the settings-backed default
-    of 0.
+    caller-supplied ``temperature`` wins over the provider default.
     """
     fake = _patch_infer_client(
         monkeypatch,
@@ -854,7 +853,8 @@ def test_infer_without_kwargs_keeps_deterministic_temperature_zero_default(
     This regression guard protects the issue #136 contract
     (``test_generate_payload_includes_format_json_and_zero_temperature``)
     for the ``infer()`` seam. The fix must add kwarg forwarding without
-    changing the settings-backed default for callers who forward nothing.
+    changing the existing default sampling behavior for callers who
+    forward nothing.
     """
     fake = _patch_infer_client(
         monkeypatch,
@@ -912,6 +912,35 @@ def test_infer_drops_non_sampling_kwargs_and_logs_them_at_debug(
     ignored_keys = set(event["keys"])
     assert {"format_type", "constraint", "model_url"} <= ignored_keys
     assert "temperature" not in ignored_keys
+
+
+def test_infer_allowlisted_kwarg_with_none_value_preserves_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An allowlisted kwarg whose value is ``None`` must not clobber the default.
+
+    LangExtract orchestrator dicts may surface ``temperature=None`` (or
+    ``seed=None``, …) when a caller wires a config field that is optional
+    and left unset. Before the fix, ``_merge_sampling_options`` unconditionally
+    copied the value over the default baseline, so the payload reached Ollama
+    with ``options.temperature == null``. That breaks the determinism contract
+    (issue #136) for ``temperature`` and risks a server-side 400 for keys
+    Ollama validates as numeric (e.g. ``seed``). The contract is: treat an
+    allowlisted key whose value is ``None`` as "not provided" — preserve the
+    module-level default, do not forward ``null``.
+    """
+    fake = _patch_infer_client(
+        monkeypatch,
+        post_outcomes=[_FakeResponse(body={"response": '{"extractions":[]}'})],
+    )
+    provider = _build_provider(fake_client=_FakeAsyncClient())
+
+    list(provider.infer(["p1"], temperature=None, seed=None))
+
+    _, payload = fake.post_calls[0]
+    # Default ``temperature=0`` preserved, ``seed`` not injected as ``None``.
+    assert payload["options"]["temperature"] == 0
+    assert "seed" not in payload["options"]
 
 
 def test_infer_kwargs_propagate_across_every_prompt_in_batch(
