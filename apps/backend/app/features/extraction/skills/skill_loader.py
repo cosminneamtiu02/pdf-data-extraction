@@ -57,11 +57,18 @@ class SkillLoader:
             try:
                 schema = SkillYamlSchema.load_from_file(path)
             except SkillValidationFailedError as exc:
+                # `SkillYamlSchema.load_from_file` already wraps the expected
+                # parse/validation failures (`yaml.YAMLError`, Pydantic
+                # `ValidationError`, jsonschema `SchemaError`) into
+                # `SkillValidationFailedError`, so this is the only validation
+                # exception that should ever arrive here. Anything else —
+                # `OSError`/`PermissionError` from `path.read_text`,
+                # `MemoryError`, `SystemError`, or a genuine programming bug —
+                # propagates unwrapped so operators see the real root cause
+                # instead of a misleading "skill validation failed" label
+                # (issue #348).
                 reason = _reason_of(exc)
                 problems.append(f"{path}: {reason}")
-                continue
-            except Exception as exc:  # noqa: BLE001 — intentional aggregation
-                problems.append(f"{path}: {type(exc).__name__}: {exc}")
                 continue
 
             parent_name = path.parent.name
