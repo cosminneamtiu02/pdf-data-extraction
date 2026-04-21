@@ -22,8 +22,9 @@ early on the first chunk that pushes the total over
 from __future__ import annotations
 
 import secrets
-from typing import TYPE_CHECKING, Annotated, assert_never
+from typing import TYPE_CHECKING, Annotated, NoReturn, assert_never
 
+import structlog
 from fastapi import APIRouter, Depends, File, Form, Response, UploadFile
 from fastapi.responses import JSONResponse
 
@@ -41,6 +42,8 @@ if TYPE_CHECKING:
     from app.features.extraction.extraction_result import ExtractionResult
 
 _CHUNK_SIZE = 1024 * 1024  # 1 MB
+
+_logger = structlog.get_logger(__name__)
 
 
 router = APIRouter(tags=["extraction"])
@@ -101,19 +104,48 @@ def build_multipart_mixed(json_body: bytes, pdf_body: bytes) -> tuple[bytes, str
     return parts, boundary
 
 
+def _raise_missing_annotated_pdf(output_mode: OutputMode) -> NoReturn:
+    """Log the router-local context and raise ``InternalError``.
+
+    Factored out so the PDF_ONLY and BOTH branches cannot drift on the event
+    name or field shape. See issue #337 for why the log must precede the raise.
+    The ``NoReturn`` annotation lets pyright narrow ``annotated_pdf_bytes`` to
+    non-``None`` after the guarded call.
+    """
+    _logger.error(
+        "router_serialization_invariant_violated",
+        output_mode=output_mode.value,
+        has_annotated_pdf=False,
+    )
+    raise InternalError()  # noqa: RSE102  # explicit instantiation for consistency
+
+
 def _serialize_result(result: ExtractionResult, output_mode: OutputMode) -> Response:
-    """Serialize *result* into the right HTTP response per *output_mode*."""
+    """Serialize *result* into the right HTTP response per *output_mode*.
+
+    ``raise InternalError()`` is defensive against a service-layer invariant
+    violation: for any ``output_mode`` other than ``JSON_ONLY``,
+    ``ExtractionService.extract`` must populate ``annotated_pdf_bytes``. If
+    that contract is ever broken, the ``InternalError`` surfaces as a generic
+    500 via the top-level exception handler, and operators reading the error
+    response have no idea whether the fault is a service bug or an upstream
+    dependency issue. Emit a structured log event immediately before the raise
+    so the feature-local context (the requested ``output_mode`` and the fact
+    that ``annotated_pdf_bytes`` was ``None``) is preserved for diagnosis — the
+    top-level handler only sees the ``InternalError`` and cannot reconstruct
+    the router-local context after the fact. See issue #337.
+    """
     if output_mode == OutputMode.JSON_ONLY:
         return JSONResponse(content=result.response.model_dump(mode="json"))
 
     if output_mode == OutputMode.PDF_ONLY:
         if result.annotated_pdf_bytes is None:
-            raise InternalError()  # noqa: RSE102  # explicit instantiation for consistency
+            _raise_missing_annotated_pdf(output_mode)
         return Response(content=result.annotated_pdf_bytes, media_type="application/pdf")
 
     if output_mode == OutputMode.BOTH:
         if result.annotated_pdf_bytes is None:
-            raise InternalError()  # noqa: RSE102
+            _raise_missing_annotated_pdf(output_mode)
         json_bytes = result.response.model_dump_json().encode()
         body, boundary = build_multipart_mixed(json_bytes, result.annotated_pdf_bytes)
         return Response(content=body, media_type=f'multipart/mixed; boundary="{boundary}"')
