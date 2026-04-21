@@ -26,8 +26,6 @@ import re
 from pathlib import Path
 from typing import Final
 
-import pytest
-
 # parents[5] walks: this file -> docker/ -> unit/ -> tests/ -> backend/ ->
 # apps/ -> repo root. Mirrors the convention used by the sibling
 # `test_dockerignore_at_repo_root` module.
@@ -38,16 +36,20 @@ _DOCKERFILE_PATH: Final[Path] = _REPO_ROOT / "infra" / "docker" / "backend.Docke
 def _read_dockerfile_text() -> str:
     """Return the Dockerfile contents, failing the calling test if missing.
 
-    Using `pytest.fail(...)` keeps the error surface consistent with other
-    Dockerfile guardrail tests even if a future refactor renames or moves
-    the file: the diagnostic points directly at the expected path instead
-    of letting `read_text()` raise a bare `FileNotFoundError`.
+    Raises ``AssertionError`` (rather than calling ``pytest.fail``) so this
+    module does not need to import ``pytest``. The ``RobertCraigie/pyright-python``
+    pre-push hook runs pyright inside an isolated pre-commit venv that does
+    not have ``pytest`` available, so importing it here would trip
+    ``reportMissingImports`` at hook time. Pytest still surfaces the failure
+    via its ``AssertionError`` reporter, so the test UX is unchanged — this
+    pattern mirrors ``test_precommit_pyright_hook_present.py``.
     """
     if not _DOCKERFILE_PATH.is_file():
-        pytest.fail(
+        msg = (
             f"expected Dockerfile at {_DOCKERFILE_PATH} — issue #363 guardrail "
             "cannot run if the backend Dockerfile has been moved or deleted."
         )
+        raise AssertionError(msg)
     return _DOCKERFILE_PATH.read_text(encoding="utf-8")
 
 
@@ -74,7 +76,6 @@ def _extract_healthcheck_cmd_line(text: str) -> str:
             "healthcheck; dropping it entirely should be a deliberate decision "
             "with its own ADR."
         )
-        pytest.fail(no_healthcheck_msg)
         raise AssertionError(no_healthcheck_msg)
     instruction = match.group(0)
     cmd_idx = instruction.find("CMD")
@@ -85,7 +86,6 @@ def _extract_healthcheck_cmd_line(text: str) -> str:
             "entirely — if that is what you want, update this guardrail and "
             "docs/decisions.md."
         )
-        pytest.fail(no_cmd_msg)
         raise AssertionError(no_cmd_msg)
     return instruction[cmd_idx:].strip()
 
@@ -110,17 +110,10 @@ def test_healthcheck_present() -> None:
 def _parse_healthcheck_argv(cmd_line: str) -> list[str]:
     """Parse the HEALTHCHECK `CMD [...]` JSON array into a Python list.
 
-    Failures are surfaced via ``pytest.fail`` so the caller gets the same
-    precise diagnostic path as the other helpers in this module. Each
-    ``pytest.fail`` is followed by a ``raise AssertionError`` with the
-    same message: the re-raise is unreachable at runtime (pytest.fail
-    already stops the test) but keeps static type-checkers happy even in
-    environments where ``pytest`` stubs are not available — which is the
-    case for the pre-push ``pyright`` pre-commit hook that runs outside
-    the project venv. Any argv parsed out of the Dockerfile is guaranteed
-    to be a list[str] by the schema Docker itself enforces on exec-form
-    HEALTHCHECK; a non-list JSON payload would be rejected at build time,
-    not here.
+    Failures are surfaced via ``AssertionError`` (rather than ``pytest.fail``)
+    for the same reason as ``_read_dockerfile_text``: this module deliberately
+    avoids importing ``pytest`` so the ``pyright-python`` pre-push hook's
+    isolated venv does not trip on ``reportMissingImports``.
     """
     argv_text = cmd_line.removeprefix("CMD").strip()
     if not argv_text.startswith("["):
@@ -130,7 +123,6 @@ def _parse_healthcheck_argv(cmd_line: str) -> list[str]:
             '`CMD ["curl", "-fsS", "--output", "/dev/null", '
             '"http://localhost:8000/health"]`. Issue #363.'
         )
-        pytest.fail(shell_form_msg)
         raise AssertionError(shell_form_msg)
     try:
         parsed = json.loads(argv_text)
@@ -139,7 +131,6 @@ def _parse_healthcheck_argv(cmd_line: str) -> list[str]:
             f"HEALTHCHECK CMD in {_DOCKERFILE_PATH} is not valid JSON: "
             f"{cmd_line!r} ({exc}). Exec form must be a JSON array of strings."
         )
-        pytest.fail(bad_json_msg)
         raise AssertionError(bad_json_msg) from exc
     if not isinstance(parsed, list) or not all(isinstance(x, str) for x in parsed):
         bad_shape_msg = (
@@ -147,7 +138,6 @@ def _parse_healthcheck_argv(cmd_line: str) -> list[str]:
             f"strings: {cmd_line!r}. Docker's exec-form schema requires "
             '`["arg0", "arg1", ...]`.'
         )
-        pytest.fail(bad_shape_msg)
         raise AssertionError(bad_shape_msg)
     return parsed
 
@@ -227,10 +217,9 @@ def test_healthcheck_curl_is_silent_on_success() -> None:
     cmd_line = _extract_healthcheck_cmd_line(_read_dockerfile_text())
     argv = _parse_healthcheck_argv(cmd_line)
     silent_flags = {"--output", "-o"}
-    if not silent_flags.intersection(argv):
-        pytest.fail(
-            f"HEALTHCHECK CMD in {_DOCKERFILE_PATH} does not silence curl "
-            f"stdout: {argv!r}. Add `--output /dev/null` (or `-o /dev/null`) "
-            "so the probe does not spam the healthcheck log with the "
-            "response body every 30s. Issue #363 / review round 2."
-        )
+    assert silent_flags.intersection(argv), (
+        f"HEALTHCHECK CMD in {_DOCKERFILE_PATH} does not silence curl "
+        f"stdout: {argv!r}. Add `--output /dev/null` (or `-o /dev/null`) "
+        "so the probe does not spam the healthcheck log with the "
+        "response body every 30s. Issue #363 / review round 2."
+    )
