@@ -156,6 +156,24 @@ def _classify_copy(instruction: str) -> str | None:
     return None
 
 
+def _copy_contains_path(instruction: str, path: str) -> bool:
+    """Return True if `instruction` is a build-context COPY that carries `path`.
+
+    Same classification rules as `_classify_copy`: only COPYs without a
+    `--from=...` flag count (cross-stage COPYs do not pull from the build
+    context and are excluded from the manifest/source ordering story). The
+    check is intentionally substring-based so a single `COPY a b ./` line
+    that bundles multiple manifests registers a hit for each path it
+    carries.
+    """
+    tokens = instruction.split()
+    if not tokens or tokens[0].upper() != "COPY":
+        return False
+    if any(token.startswith("--from=") for token in tokens[1:]):
+        return False
+    return path in instruction
+
+
 def _is_dep_install_run(instruction: str) -> bool:
     tokens = instruction.split()
     if not tokens or tokens[0].upper() != "RUN":
@@ -200,18 +218,38 @@ def test_dockerfile_exists() -> None:
 
 
 def test_builder_stage_copies_manifests_before_dep_install() -> None:
-    """Dep-install RUN must follow both manifest COPYs.
+    """Both manifests must be COPYd, and the dep-install RUN must follow them.
 
     If a manifest COPY happens AFTER the dep-install RUN, the RUN has
     nothing to install against on first build and re-runs fully on every
     manifest edit on subsequent builds. Either failure mode defeats the
     caching intent of the split dep/project installs.
+
+    The earlier version of this guard only asserted that *at least one*
+    manifest COPY preceded the dep-install RUN, which would pass if, e.g.,
+    `pyproject.toml` was copied but `uv.lock` was dropped (so the install
+    ran unpinned). The loop below requires every path in
+    `_MANIFEST_COPY_PATHS` to appear at least once before the dep-install
+    RUN so both manifests are individually pinned.
     """
     instructions = _builder_stage_instructions(_DOCKERFILE_PATH.read_text(encoding="utf-8"))
+    manifest_indexes_by_path: dict[str, list[int]] = {
+        path: [index for index, line in enumerate(instructions) if _copy_contains_path(line, path)]
+        for path in _MANIFEST_COPY_PATHS
+    }
     is_manifest = [_classify_copy(line) == "manifest" for line in instructions]
     is_dep_install = [_is_dep_install_run(line) for line in instructions]
     last_manifest = _last_index(is_manifest)
     first_dep_install = _first_index(is_dep_install)
+    missing_manifests = [path for path, indexes in manifest_indexes_by_path.items() if not indexes]
+    assert not missing_manifests, (
+        f"{_DOCKERFILE_PATH}: the builder stage is missing required manifest "
+        f"COPY(s) for {missing_manifests}. The layer-cache ordering fix for "
+        "issue #361 requires BOTH `apps/backend/pyproject.toml` AND "
+        "`apps/backend/uv.lock` to be present in the image before the "
+        "dep-install RUN, otherwise `uv sync --frozen` has nothing to pin "
+        "against."
+    )
     assert last_manifest is not None, (
         f"{_DOCKERFILE_PATH}: no COPY of {list(_MANIFEST_COPY_PATHS)} found in "
         "the builder stage. The layer-cache ordering fix for issue #361 requires "
@@ -230,6 +268,19 @@ def test_builder_stage_copies_manifests_before_dep_install() -> None:
         "Reorder so `COPY apps/backend/pyproject.toml apps/backend/uv.lock ./` "
         "precedes `RUN uv sync --frozen --no-dev --no-install-project`. "
         "See issue #361."
+    )
+    # Each manifest path must be COPYd at least once before the dep-install RUN.
+    late_manifests = {
+        path: indexes
+        for path, indexes in manifest_indexes_by_path.items()
+        if all(index > first_dep_install for index in indexes)
+    }
+    assert not late_manifests, (
+        f"{_DOCKERFILE_PATH}: manifest COPY(s) for {list(late_manifests)} "
+        f"appear only AFTER the dep-install RUN at index {first_dep_install} "
+        f"(found at indexes {late_manifests}). "
+        "Issue #361's fix requires every manifest to be present BEFORE the "
+        "dep-install RUN."
     )
 
 
@@ -276,24 +327,31 @@ def test_builder_stage_source_copy_precedes_project_install() -> None:
     metadata wired up against the actual source tree, and imports of
     `app.*` in subsequent layers will fail at runtime. The split is
     load-bearing for both caching AND correctness.
+
+    The guard uses the FIRST project-install index rather than the last
+    one, because "no project-install may run before source is copied"
+    means the very first such RUN must already be preceded by every
+    source COPY. Using the last index would silently accept a stray
+    project-install above the source COPYs as long as a second one
+    appeared below — exactly the regression this test exists to catch.
     """
     instructions = _builder_stage_instructions(_DOCKERFILE_PATH.read_text(encoding="utf-8"))
     is_source = [_classify_copy(line) == "source" for line in instructions]
     is_project_install = [_is_project_install_run(line) for line in instructions]
     last_source = _last_index(is_source)
-    last_project_install = _last_index(is_project_install)
+    first_project_install = _first_index(is_project_install)
     assert last_source is not None, (
         f"{_DOCKERFILE_PATH}: no COPY of {list(_SOURCE_COPY_PATHS)} found in the builder stage."
     )
-    assert last_project_install is not None, (
+    assert first_project_install is not None, (
         f"{_DOCKERFILE_PATH}: no project-install `RUN uv sync ...` (the one "
         f"WITHOUT `{_DEP_INSTALL_MARKER}`) found in the builder stage. Issue "
         "#361's cache-ordering fix requires splitting the install into two "
         "RUNs; if that has changed, update this test."
     )
-    assert last_source < last_project_install, (
+    assert last_source < first_project_install, (
         f"{_DOCKERFILE_PATH}: project-install RUN at instruction index "
-        f"{last_project_install} runs BEFORE source COPY at index "
+        f"{first_project_install} runs BEFORE source COPY at index "
         f"{last_source}. The project install would have no source to wire "
         "in. Reorder so every `COPY apps/backend/app ./app` / "
         "`COPY apps/backend/skills ./skills` precedes `RUN uv sync --frozen "
@@ -313,8 +371,16 @@ def test_builder_stage_has_single_manifest_copy_block() -> None:
     interpreting the Dockerfile would not know which COPY was the
     "real" one.
 
-    Guard: every manifest COPY must appear above the dep-install RUN.
-    Any manifest COPY AFTER that RUN is the #292 regression returning.
+    Guards (both must hold):
+      1. Every manifest COPY index must be consecutive in the builder
+         stage's instruction list (the "single contiguous block"
+         invariant the test name promises). A non-COPY or non-manifest
+         instruction (e.g. a RUN, or a source COPY) between two
+         manifest COPYs splits the block and is rejected.
+      2. Every manifest COPY must appear above the dep-install RUN.
+         Any manifest COPY AFTER that RUN is the #292 regression
+         returning even if it happens to sit next to another manifest
+         COPY.
     """
     instructions = _builder_stage_instructions(_DOCKERFILE_PATH.read_text(encoding="utf-8"))
     is_manifest = [_classify_copy(line) == "manifest" for line in instructions]
@@ -324,11 +390,28 @@ def test_builder_stage_has_single_manifest_copy_block() -> None:
         f"{_DOCKERFILE_PATH}: no `RUN uv sync ... {_DEP_INSTALL_MARKER}` "
         "line found in the builder stage."
     )
-    stray_manifest_indexes = [
-        index
-        for index, is_manifest_line in enumerate(is_manifest)
-        if is_manifest_line and index > first_dep_install
+    manifest_indexes = [index for index, flag in enumerate(is_manifest) if flag]
+    assert manifest_indexes, (
+        f"{_DOCKERFILE_PATH}: no manifest COPY found in the builder stage. "
+        "The contiguity guard presupposes at least one such COPY; if the "
+        "Dockerfile no longer copies dependency manifests, the dep-install "
+        "RUN would have nothing to install against — see issue #361."
+    )
+    gaps = [
+        (manifest_indexes[pos - 1], manifest_indexes[pos])
+        for pos in range(1, len(manifest_indexes))
+        if manifest_indexes[pos] != manifest_indexes[pos - 1] + 1
     ]
+    assert not gaps, (
+        f"{_DOCKERFILE_PATH}: manifest COPY lines at instruction indexes "
+        f"{manifest_indexes} are not contiguous — non-manifest instructions "
+        f"appear between them at gaps {gaps}. The issue #292 regression "
+        "pattern was a second `COPY apps/backend/pyproject.toml` later in "
+        "the builder stage; consolidate manifest COPYs into a single "
+        "adjacent block so only one image layer depends on manifest "
+        "contents."
+    )
+    stray_manifest_indexes = [index for index in manifest_indexes if index > first_dep_install]
     assert not stray_manifest_indexes, (
         f"{_DOCKERFILE_PATH}: found manifest COPY lines AFTER the dep-install "
         f"RUN at instruction indexes {stray_manifest_indexes}. This is the "
