@@ -8,42 +8,73 @@ Verifies:
   `error.code == "SKILL_NOT_FOUND"`, status 404, and the raised params intact.
 """
 
-import re
 from pathlib import Path
+from typing import Any
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from app import main as main_module
 from app.core.config import Settings
 from app.exceptions import SkillNotFoundError, SkillValidationFailedError
 from app.main import create_app
 
-_ANSI = re.compile(r"\x1b\[[0-9;]*m")
-
 
 def _settings_with_skills(skills_dir: Path) -> Settings:
-    # Pin `app_env` so `configure_logging` always picks the key-value
-    # renderer; otherwise a stray `APP_ENV=production` in the runner env
-    # flips logging to JSON and breaks the `file=` / `reason=` substring
-    # assertions below.
     return Settings(skills_dir=skills_dir, app_env="development")  # type: ignore[reportCallIssue]
 
 
 async def test_create_app_logs_critical_on_skill_validation_failed(
     tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """``create_app()`` must log a structured ``skill_validation_failed`` event
+    at ``critical`` with ``file`` and ``reason`` kwargs before re-raising.
+
+    Spies directly on ``app.main._logger`` rather than using
+    ``structlog.testing.capture_logs`` or ``capsys``: both depend on
+    structlog's runtime state, which is reset by ``create_app()`` itself
+    when it calls ``configure_logging``. The previous ``capsys``-based
+    assertions against rendered output (``"file=" in captured.out``) were
+    brittle because a renderer change (``KeyValueRenderer`` →
+    ``ConsoleRenderer``) or a key rename (``file=`` → ``path=``) would
+    silently break them even when the underlying code was correct. A plain
+    attribute-swap is deterministic — it records the raw event name and
+    kwargs the code emitted, independent of the renderer and regardless of
+    whether the session has already been configured. Issue #281.
+    """
+    critical_events: list[tuple[str, dict[str, Any]]] = []
+
+    class _SpyLogger:
+        def critical(self, event: str, **kwargs: Any) -> None:
+            critical_events.append((event, kwargs))
+
+        def info(self, _event: str, **_kwargs: Any) -> None:
+            pass
+
+        def warning(self, _event: str, **_kwargs: Any) -> None:
+            pass
+
+    monkeypatch.setattr(main_module, "_logger", _SpyLogger())
+
     missing = tmp_path / "nowhere"
 
     with pytest.raises(SkillValidationFailedError):
         create_app(_settings_with_skills(missing))
 
-    captured = _ANSI.sub("", capsys.readouterr().out)
-    assert "skill_validation_failed" in captured
-    assert "critical" in captured.lower()
-    assert "nowhere" in captured
-    assert "file=" in captured
-    assert "reason=" in captured
+    matching = [
+        (event, kwargs) for event, kwargs in critical_events if event == "skill_validation_failed"
+    ]
+    assert len(matching) == 1, (
+        f"Expected exactly one skill_validation_failed event, got {critical_events}"
+    )
+    _, kwargs = matching[0]
+    assert kwargs["file"] is not None
+    assert str(missing) in str(kwargs["file"])
+    assert kwargs["reason"] is not None
+    # exc_info=True is load-bearing: it attaches the underlying traceback so
+    # operators can triage the cause without tailing a second log line.
+    assert kwargs.get("exc_info") is True
 
 
 async def test_skill_not_found_serializes_as_404_envelope(tmp_path: Path) -> None:

@@ -55,9 +55,6 @@
       "reason"
     ],
     "STRUCTURED_OUTPUT_FAILED": [],
-    "VALIDATION_FAILED": [
-      "field",
-      "reason"
-    ]
+    "VALIDATION_FAILED": []
   }
 }
