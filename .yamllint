@@ -58,9 +58,12 @@ rules:
   # PyYAML parses it as `True`, the workflow still fires correctly on
   # GitHub, but yamllint's `truthy` rule would flag it. Allow the standard
   # boolean spellings and the `on` literal specifically so workflows stay
-  # clean without suppression comments on every file.
+  # clean without suppression comments on every file. `off` is deliberately
+  # NOT in `allowed-values`: no YAML file in this repo uses a bare `off`
+  # key or value today, and keeping it disallowed preserves the guard
+  # against accidental YAML 1.1 boolean coercion outside workflows.
   truthy:
-    allowed-values: ["true", "false", "on", "off"]
+    allowed-values: ["true", "false", "on"]
     check-keys: true
 
   # Comment spacing: the default requires `# comment` (one space after `#`).
