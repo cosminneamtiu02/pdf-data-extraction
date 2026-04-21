@@ -106,35 +106,45 @@ def test_healthcheck_present() -> None:
 def _parse_healthcheck_argv(cmd_line: str) -> list[str]:
     """Parse the HEALTHCHECK `CMD [...]` JSON array into a Python list.
 
-    Shell-form `CMD` (no JSON array, e.g. `CMD curl ...`) fails fast here
-    with a `pytest.fail` so the caller gets the same precise diagnostic
-    path as the other helpers in this module, rather than a raw
-    `json.JSONDecodeError`. Any argv parsed out of the Dockerfile is
-    guaranteed to be a list[str] by the schema Docker itself enforces on
-    exec-form HEALTHCHECK — a non-list JSON payload would be rejected at
-    build time, not here.
+    Failures are surfaced via ``pytest.fail`` so the caller gets the same
+    precise diagnostic path as the other helpers in this module. Each
+    ``pytest.fail`` is followed by a ``raise AssertionError`` with the
+    same message: the re-raise is unreachable at runtime (pytest.fail
+    already stops the test) but keeps static type-checkers happy even in
+    environments where ``pytest`` stubs are not available — which is the
+    case for the pre-push ``pyright`` pre-commit hook that runs outside
+    the project venv. Any argv parsed out of the Dockerfile is guaranteed
+    to be a list[str] by the schema Docker itself enforces on exec-form
+    HEALTHCHECK; a non-list JSON payload would be rejected at build time,
+    not here.
     """
     argv_text = cmd_line.removeprefix("CMD").strip()
     if not argv_text.startswith("["):
-        pytest.fail(
+        shell_form_msg = (
             f"HEALTHCHECK CMD in {_DOCKERFILE_PATH} is shell form: {cmd_line!r}. "
             "Switch to exec form (JSON array): "
             '`CMD ["curl", "-fsS", "--output", "/dev/null", '
             '"http://localhost:8000/health"]`. Issue #363.'
         )
+        pytest.fail(shell_form_msg)
+        raise AssertionError(shell_form_msg)
     try:
         parsed = json.loads(argv_text)
     except json.JSONDecodeError as exc:
-        pytest.fail(
+        bad_json_msg = (
             f"HEALTHCHECK CMD in {_DOCKERFILE_PATH} is not valid JSON: "
             f"{cmd_line!r} ({exc}). Exec form must be a JSON array of strings."
         )
+        pytest.fail(bad_json_msg)
+        raise AssertionError(bad_json_msg) from exc
     if not isinstance(parsed, list) or not all(isinstance(x, str) for x in parsed):
-        pytest.fail(
+        bad_shape_msg = (
             f"HEALTHCHECK CMD in {_DOCKERFILE_PATH} is not a JSON array of "
             f"strings: {cmd_line!r}. Docker's exec-form schema requires "
             '`["arg0", "arg1", ...]`.'
         )
+        pytest.fail(bad_shape_msg)
+        raise AssertionError(bad_shape_msg)
     return parsed
 
 
