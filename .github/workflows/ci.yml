@@ -139,15 +139,10 @@ jobs:
         run: uv run --with pytest --with pyyaml pytest tests/ -v
 
       - name: Regenerate error contracts
-        run: |
-          uv run --with pyyaml python -c "
-          from pathlib import Path
-          from scripts.generate import generate_python, generate_typescript, generate_required_keys
-          p = Path('errors.yaml')
-          generate_python(p, Path('../../apps/backend/app/exceptions/_generated'))
-          generate_typescript(p, Path('src/generated.ts'))
-          generate_required_keys(p, Path('src/required-keys.json'))
-          "
+        # Shared entry point with `task errors:generate` (Taskfile.yml).
+        # Both callers invoke the same script so local and CI generation
+        # cannot drift. See issue #365.
+        run: uv run --with pyyaml python -m scripts.generate_all
 
       - name: Verify generated files are up to date
         working-directory: .
