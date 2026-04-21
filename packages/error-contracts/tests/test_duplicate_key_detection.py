@@ -16,6 +16,7 @@ the narrow surface the regex happened to recognise (issue #294).
 from pathlib import Path
 
 import pytest
+import yaml
 
 
 BASELINE_NO_DUPLICATE_YAML = """
@@ -177,3 +178,95 @@ def test_generic_yaml_error_is_wrapped_as_value_error_with_path_prefix(
         load_and_validate(path)
 
     assert str(path) in str(exc_info.value)
+
+
+def test_load_and_validate_does_not_call_yaml_safe_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression pin for issue #322: ``load_and_validate`` MUST route
+    through ``yaml.load(Loader=DuplicateKeyDetectingSafeLoader)`` and
+    MUST NOT call ``yaml.safe_load``.
+
+    The behavioural duplicate-key tests above happen to pass even if the
+    production code calls ``yaml.safe_load`` AND ALSO runs a
+    duplicate-detecting regex pass — so if someone ever reverted the
+    loader wiring and re-added the regex as a guard (exactly the
+    intermediate state issue #322 documented), the behavioural tests
+    above would still turn green while the load path silently lost its
+    real YAML-aware duplicate check. This test pins the call itself:
+    patch ``yaml.safe_load`` in the module under test so ANY invocation
+    raises, then confirm ``load_and_validate`` runs cleanly on a
+    well-formed file. If the fix is ever reverted to ``yaml.safe_load``
+    the sentinel fires.
+    """
+    from scripts import generate
+
+    def _fail_if_called(*_args: object, **_kwargs: object) -> object:
+        message = (
+            "load_and_validate must route through yaml.load(Loader=...) "
+            "not yaml.safe_load (issue #322)."
+        )
+        raise AssertionError(message)
+
+    monkeypatch.setattr(generate.yaml, "safe_load", _fail_if_called)
+
+    path = tmp_path / "errors.yaml"
+    path.write_text(BASELINE_NO_DUPLICATE_YAML)
+
+    data = generate.load_and_validate(path)
+    assert set(data["errors"].keys()) == {"FIRST_ERROR", "SECOND_ERROR"}
+
+
+def test_load_and_validate_uses_duplicate_key_detecting_loader(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression pin for issue #322: ``load_and_validate`` MUST pass the
+    ``DuplicateKeyDetectingSafeLoader`` class (or a subclass of it) as
+    the ``Loader`` argument to ``yaml.load``.
+
+    A weaker version of this assertion — "the tests above pass" — would
+    still be satisfied by any loader that happens to reject duplicates
+    (e.g. a hand-rolled regex wired into a custom loader). Pinning the
+    exact class closes the door on "accidentally working" replacements
+    and keeps the design intent (the shared pattern with
+    ``app.features.extraction.skills._duplicate_key_safe_loader``)
+    enforceable as a future-proofing invariant.
+    """
+    from scripts import generate
+    from scripts._duplicate_key_safe_loader import DuplicateKeyDetectingSafeLoader
+
+    # Annotate as ``type[yaml.SafeLoader]``: ``DuplicateKeyDetectingSafeLoader``
+    # is a ``yaml.SafeLoader`` subclass, and ``yaml.SafeLoader`` is NOT a
+    # subclass of ``yaml.Loader`` (they are siblings sharing the Reader/
+    # Scanner/Parser/Composer mix-in chain but a disjoint Constructor
+    # hierarchy). Annotating the captured loaders as ``type[yaml.Loader]``
+    # would mis-describe the runtime value and break Pyright strict.
+    captured_loaders: list[type[yaml.SafeLoader]] = []
+    real_yaml_load = generate.yaml.load
+
+    def _capture_loader(
+        stream: str,
+        Loader: type[yaml.SafeLoader],  # noqa: N803 — mirrors PyYAML signature
+    ) -> object:
+        # load_and_validate reads the file with Path.read_text(), so the
+        # stream arg is always a str at this call site. The narrower type
+        # also keeps pyright strict happy against PyYAML's _ReadStream
+        # protocol.
+        captured_loaders.append(Loader)
+        return real_yaml_load(stream, Loader=Loader)
+
+    monkeypatch.setattr(generate.yaml, "load", _capture_loader)
+
+    path = tmp_path / "errors.yaml"
+    path.write_text(BASELINE_NO_DUPLICATE_YAML)
+
+    generate.load_and_validate(path)
+
+    assert captured_loaders, "yaml.load was never invoked"
+    assert all(
+        issubclass(loader, DuplicateKeyDetectingSafeLoader)
+        for loader in captured_loaders
+    ), (
+        f"Expected every yaml.load call to receive DuplicateKeyDetectingSafeLoader "
+        f"(or a subclass), got: {[loader.__name__ for loader in captured_loaders]}"
+    )
