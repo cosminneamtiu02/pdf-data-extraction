@@ -24,17 +24,10 @@ editing this test — only the CODEOWNERS file itself.
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[5]
 _CODEOWNERS_PATH = _REPO_ROOT / ".github" / "CODEOWNERS"
-
-# Matches a CODEOWNERS global-default line: the literal pattern ``*`` followed
-# by at least one owner handle starting with ``@cosmin``. Extra owners on the
-# same line (``* @cosmin @other``) are tolerated; comments after ``#`` are
-# stripped before matching.
-_GLOBAL_COSMIN_OWNER_RE = re.compile(r"^\*\s+.*@cosmin\S*", re.IGNORECASE)
 
 
 def _non_comment_lines(text: str) -> list[str]:
@@ -49,6 +42,42 @@ def _non_comment_lines(text: str) -> list[str]:
     return lines
 
 
+def _is_global_cosmin_default(line: str) -> bool:
+    """True iff ``line`` is a CODEOWNERS ``*`` pattern whose first owner token
+    starts with ``@cosmin`` (case-insensitive).
+
+    CODEOWNERS lines are whitespace-separated: the first token is the file
+    pattern, and the remaining tokens are owner handles. Parsing into tokens
+    (rather than regex-matching a substring) rejects adversarial cases like
+    ``* foo@cosmin.com`` where an email-shaped token would satisfy a naive
+    substring match without being a real ``@cosmin…`` owner handle.
+    """
+    tokens = line.split()
+    if len(tokens) < 2:
+        return False
+    if tokens[0] != "*":
+        return False
+    return any(token.lower().startswith("@cosmin") for token in tokens[1:])
+
+
+def _require_codeowners_file() -> Path:
+    """Assert the CODEOWNERS file exists, returning its path.
+
+    Each read-based test calls this first so that a missing file surfaces the
+    actionable assertion message from this helper rather than a bare
+    ``FileNotFoundError`` from ``read_text()``. The dedicated
+    ``test_codeowners_file_exists`` test still exists as the canonical
+    single-purpose assertion; this helper keeps the other tests robust if
+    they are run in isolation or reordered.
+    """
+    assert _CODEOWNERS_PATH.is_file(), (
+        f"{_CODEOWNERS_PATH} is missing. Issue #411 requires a CODEOWNERS "
+        f"file so PRs mechanically surface the right reviewer in GitHub's "
+        f"Reviewers panel."
+    )
+    return _CODEOWNERS_PATH
+
+
 def test_codeowners_file_exists() -> None:
     assert _CODEOWNERS_PATH.is_file(), (
         f"{_CODEOWNERS_PATH} is missing. Issue #411 requires a CODEOWNERS "
@@ -58,7 +87,8 @@ def test_codeowners_file_exists() -> None:
 
 
 def test_codeowners_has_non_comment_content() -> None:
-    text = _CODEOWNERS_PATH.read_text(encoding="utf-8")
+    path = _require_codeowners_file()
+    text = path.read_text(encoding="utf-8")
     meaningful = _non_comment_lines(text)
     assert meaningful, (
         f"{_CODEOWNERS_PATH} contains only comments/whitespace. A CODEOWNERS "
@@ -68,9 +98,10 @@ def test_codeowners_has_non_comment_content() -> None:
 
 
 def test_codeowners_has_cosmin_global_default() -> None:
-    text = _CODEOWNERS_PATH.read_text(encoding="utf-8")
+    path = _require_codeowners_file()
+    text = path.read_text(encoding="utf-8")
     meaningful = _non_comment_lines(text)
-    matches = [line for line in meaningful if _GLOBAL_COSMIN_OWNER_RE.match(line)]
+    matches = [line for line in meaningful if _is_global_cosmin_default(line)]
     assert matches, (
         f"{_CODEOWNERS_PATH} is missing a ``* @cosmin…`` global default "
         f"line. CLAUDE.md pins cosminneamtiu02 as the PR author for this "
