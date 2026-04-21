@@ -406,7 +406,8 @@ def test_declared_field_names_pins_yaml_declaration_order_through_loader(
     This test locks the contract end-to-end with an intentionally
     non-alphabetical, non-insertion-tempting field order — so both
     "accidentally alphabetize" and "accidentally insertion-sort by
-    hashing" regressions fail loud at parse time.
+    hashing" regressions are caught clearly by the final assertion after
+    loading/parsing completes.
     """
     from app.features.extraction.skills.skill import Skill
     from app.features.extraction.skills.skill_yaml_schema import SkillYamlSchema
@@ -453,12 +454,17 @@ def test_declared_field_names_pins_yaml_declaration_order_through_loader(
         "      type: string\n"
         "    currency:\n"
         "      type: string\n"
+        # `required` is deliberately scrambled vs. `properties` order so the
+        # test unambiguously pins that `declared_field_names` derives order
+        # from `properties`, not from `required`. If a future refactor
+        # accidentally sourced order from `required`, this test would fail
+        # instead of silently passing.
         "  required:\n"
-        "    - invoice_number\n"
-        "    - amount_due\n"
-        "    - issued_at\n"
-        "    - vendor_name\n"
         "    - currency\n"
+        "    - vendor_name\n"
+        "    - issued_at\n"
+        "    - amount_due\n"
+        "    - invoice_number\n"
     )
     path: Path = tmp_path / "1.yaml"
     path.write_text(yaml_text, encoding="utf-8")
@@ -466,12 +472,13 @@ def test_declared_field_names_pins_yaml_declaration_order_through_loader(
     schema = SkillYamlSchema.load_from_file(path)
     skill = Skill.from_schema(schema)
 
+    # Capture the result once; tuple equality pins the exact declared
+    # field order and pytest already shows positional diffs for tuples.
+    # A separate `list(result) == list(expected_order)` assertion would be
+    # unreachable (the tuple-equality assert above fails first), so it is
+    # omitted to keep the test's intent clear.
     result = declared_field_names(skill)
-
-    # The invariant: a list comparison so the failure diff shows the
-    # exact position of any reorder regression.
     assert result == expected_order
-    assert list(result) == list(expected_order)
 
 
 def test_declared_field_names_is_tuple_not_set_so_order_is_observable(
