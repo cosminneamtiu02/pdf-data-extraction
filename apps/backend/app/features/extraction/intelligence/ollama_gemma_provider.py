@@ -381,8 +381,11 @@ class OllamaGemmaProvider(BaseLanguageModel):
             except RuntimeError:
                 # Loop transitioned closed between the state checks and
                 # ``run_coroutine_threadsafe`` submit. Fall through to
-                # the current-loop best-effort branch below.
-                _logger.debug("stale_client_old_loop_raced_closed")
+                # the current-loop best-effort branch below. ``exc_info``
+                # surfaces the scheduler's own message (issue #335) so
+                # operators see the full teardown trail, not just the
+                # event name.
+                _logger.warning("stale_client_old_loop_raced_closed", exc_info=True)
             else:
                 try:
                     await asyncio.wait_for(
@@ -397,19 +400,41 @@ class OllamaGemmaProvider(BaseLanguageModel):
                     # remains on the old loop's queue; if that loop is
                     # subsequently closed its sockets go with it, and if
                     # it is later restarted the close runs harmlessly
-                    # against the already-detached client.
-                    _logger.debug("stale_client_old_loop_close_timed_out")
+                    # against the already-detached client. Logged at
+                    # ``warning`` (issue #335) because a bounded
+                    # teardown that hit its deadline is an operator
+                    # signal, not a debug note.
+                    _logger.warning("stale_client_old_loop_close_timed_out")
+                except Exception:  # noqa: BLE001 — best-effort teardown must not crash the rebuild; all failure modes are logged
+                    # ``aclose()`` itself raised inside the old loop
+                    # (bad socket, httpx internal error, etc.). The
+                    # scheduled coroutine propagates its exception
+                    # back through ``asyncio.wrap_future``. Before
+                    # issue #335 this fell through uncaught and
+                    # crashed the rebuild; the fix captures it as
+                    # best-effort with ``exc_info`` so the full
+                    # traceback reaches operators.
+                    _logger.warning("stale_client_aclose_failed", exc_info=True)
                 else:
                     return
         try:
             await old_client.aclose()
-        except RuntimeError as exc:
+        except Exception:  # noqa: BLE001 — best-effort teardown must not crash the rebuild; all failure modes are logged
             # Expected when the old client's transport was bound to a
-            # now-dead loop: httpcore raises `RuntimeError: Event loop is
-            # closed`. The sockets were reaped when the loop closed, so
-            # the leak window is already zero. Log for observability and
-            # continue — the fresh client on the current loop is valid.
-            _logger.debug("stale_client_aclose_skipped", error=str(exc))
+            # now-dead loop: httpcore raises ``RuntimeError: Event
+            # loop is closed``. Other failure modes (bad socket, httpx
+            # internal error) are also possible here — before issue
+            # #335 only ``RuntimeError`` was caught and the log was at
+            # ``debug`` with just ``error=str(exc)``, so operators
+            # running at the default ``WARNING`` level saw nothing. The
+            # fix widens the catch to ``Exception``, raises the level
+            # to ``warning``, and attaches ``exc_info=True`` so the
+            # full traceback renders into the ``exception`` field via
+            # structlog's ``format_exc_info`` processor. The sockets
+            # were reaped when the loop closed, so the leak window is
+            # already zero and we still do not re-raise — the fresh
+            # client on the current loop is valid.
+            _logger.warning("stale_client_aclose_failed", exc_info=True)
 
     async def generate(
         self,
@@ -546,7 +571,27 @@ class OllamaGemmaProvider(BaseLanguageModel):
         body = cast("dict[str, Any]", decoded)
         response_text = body.get("response")
         if not isinstance(response_text, str):
-            _logger.warning("intelligence_unavailable", cause="missing_response_field")
+            # Ollama (and proxies that front it) may answer a 200 with a JSON
+            # body that omits ``response`` and instead carries an explicit
+            # diagnostic under the ``error`` key — e.g.
+            # ``{"error": "model not loaded"}`` when the runner has not yet
+            # warmed the requested weights. Before surfacing the classified
+            # ``missing_response_field`` cause, lift that string onto the log
+            # line under ``ollama_error`` so operators debugging failures see
+            # the upstream's own explanation instead of a bare classification.
+            # The log field is elided (not emitted as ``None``) when the body
+            # either has no ``error`` key or carries a non-string value there;
+            # forwarding a non-string would defeat the diagnostic purpose and
+            # pollute the log schema. The ``error`` value is a server-owned
+            # string and never echoes prompt content, so there is no
+            # prompt-leak concern (see issue #333). See also the guidance in
+            # the CLAUDE.md "Forbidden Patterns" against silently swallowing
+            # error bodies.
+            log_kwargs: dict[str, Any] = {"cause": "missing_response_field"}
+            ollama_error = body.get("error")
+            if isinstance(ollama_error, str):
+                log_kwargs["ollama_error"] = ollama_error
+            _logger.warning("intelligence_unavailable", **log_kwargs)
             raise IntelligenceUnavailableError from None
         return response_text
 

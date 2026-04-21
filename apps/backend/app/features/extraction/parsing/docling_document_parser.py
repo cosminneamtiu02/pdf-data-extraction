@@ -124,7 +124,7 @@ def _default_pdf_preflight(pdf_bytes: bytes) -> int:
         invalid_exception_classes = (file_data_error_attr,)
 
     try:
-        doc: Any = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+        doc_cm: Any = pymupdf.open(stream=pdf_bytes, filetype="pdf")
     except Exception as exc:
         # Narrow catch: only PyMuPDF's own data-error hierarchy (when the
         # symbol resolves to an exception type) maps to ``PdfInvalidError``.
@@ -137,13 +137,15 @@ def _default_pdf_preflight(pdf_bytes: bytes) -> int:
         _log.info("pdf_invalid", reason=type(exc).__name__)
         raise PdfInvalidError from exc
 
-    try:
+    # PyMuPDF 1.27's ``Document`` is a context manager; ``with`` guarantees
+    # ``close()`` on every exit path including probes like ``needs_pass`` or
+    # ``page_count`` raising a ``RuntimeError`` on malformed documents (#342).
+    # Mirrors the pattern used by ``PdfAnnotator._annotate_sync``.
+    with doc_cm as doc:
         if bool(doc.needs_pass):
             _log.info("pdf_password_protected")
             raise PdfPasswordProtectedError
         return int(doc.page_count)
-    finally:
-        doc.close()
 
 
 class DoclingDocumentParser:
