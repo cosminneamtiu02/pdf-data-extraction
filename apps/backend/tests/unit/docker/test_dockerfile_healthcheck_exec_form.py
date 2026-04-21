@@ -67,22 +67,26 @@ def _extract_healthcheck_cmd_line(text: str) -> str:
     folded = re.sub(r"\\\n\s*", " ", text)
     match = re.search(r"(?m)^HEALTHCHECK[^\n]*", folded)
     if match is None:
-        pytest.fail(
+        no_healthcheck_msg = (
             f"no HEALTHCHECK instruction found in {_DOCKERFILE_PATH}. Issue #363 "
             "expects the backend Dockerfile to declare a container-level "
             "liveness probe, even if it is later superseded by a compose-level "
             "healthcheck; dropping it entirely should be a deliberate decision "
             "with its own ADR."
         )
+        pytest.fail(no_healthcheck_msg)
+        raise AssertionError(no_healthcheck_msg)
     instruction = match.group(0)
     cmd_idx = instruction.find("CMD")
     if cmd_idx < 0:
-        pytest.fail(
+        no_cmd_msg = (
             f"HEALTHCHECK instruction in {_DOCKERFILE_PATH} has no `CMD` clause: "
             f"{instruction!r}. The `NONE` form would disable healthchecks "
             "entirely — if that is what you want, update this guardrail and "
             "docs/decisions.md."
         )
+        pytest.fail(no_cmd_msg)
+        raise AssertionError(no_cmd_msg)
     return instruction[cmd_idx:].strip()
 
 
