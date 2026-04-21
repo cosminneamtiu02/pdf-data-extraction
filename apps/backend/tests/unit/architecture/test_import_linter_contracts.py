@@ -257,16 +257,19 @@ def test_third_party_containment_contracts_alert_on_unmatched_ignores(
 # live entry today.
 # ─────────────────────────────────────────────────────────────────────────
 
-# Map import-linter contract keyword → root package name the contract forbids.
-# Mirrors the `_CONTAINED_PACKAGES` map in `test_dynamic_import_containment.py`
-# but keyed by contract keyword instead of package name, because this test
-# walks the INI file section-by-section.
-_CONTRACT_KEYWORD_TO_PACKAGES: dict[str, tuple[str, ...]] = {
-    "docling": ("docling",),
-    "pymupdf": ("pymupdf", "fitz"),
-    "langextract": ("langextract",),
-    "httpx": ("httpx",),
-}
+# Section-keyword tokens that identify third-party containment contracts.
+# Mirrors the `_CONTAINED_PACKAGES` map in `test_dynamic_import_containment.py`,
+# but keyed by contract-id keyword (not package name) because this test walks
+# the INI file section-by-section. The *target* module in each ignore-imports
+# line is what gets validated against the corresponding file — NOT a
+# per-contract package tuple — so a carve-out like ``pdf_annotator -> fitz``
+# fails the dead-entry check when the file only references ``pymupdf``, even
+# though both names are aliases of the same library. Checking against the
+# specific target matches the reviewer-requested semantics on PR #443: dead
+# entries stay dead regardless of whether an alias is "close enough".
+_THIRD_PARTY_CONTRACT_KEYWORDS: frozenset[str] = frozenset(
+    {"docling", "pymupdf", "langextract", "httpx"},
+)
 
 
 def _parse_ignore_imports(raw: str) -> list[tuple[str, str]]:
@@ -275,7 +278,15 @@ def _parse_ignore_imports(raw: str) -> list[tuple[str, str]]:
     The INI value is a newline-separated list of ``source -> target`` lines.
     configparser gives us the flattened text (with embedded newlines), so we
     split on newlines and then on the literal ``->`` arrow. Whitespace
-    around both sides is stripped. Blank lines are skipped.
+    around both sides is stripped. Blank lines and ``#`` comment lines are
+    skipped.
+
+    A non-empty, non-comment line that does not contain ``->`` is a typo in
+    the INI (a missing arrow makes the line unparseable as an ignore entry).
+    Since this helper feeds a contract-enforcement test, silently skipping a
+    malformed line would let the test pass while the INI is wrong — the
+    exact failure mode issue #394 exists to prevent on the containment
+    side. Treat any such line as a hard error so the typo surfaces loudly.
     """
     pairs: list[tuple[str, str]] = []
     for raw_line in raw.splitlines():
@@ -283,7 +294,11 @@ def _parse_ignore_imports(raw: str) -> list[tuple[str, str]]:
         if not line or line.startswith("#"):
             continue
         if "->" not in line:
-            continue
+            msg = (
+                f"malformed `ignore_imports` line: {line!r}. Each non-blank, "
+                "non-comment line must be `source -> target`."
+            )
+            raise AssertionError(msg)
         left, right = line.split("->", 1)
         pairs.append((left.strip(), right.strip()))
     return pairs
@@ -408,23 +423,33 @@ def _module_references_package(source: str, packages: tuple[str, ...]) -> bool:
 
 def _collect_third_party_ignore_entries(
     contracts_parser: configparser.ConfigParser,
-) -> list[tuple[str, str, str, tuple[str, ...]]]:
-    """Return (section, contract_keyword, source_module, packages) for every ignore entry.
+) -> list[tuple[str, str, str, str]]:
+    """Return (section, contract_keyword, source_module, target) for every ignore entry.
 
     Walks every ``importlinter:contract:*`` section whose id contains one of
     the third-party keywords (docling/pymupdf/langextract/httpx), parses its
-    ``ignore_imports`` multi-line value, and yields one tuple per ``source ->
-    target`` line. The ``target`` side is not returned because every C3/C4/
-    C5/C6 entry has a third-party target that matches the contract's
-    `forbidden_modules`; the source is what we need to resolve to a file.
+    ``ignore_imports`` multi-line value, and yields one tuple per
+    ``source -> target`` line.
+
+    The *target* side is returned (not a contract-wide package tuple) so the
+    dead-entry check in
+    ``test_third_party_ignore_list_entries_actually_reference_their_package``
+    can validate each carve-out against the specific module it names. This
+    matters for C4 (pymupdf/fitz), where the contract forbids two alias
+    names for the same library: a ``pdf_annotator -> fitz`` entry must be
+    backed by a ``fitz`` reference in the file — not a ``pymupdf`` one —
+    otherwise the ignore is dead and the reviewer's concern on PR #443
+    stands. A previous draft of this helper returned the contract's full
+    package tuple, which made ``pymupdf`` references satisfy ``fitz``
+    carve-outs (and vice versa) by accident.
     """
-    entries: list[tuple[str, str, str, tuple[str, ...]]] = []
+    entries: list[tuple[str, str, str, str]] = []
     for section in contracts_parser.sections():
         if not section.startswith("importlinter:contract:"):
             continue
         lowered = section.lower()
         matched_keyword: str | None = next(
-            (kw for kw in _CONTRACT_KEYWORD_TO_PACKAGES if kw in lowered),
+            (kw for kw in _THIRD_PARTY_CONTRACT_KEYWORDS if kw in lowered),
             None,
         )
         if matched_keyword is None:
@@ -432,9 +457,8 @@ def _collect_third_party_ignore_entries(
         if not contracts_parser.has_option(section, "ignore_imports"):
             continue
         raw = contracts_parser.get(section, "ignore_imports")
-        packages = _CONTRACT_KEYWORD_TO_PACKAGES[matched_keyword]
-        for source_module, _target in _parse_ignore_imports(raw):
-            entries.append((section, matched_keyword, source_module, packages))
+        for source_module, target in _parse_ignore_imports(raw):
+            entries.append((section, matched_keyword, source_module, target))
     return entries
 
 
@@ -469,7 +493,7 @@ def test_third_party_ignore_list_entries_actually_reference_their_package(
     """
     dead_entries: list[str] = []
     missing_files: list[str] = []
-    for section, _keyword, source_module, packages in _collect_third_party_ignore_entries(
+    for section, _keyword, source_module, target in _collect_third_party_ignore_entries(
         contracts_parser
     ):
         file_path = _module_path_for(source_module)
@@ -477,10 +501,10 @@ def test_third_party_ignore_list_entries_actually_reference_their_package(
             missing_files.append(f"{section}: {source_module} -> {file_path} (file missing)")
             continue
         source = file_path.read_text(encoding="utf-8")
-        if not _module_references_package(source, packages):
+        if not _module_references_package(source, (target,)):
             dead_entries.append(
-                f"{section}: {source_module} is in `ignore_imports` but the file "
-                f"contains no static or dynamic reference to {packages}"
+                f"{section}: {source_module} -> {target} is in `ignore_imports` but the "
+                f"file contains no static or dynamic reference to `{target}`"
             )
 
     assert not missing_files, (
@@ -557,6 +581,72 @@ def test_dead_ignore_detector_accepts_static_and_dynamic_references() -> None:
     )
     # Negative control: reference to a different package must NOT match.
     assert not _module_references_package("import pymupdf\n", ("docling",))
+
+
+def test_dead_ignore_detector_target_is_validated_per_entry_not_per_contract() -> None:
+    """Regression (PR #443 review): each ``source -> target`` entry must be
+    validated against THAT specific target, not the contract's package tuple.
+
+    Before the fix, C4 treated ``pymupdf`` and ``fitz`` as interchangeable
+    — a file that imported ``pymupdf`` was accepted as evidence that a
+    ``-> fitz`` carve-out was live. That masks dead alias entries. This
+    synthetic check pins the tightened semantics by asserting the predicate
+    correctly rejects a ``pymupdf``-only source when asked whether it
+    references ``fitz`` (and vice versa).
+    """
+    pymupdf_only_source = "import pymupdf\nrect = pymupdf.Rect(0, 0, 1, 1)\n"
+    # A file that imports only `pymupdf` does NOT satisfy a `-> fitz` carve-out.
+    assert not _module_references_package(pymupdf_only_source, ("fitz",)), (
+        "predicate falsely claimed a `pymupdf`-only source references `fitz`; "
+        "per-target dead-entry detection is broken"
+    )
+    # Symmetric check: a `fitz`-only source does NOT satisfy a `-> pymupdf` carve-out.
+    fitz_only_source = "import fitz\nrect = fitz.Rect(0, 0, 1, 1)\n"
+    assert not _module_references_package(fitz_only_source, ("pymupdf",)), (
+        "predicate falsely claimed a `fitz`-only source references `pymupdf`; "
+        "per-target dead-entry detection is broken"
+    )
+
+
+def test_parse_ignore_imports_rejects_malformed_lines_without_arrow() -> None:
+    """Regression (PR #443 review): a non-empty, non-comment line without
+    ``->`` is a typo in ``ignore_imports`` and must raise, not be silently
+    skipped.
+
+    A contract-enforcement test that silently drops malformed lines risks
+    letting a typo in ``ignore_imports`` pass unnoticed — the same class of
+    failure mode issue #394 addresses on the containment side. This test
+    pins the loud-fail behaviour so a future refactor cannot regress to
+    silent skip.
+    """
+    malformed_ini_value = (
+        "app.features.extraction.parsing.foo -> docling\n"
+        "app.features.extraction.parsing.bar_missing_arrow_docling\n"
+    )
+    with pytest.raises(AssertionError, match="malformed `ignore_imports` line"):
+        _parse_ignore_imports(malformed_ini_value)
+
+
+def test_parse_ignore_imports_skips_blank_and_comment_lines() -> None:
+    """Regression: blank lines and ``#`` comments must still be tolerated.
+
+    Pairs with ``test_parse_ignore_imports_rejects_malformed_lines_without_arrow``
+    to pin the asymmetry: malformed content lines are loud, but blanks and
+    comment lines are structural noise and stay silent skips.
+    """
+    ini_value = (
+        "\n"
+        "# a rationale comment block\n"
+        "app.features.extraction.parsing.foo -> docling\n"
+        "\n"
+        "    # indented comment also tolerated\n"
+        "app.features.extraction.parsing.bar -> docling\n"
+    )
+    pairs = _parse_ignore_imports(ini_value)
+    assert pairs == [
+        ("app.features.extraction.parsing.foo", "docling"),
+        ("app.features.extraction.parsing.bar", "docling"),
+    ]
 
 
 def test_taskfile_wires_lint_imports_into_task_check() -> None:
