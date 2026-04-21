@@ -19,7 +19,6 @@ Invocation
 from __future__ import annotations
 
 import argparse
-import contextlib
 import platform
 import subprocess
 import sys
@@ -41,6 +40,7 @@ import structlog
 from pydantic import ValidationError
 
 from scripts._benchmark_settings import BenchmarkSettings
+from scripts._stream_aware_argument_parser import StreamAwareArgumentParser
 
 _logger = structlog.get_logger(__name__)
 
@@ -505,7 +505,12 @@ def _format_bench_error_source(loc: str, cli_overrides: dict[str, Any]) -> str:
     return f"BENCH_{loc.upper()}"
 
 
-def parse_args(argv: list[str], *, err: TextIO | None = None) -> BenchConfig:
+def parse_args(
+    argv: list[str],
+    *,
+    out: TextIO | None = None,
+    err: TextIO | None = None,
+) -> BenchConfig:
     """Parse CLI arguments and return a ``BenchConfig``.
 
     Defaults come from :class:`scripts._benchmark_settings.BenchmarkSettings`,
@@ -513,15 +518,21 @@ def parse_args(argv: list[str], *, err: TextIO | None = None) -> BenchConfig:
     rather than ``os.environ`` (CLAUDE.md forbidden pattern; issue #237).
     Explicit CLI flags still win over env vars.
 
-    ``err`` defaults to ``sys.stderr`` when ``None``. Callers (notably
-    :func:`main`) inject an :class:`io.StringIO` so both the pydantic-driven
-    ValidationError operator messages *and* argparse's own
-    "invalid int/float value" messages land on the same stream as every
-    other ``main`` error path instead of leaking onto the process-global
-    ``sys.stderr`` (issue #318). Argparse's internal writes go through
-    ``sys.stderr`` directly; we redirect that stream via
-    :func:`contextlib.redirect_stderr` for the duration of ``parse_args``
-    so the leak is closed for all CLI error paths, not just the pydantic one.
+    ``out`` / ``err`` default to ``sys.stdout`` / ``sys.stderr`` when
+    ``None``. Callers (notably :func:`main`) inject :class:`io.StringIO`
+    buffers so every byte of CLI output — the pydantic-driven
+    ValidationError operator message, argparse's own "invalid int/float
+    value" message for a failed ``type=`` callable, the usage banner
+    argparse prints alongside parse errors, and the ``--help`` banner —
+    lands on the caller-supplied streams rather than on the process-global
+    ``sys.stdout`` / ``sys.stderr`` (issues #318 / #326). Routing is done
+    by :class:`StreamAwareArgumentParser`, which overrides argparse's
+    ``_print_message`` to write directly to the injected buffers. This
+    replaces an earlier ``contextlib.redirect_stderr`` wrap around
+    ``parser.parse_args``, which temporarily rebound the process-global
+    ``sys.stderr`` — a mechanism that was not thread-safe (PR #474
+    round-4 feedback) and which also did not cover the ``--help`` path
+    because ``--help`` writes to ``sys.stdout``, not ``sys.stderr``.
 
     Implementation note: argv is parsed *first* with ``argparse.SUPPRESS`` as
     the default for every ``BENCH_*``-backed flag, so only flags the operator
@@ -539,8 +550,11 @@ def parse_args(argv: list[str], *, err: TextIO | None = None) -> BenchConfig:
     script preserves the exit-code contract of the pre-refactor
     ``_safe_int_env`` branch instead of crashing with a traceback.
     """
+    out_stream = sys.stdout if out is None else out
     err_stream = sys.stderr if err is None else err
-    parser = argparse.ArgumentParser(
+    parser = StreamAwareArgumentParser(
+        out_stream=out_stream,
+        err_stream=err_stream,
         prog="benchmark",
         description=(
             "Local latency benchmark for the PDF extraction service. "
@@ -608,17 +622,16 @@ def parse_args(argv: list[str], *, err: TextIO | None = None) -> BenchConfig:
         help="HTTP request timeout in seconds (default: 300)",
     )
 
-    # Redirect argparse's internal ``sys.stderr`` writes for CLI-error paths
-    # (e.g. "invalid int value: 'banana'" from a failed ``type=int`` callable,
-    # plus the usage banner argparse prints alongside parse/type errors) onto
-    # ``err_stream`` so those paths honor the caller-supplied buffer. Without
-    # this, argparse's ``self._print_message(message, _sys.stderr)`` bypasses
-    # ``err_stream`` and leaks onto the process-global ``sys.stderr`` (issue
-    # #318). Note: ``--help`` is NOT affected — argparse writes help text to
-    # ``sys.stdout``, which this redirection does not touch (see existing
-    # ``test_parse_args_help`` which asserts on ``captured.out``).
-    with contextlib.redirect_stderr(err_stream):
-        args = parser.parse_args(argv)
+    # No stream-redirect wrap needed: ``StreamAwareArgumentParser`` overrides
+    # ``_print_message`` to route argparse's internal writes directly onto
+    # ``out_stream`` / ``err_stream`` based on whether argparse asked for
+    # ``sys.stdout`` (``--help`` / ``--usage``) or ``sys.stderr`` (parse/type
+    # errors and their usage banner). This covers every CLI-output path —
+    # including the ``--help`` banner that a ``contextlib.redirect_stderr``
+    # wrap missed — without temporarily rebinding the process-global stream
+    # references, so concurrent writes from other threads are not diverted
+    # (PR #474 round-4 thread-safety feedback).
+    args = parser.parse_args(argv)
 
     # argparse returns per-flag values whose static type varies by the ``type=``
     # callable (``int`` / ``float`` / ``Path`` / ``str``); ``Any`` lets pyright
@@ -667,22 +680,27 @@ def main(
 
     ``out`` and ``err`` default to ``sys.stdout`` / ``sys.stderr`` when ``None``.
     Integration tests inject ``io.StringIO`` instances so they can capture the
-    report and error messages on their own buffers (issue #326). The ``err``
-    stream is also threaded into :func:`parse_args` so every CLI-error path —
-    pydantic-ValidationError operator messages from ``BenchmarkSettings`` *and*
-    argparse's own "invalid int/float value" messages from failed ``type=``
-    callables — lands on the injected buffer rather than on the process-global
-    ``sys.stderr`` (issue #318). For the argparse path this is achieved by
-    wrapping ``parser.parse_args`` in ``contextlib.redirect_stderr(err_stream)``,
-    which briefly rebinds ``sys.stderr`` for the duration of that call; the
-    rebind is scoped to the ``with`` block and restored on exit, so no
-    cross-call process-state mutation persists.
+    report and error messages on their own buffers (issue #326). Both streams
+    are threaded into :func:`parse_args` so every CLI output path — the
+    pydantic-ValidationError operator message from ``BenchmarkSettings``,
+    argparse's own "invalid int/float value" message from a failed ``type=``
+    callable, the usage banner argparse prints alongside parse errors, and
+    the ``--help`` banner — lands on the caller-supplied buffers rather than
+    on the process-global ``sys.stdout`` / ``sys.stderr`` (issues #318 / #326).
+    Routing is handled by :class:`StreamAwareArgumentParser`, which writes
+    to the injected buffers directly via an ``_print_message`` override
+    instead of temporarily rebinding process-global streams via
+    ``contextlib.redirect_*`` (PR #474 round-4 thread-safety feedback).
     """
     out_stream = sys.stdout if out is None else out
     err_stream = sys.stderr if err is None else err
 
     try:
-        config = parse_args(sys.argv[1:] if argv is None else argv, err=err_stream)
+        config = parse_args(
+            sys.argv[1:] if argv is None else argv,
+            out=out_stream,
+            err=err_stream,
+        )
     except SystemExit as exc:
         # argparse calls sys.exit on --help or on error; propagate the code.
         return exc.code if isinstance(exc.code, int) else 1

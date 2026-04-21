@@ -434,11 +434,19 @@ def test_main_missing_fixtures_writes_error_to_injected_err_not_process_stderr(
     assert "scanned_invoice_10p.pdf" in err_text
     assert "table_heavy_5p.pdf" in err_text
 
-    # No leakage to process-global streams.
+    # No leakage to process-global streams. The test keys on the specific
+    # fixture tokens rather than asserting ``captured.err == ""`` so unrelated
+    # pytest/structlog output does not false-trip the tripwire. Checks BOTH
+    # ``captured.err`` and ``captured.out`` — a regression that routed the
+    # error to process-global stdout instead of stderr would slip past a
+    # stderr-only check.
     captured = capsys.readouterr()
     assert "native_invoice_10p.pdf" not in captured.err
     assert "scanned_invoice_10p.pdf" not in captured.err
     assert "table_heavy_5p.pdf" not in captured.err
+    assert "native_invoice_10p.pdf" not in captured.out
+    assert "scanned_invoice_10p.pdf" not in captured.out
+    assert "table_heavy_5p.pdf" not in captured.out
     assert fake_out.getvalue() == ""
 
 
@@ -467,13 +475,17 @@ def test_main_invalid_env_var_writes_error_to_injected_err_not_process_stderr(
     err_text = fake_err.getvalue()
     assert "BENCH_ITERATIONS" in err_text or "iterations" in err_text.lower()
 
-    # No leakage to process-global stderr — the whole point of the err kwarg.
-    # ``BENCH_ITERATIONS`` is the operator-facing token unique to this failure
-    # path (pydantic-settings surfaces it verbatim), so checking it alone is
-    # specific enough; a broader ``"iterations"`` match would false-trip on
-    # any unrelated warning/log line that happens to use the word.
+    # No leakage to process-global stderr/stdout — the whole point of the
+    # injected stream kwargs. ``BENCH_ITERATIONS`` is the operator-facing
+    # token unique to this failure path (pydantic-settings surfaces it
+    # verbatim), so checking it alone is specific enough; a broader
+    # ``"iterations"`` match would false-trip on any unrelated warning/log
+    # line that happens to use the word. Both ``captured.err`` and
+    # ``captured.out`` are checked so a regression that writes the error to
+    # process-global stdout instead of stderr is still caught.
     captured = capsys.readouterr()
     assert "BENCH_ITERATIONS" not in captured.err
+    assert "BENCH_ITERATIONS" not in captured.out
     assert fake_out.getvalue() == ""
 
 
@@ -498,10 +510,14 @@ def test_main_invalid_cli_flag_writes_error_to_injected_err_not_process_stderr(
 
     # Guard against stream leakage using the operator-facing token
     # ``--iterations`` rather than the bare word ``iterations`` — the bare
-    # word could appear in any unrelated stderr log line and false-trip the
-    # assertion even when the benchmark error correctly went to ``fake_err``.
+    # word could appear in any unrelated stderr/stdout log line and false-trip
+    # the assertion even when the benchmark error correctly went to
+    # ``fake_err``. Both ``captured.err`` and ``captured.out`` are checked so
+    # a regression that misroutes the error onto process-global stdout cannot
+    # slip past a stderr-only tripwire.
     captured = capsys.readouterr()
     assert "--iterations" not in captured.err
+    assert "--iterations" not in captured.out
     assert fake_out.getvalue() == ""
 
 
@@ -529,14 +545,93 @@ def test_main_argparse_type_error_writes_error_to_injected_err_not_process_stder
     assert "--iterations" in err_text
     assert "banana" in err_text
 
-    # No leakage to process-global stderr — the whole point of the err kwarg.
-    # ``banana`` is a unique token that can only come from the failed argparse
-    # type-callable, so it is specific enough to guard against leakage without
-    # risking false trips from unrelated stderr log lines.
+    # No leakage to process-global stderr/stdout — the whole point of the
+    # injected err/out kwargs. ``banana`` is a unique token that can only
+    # come from the failed argparse type-callable, so it is specific enough
+    # to guard against leakage without risking false trips from unrelated
+    # stderr/stdout log lines. Both streams are checked so a regression
+    # that writes the error onto process-global stdout is also caught.
     captured = capsys.readouterr()
     assert "banana" not in captured.err
     assert "--iterations" not in captured.err
+    assert "banana" not in captured.out
+    assert "--iterations" not in captured.out
     assert fake_out.getvalue() == ""
+
+
+def test_main_help_writes_help_text_to_injected_out_not_process_stdout(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """main(out=, err=) routes ``--help`` text to injected ``out``, not sys.stdout.
+
+    Regression guard for PR #474 round-4 feedback: argparse's ``print_help``
+    writes to ``sys.stdout`` by default, so ``main(["--help"], out=StringIO())``
+    previously leaked the help banner onto the process-global stdout even
+    though the caller injected a buffer. The custom
+    ``StreamAwareArgumentParser`` threads ``out_stream`` into
+    ``parser.print_help`` so ``--help`` honors the kwarg like every other
+    CLI output path.
+    """
+    fake_out = io.StringIO()
+    fake_err = io.StringIO()
+
+    code = main(["--help"], out=fake_out, err=fake_err)
+
+    assert code == 0
+    out_text = fake_out.getvalue()
+    # argparse's help banner contains the ``--iterations`` flag description.
+    assert "--iterations" in out_text
+    assert "--url" in out_text
+    assert "--fixtures-dir" in out_text
+
+    # No leakage to process-global stdout — the whole point of the out kwarg.
+    # ``--iterations`` is the operator-facing token unique to the help banner;
+    # checking it on both streams guards against leakage in either direction
+    # without relying on the brittle "empty output" assertion.
+    captured = capsys.readouterr()
+    assert "--iterations" not in captured.out
+    assert "--iterations" not in captured.err
+    assert fake_err.getvalue() == ""
+
+
+def test_main_error_does_not_mutate_process_sys_stderr_during_parse(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """main error paths route through the parser without rebinding sys.stderr.
+
+    Regression guard for PR #474 round-4 feedback: the previous implementation
+    wrapped ``parser.parse_args`` in ``contextlib.redirect_stderr(err_stream)``,
+    which temporarily reassigned ``sys.stderr`` for the duration of the call.
+    That reassignment is not thread-safe — any concurrent logging on another
+    thread would have landed on ``err_stream`` instead of the real stderr.
+    The :class:`StreamAwareArgumentParser` replacement routes argparse's
+    writes directly onto the injected buffers without touching
+    ``sys.stderr`` / ``sys.stdout`` at all. This test pins that invariant:
+    ``sys.stderr`` must be the same object on both sides of a failing
+    ``main`` call.
+    """
+    saved_stderr = sys.stderr
+    saved_stdout = sys.stdout
+
+    fake_out = io.StringIO()
+    fake_err = io.StringIO()
+
+    code = main(["--iterations", "banana"], out=fake_out, err=fake_err)
+
+    # sys.stderr / sys.stdout are the exact same object references as before
+    # the call — no ``contextlib.redirect_*`` temporarily rebinding them.
+    assert sys.stderr is saved_stderr
+    assert sys.stdout is saved_stdout
+
+    # And the argparse error still routed to the injected buffer (the test
+    # above covers that positively; here we check code propagation).
+    assert code == 2
+    assert "banana" in fake_err.getvalue()
+
+    # Tripwire: no process-global stream leakage either.
+    captured = capsys.readouterr()
+    assert "banana" not in captured.err
+    assert "banana" not in captured.out
 
 
 # ---------------------------------------------------------------------------
