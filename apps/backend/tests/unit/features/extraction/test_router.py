@@ -2,7 +2,7 @@
 
 Tests cover:
 - ``read_with_byte_limit`` streaming guard (scenarios 1-4)
-- ``_build_multipart_mixed`` response builder (scenarios 5-6)
+- ``build_multipart_mixed`` response builder (scenarios 5-6)
 - Handler output-mode branching (scenarios 7-9)
 - Structured log context on ``InternalError`` raises (issue #337)
 """

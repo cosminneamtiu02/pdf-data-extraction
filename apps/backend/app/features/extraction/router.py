@@ -22,7 +22,7 @@ early on the first chunk that pushes the total over
 from __future__ import annotations
 
 import secrets
-from typing import TYPE_CHECKING, Annotated, assert_never
+from typing import TYPE_CHECKING, Annotated, NoReturn, assert_never
 
 import structlog
 from fastapi import APIRouter, Depends, File, Form, Response, UploadFile
@@ -104,6 +104,22 @@ def build_multipart_mixed(json_body: bytes, pdf_body: bytes) -> tuple[bytes, str
     return parts, boundary
 
 
+def _raise_missing_annotated_pdf(output_mode: OutputMode) -> NoReturn:
+    """Log the router-local context and raise ``InternalError``.
+
+    Factored out so the PDF_ONLY and BOTH branches cannot drift on the event
+    name or field shape. See issue #337 for why the log must precede the raise.
+    The ``NoReturn`` annotation lets pyright narrow ``annotated_pdf_bytes`` to
+    non-``None`` after the guarded call.
+    """
+    _logger.error(
+        "router_serialization_invariant_violated",
+        output_mode=output_mode.value,
+        has_annotated_pdf=False,
+    )
+    raise InternalError()  # noqa: RSE102  # explicit instantiation for consistency
+
+
 def _serialize_result(result: ExtractionResult, output_mode: OutputMode) -> Response:
     """Serialize *result* into the right HTTP response per *output_mode*.
 
@@ -124,22 +140,12 @@ def _serialize_result(result: ExtractionResult, output_mode: OutputMode) -> Resp
 
     if output_mode == OutputMode.PDF_ONLY:
         if result.annotated_pdf_bytes is None:
-            _logger.error(
-                "router_serialization_invariant_violated",
-                output_mode=output_mode.value,
-                has_annotated_pdf=False,
-            )
-            raise InternalError()  # noqa: RSE102  # explicit instantiation for consistency
+            _raise_missing_annotated_pdf(output_mode)
         return Response(content=result.annotated_pdf_bytes, media_type="application/pdf")
 
     if output_mode == OutputMode.BOTH:
         if result.annotated_pdf_bytes is None:
-            _logger.error(
-                "router_serialization_invariant_violated",
-                output_mode=output_mode.value,
-                has_annotated_pdf=False,
-            )
-            raise InternalError()  # noqa: RSE102
+            _raise_missing_annotated_pdf(output_mode)
         json_bytes = result.response.model_dump_json().encode()
         body, boundary = build_multipart_mixed(json_bytes, result.annotated_pdf_bytes)
         return Response(content=body, media_type=f'multipart/mixed; boundary="{boundary}"')
