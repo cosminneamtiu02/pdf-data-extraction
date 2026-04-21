@@ -18,12 +18,14 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
 import yaml
 from httpx import ASGITransport, AsyncClient
 
+from app import main as main_module
 from app.api.deps import get_extraction_service
 from app.core.config import Settings
 from app.exceptions import IntelligenceUnavailableError
@@ -39,6 +41,38 @@ from tests.conftest import FakeProbe
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+class _EventCapturingLogger:
+    """Drop-in spy for ``app.main._logger`` that records structured events.
+
+    Swaps ``app.main._logger`` at test time rather than using
+    ``structlog.testing.capture_logs`` or ``capfd`` because both depend on
+    structlog's global ``_CONFIG.default_processors`` list, which is
+    re-assigned every time ``create_app`` calls ``configure_logging``. The
+    previous ``capfd``-based assertions against rendered output
+    (``"warning" in captured.out.lower()``) were brittle because a renderer
+    change (``KeyValueRenderer`` → ``ConsoleRenderer``) or a key rename
+    would silently break them even when the underlying code was correct.
+    An attribute-swap is deterministic: it records the raw event name +
+    kwargs the code emitted, independent of the renderer and regardless of
+    whether the session has already been configured. Issue #281.
+    """
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, str, dict[str, Any]]] = []
+
+    def _record(self, level: str, event: str, **kwargs: Any) -> None:
+        self.events.append((level, event, kwargs))
+
+    def info(self, event: str, **kwargs: Any) -> None:
+        self._record("info", event, **kwargs)
+
+    def warning(self, event: str, **kwargs: Any) -> None:
+        self._record("warning", event, **kwargs)
+
+    def critical(self, event: str, **kwargs: Any) -> None:
+        self._record("critical", event, **kwargs)
 
 
 def _write_valid_skill(base: Path) -> None:
@@ -177,7 +211,7 @@ async def test_degraded_boot_extract_returns_503_intelligence_unavailable(
 
 async def test_degraded_boot_logs_ollama_not_ready_at_startup(
     tmp_path: Path,
-    capfd: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Ollama not ready at boot → startup emits WARNING-level log event.
 
@@ -190,12 +224,21 @@ async def test_degraded_boot_logs_ollama_not_ready_at_startup(
     app = create_app(_degraded_settings(tmp_path))
     app.state.ollama_health_probe = FakeProbe(results=[False])
 
+    spy = _EventCapturingLogger()
+    monkeypatch.setattr(main_module, "_logger", spy)
+
     async with _lifespan(app):
         pass
 
-    captured = capfd.readouterr()
-    assert "ollama_not_ready_at_startup" in captured.out
-    assert "warning" in captured.out.lower()
+    not_ready_events = [
+        (level, kwargs)
+        for level, event, kwargs in spy.events
+        if event == "ollama_not_ready_at_startup"
+    ]
+    assert len(not_ready_events) == 1, (
+        f"Expected one ollama_not_ready_at_startup event, got {spy.events}"
+    )
+    assert not_ready_events[0][0] == "warning"
 
 
 # ---------------------------------------------------------------------------
@@ -380,7 +423,7 @@ async def test_non_httpx_probe_exception_does_not_crash_startup(
 
 async def test_non_httpx_probe_exception_logs_warning_with_event_name(
     tmp_path: Path,
-    capfd: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Non-httpx probe failure emits a structured WARNING with the error class.
 
@@ -394,13 +437,25 @@ async def test_non_httpx_probe_exception_logs_warning_with_event_name(
     app = create_app(_degraded_settings(tmp_path))
     app.state.ollama_health_probe = _ExplodingProbe(error=ValueError("simulated"))
 
+    spy = _EventCapturingLogger()
+    monkeypatch.setattr(main_module, "_logger", spy)
+
     async with _lifespan(app):
         pass
 
-    captured = capfd.readouterr()
-    assert "probe_check_failed_at_startup" in captured.out
-    assert "warning" in captured.out.lower()
-    assert "ValueError" in captured.out
+    probe_failed_events = [
+        (level, kwargs)
+        for level, event, kwargs in spy.events
+        if event == "probe_check_failed_at_startup"
+    ]
+    assert len(probe_failed_events) == 1, (
+        f"Expected one probe_check_failed_at_startup event, got {spy.events}"
+    )
+    level, kwargs = probe_failed_events[0]
+    assert level == "warning"
+    # ``error_class`` is load-bearing: operators triage by error type without
+    # walking the stack trace.
+    assert kwargs["error_class"] == "ValueError"
 
 
 async def test_non_httpx_probe_exception_ready_returns_503_ollama_unreachable(
