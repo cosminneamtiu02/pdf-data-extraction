@@ -180,6 +180,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         max_upload_bytes=resolved_settings.max_pdf_bytes,
         cors_methods=resolved_settings.cors_methods,
         cors_headers=resolved_settings.cors_headers,
+        cors_allow_credentials=resolved_settings.cors_allow_credentials,
     )
     register_exception_handlers(application)
 

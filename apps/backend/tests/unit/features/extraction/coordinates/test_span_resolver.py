@@ -263,6 +263,13 @@ def test_cross_page_span_returns_bboxes_with_mixed_page_numbers() -> None:
 
 
 def test_hallucinated_offsets_outside_any_block_returns_grounded_false() -> None:
+    # Issue #338: a value whose offsets do not land in any parsed block cannot
+    # honestly claim `source="document"` — the model said it was grounded, but
+    # the resolver proved the claim wrong. Route through the same
+    # `source="inferred"` branch the `not raw.grounded` case uses, following
+    # the same consistency/contract motivation discussed in #279 without
+    # asserting that broader failed-resolution behavior has already changed
+    # in the resolver.
     resolver = SpanResolver()
     block = _block(block_id="b0", text="hello", bbox=(0, 0, 50, 10))
     doc = _doc(block)
@@ -282,7 +289,7 @@ def test_hallucinated_offsets_outside_any_block_returns_grounded_false() -> None
     assert field.value == "hello"
     assert field.grounded is False
     assert field.bbox_refs == []
-    assert field.source == "document"
+    assert field.source == "inferred"
     assert field.status == FieldStatus.extracted
 
 
@@ -306,6 +313,8 @@ def test_hallucinated_offsets_in_separator_gap_returns_grounded_false() -> None:
 
     assert result[0].grounded is False
     assert result[0].bbox_refs == []
+    # Issue #338: hallucinated offsets must not claim `source="document"`.
+    assert result[0].source == "inferred"
 
 
 def test_start_offset_exactly_on_exclusive_end_of_block_returns_grounded_false() -> None:
@@ -331,6 +340,8 @@ def test_start_offset_exactly_on_exclusive_end_of_block_returns_grounded_false()
 
     assert result[0].grounded is False
     assert result[0].bbox_refs == []
+    # Issue #338: hallucinated offsets must not claim `source="document"`.
+    assert result[0].source == "inferred"
 
 
 def test_hallucinated_end_offset_past_block_returns_grounded_false() -> None:
@@ -351,6 +362,8 @@ def test_hallucinated_end_offset_past_block_returns_grounded_false() -> None:
 
     assert result[0].grounded is False
     assert result[0].bbox_refs == []
+    # Issue #338: hallucinated offsets must not claim `source="document"`.
+    assert result[0].source == "inferred"
 
 
 def test_hallucinated_offsets_emit_info_log() -> None:
@@ -746,6 +759,64 @@ def test_multi_block_span_skips_zero_width_empty_blocks() -> None:
     assert len(refs) == 2
     assert refs[0].y0 == 0.0
     assert refs[1].y0 == 20.0
+
+
+def test_multi_block_dedups_repeated_block_ids_in_offset_index() -> None:
+    # Issue #288: `_collect_multi_block_bboxes` used to iterate the index
+    # entries and append a `BoundingBoxRef` for each one without a dedup
+    # guard. An OffsetIndex is allowed to contain multiple entries with the
+    # same `block_id` as long as their `[start, end)` ranges don't overlap —
+    # which happens in practice for multi-page table cells whose content gets
+    # indexed across discontiguous chunks. The pre-fix implementation emitted
+    # one duplicate `BoundingBoxRef` per repeated entry, polluting the
+    # grounded response with identical bboxes.
+    #
+    # Drive `_collect_multi_block_bboxes` directly: the OffsetIndex invariant
+    # check is at the index level (non-overlapping, ordered), not at the
+    # per-block level, so this shape is reachable through legal construction.
+    from app.features.extraction.coordinates.span_resolver import (
+        _collect_multi_block_bboxes,
+    )
+
+    # b_shared appears twice in the index (chunks interleaved with b_other
+    # and trailed by b_end) but corresponds to the same physical TextBlock.
+    # The resolver must emit exactly one bbox for b_shared even though two
+    # entries reference it.
+    b_shared = _block(block_id="b_shared", text="alpha", bbox=(0, 0, 50, 10))
+    b_other = _block(block_id="b_other", text="beta", bbox=(0, 20, 50, 30))
+    b_end = _block(block_id="b_end", text="gamma", bbox=(0, 40, 50, 50))
+    doc = _doc(b_shared, b_other, b_end)
+    index = _index(
+        (0, 5, "b_shared"),
+        (7, 11, "b_other"),
+        (13, 18, "b_shared"),
+        (20, 25, "b_end"),
+    )
+    blocks_by_id = {b.block_id: b for b in doc.blocks}
+
+    refs = _collect_multi_block_bboxes(
+        start_block_id="b_shared",
+        end_block_id="b_end",
+        offset_index=index,
+        blocks_by_id=blocks_by_id,
+    )
+
+    # Dedup guard: repeated offset-index entries for the same `block_id`
+    # must not produce duplicate bbox refs. The production contract is
+    # keyed on `block_id` (not on the `(page, bbox)` fingerprint), so two
+    # distinct blocks with identical rectangles would legitimately emit two
+    # refs — but a single block referenced twice in the index must emit
+    # exactly one.
+    #
+    # Specifically: exactly three refs (b_shared + b_other + b_end), not
+    # four (b_shared + b_other + b_shared + b_end), in the order the blocks
+    # are first encountered along the span.
+    assert len(refs) == 3
+    assert [(r.page, r.x0, r.y0, r.x1, r.y1) for r in refs] == [
+        (1, 0.0, 0.0, 50.0, 10.0),
+        (1, 0.0, 20.0, 50.0, 30.0),
+        (1, 0.0, 40.0, 50.0, 50.0),
+    ]
 
 
 def test_happy_path_emits_no_span_resolver_logs() -> None:
