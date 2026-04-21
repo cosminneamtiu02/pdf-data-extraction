@@ -9,11 +9,11 @@ and under `docker stop` it could race against shutdown — producing a
 misleading `unhealthy` flap right before the container exits.
 
 The fix is to replace the `python -c` check with a non-Python probe
-(`curl -fsS http://localhost:8000/health`) in exec form. Exec form is
-required by the Docker reference as the "preferred" invocation because
-it avoids wrapping the command in `/bin/sh -c`, and — more importantly
-for this issue — curl is a ~250 KB static binary that does not touch
-the app venv at all.
+(`curl -fsS --output /dev/null http://localhost:8000/health`) in exec
+form. Exec form is required by the Docker reference as the "preferred"
+invocation because it avoids wrapping the command in `/bin/sh -c`, and —
+more importantly for this issue — curl is a small system binary that
+probes HTTP without invoking Python or touching the app venv at all.
 
 This test pins the fix so a future edit cannot silently regress the
 HEALTHCHECK back to `python -c` or to shell form.
@@ -21,6 +21,7 @@ HEALTHCHECK back to `python -c` or to shell form.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Final
@@ -102,6 +103,41 @@ def test_healthcheck_present() -> None:
     )
 
 
+def _parse_healthcheck_argv(cmd_line: str) -> list[str]:
+    """Parse the HEALTHCHECK `CMD [...]` JSON array into a Python list.
+
+    Shell-form `CMD` (no JSON array, e.g. `CMD curl ...`) fails fast here
+    with a `pytest.fail` so the caller gets the same precise diagnostic
+    path as the other helpers in this module, rather than a raw
+    `json.JSONDecodeError`. Any argv parsed out of the Dockerfile is
+    guaranteed to be a list[str] by the schema Docker itself enforces on
+    exec-form HEALTHCHECK — a non-list JSON payload would be rejected at
+    build time, not here.
+    """
+    argv_text = cmd_line.removeprefix("CMD").strip()
+    if not argv_text.startswith("["):
+        pytest.fail(
+            f"HEALTHCHECK CMD in {_DOCKERFILE_PATH} is shell form: {cmd_line!r}. "
+            "Switch to exec form (JSON array): "
+            '`CMD ["curl", "-fsS", "--output", "/dev/null", '
+            '"http://localhost:8000/health"]`. Issue #363.'
+        )
+    try:
+        parsed = json.loads(argv_text)
+    except json.JSONDecodeError as exc:
+        pytest.fail(
+            f"HEALTHCHECK CMD in {_DOCKERFILE_PATH} is not valid JSON: "
+            f"{cmd_line!r} ({exc}). Exec form must be a JSON array of strings."
+        )
+    if not isinstance(parsed, list) or not all(isinstance(x, str) for x in parsed):
+        pytest.fail(
+            f"HEALTHCHECK CMD in {_DOCKERFILE_PATH} is not a JSON array of "
+            f"strings: {cmd_line!r}. Docker's exec-form schema requires "
+            '`["arg0", "arg1", ...]`.'
+        )
+    return parsed
+
+
 def test_healthcheck_uses_exec_form() -> None:
     """HEALTHCHECK CMD must be in exec form (JSON array), not shell form.
 
@@ -110,14 +146,33 @@ def test_healthcheck_uses_exec_form() -> None:
     resolved `python` via `$PATH` to the venv interpreter. Exec form
     (`CMD ["curl", "-fsS", ...]`) invokes the binary directly with no
     shell. The Docker reference calls exec form the "preferred method."
+
+    Merely checking that the argv starts with `[` is not enough: that
+    would also pass for `CMD ["sh", "-c", "curl ..."]`, which smuggles
+    the `/bin/sh -c` wrapper back into exec form and defeats the point
+    of issue #363. We parse the JSON array, assert the first element is
+    the `curl` probe binary, and reject any use of `sh` / `bash` / `-c`
+    anywhere in argv to guard against that smuggled-shell form.
     """
     cmd_line = _extract_healthcheck_cmd_line(_read_dockerfile_text())
-    argv = cmd_line.removeprefix("CMD").strip()
-    assert argv.startswith("["), (
-        f"HEALTHCHECK CMD in {_DOCKERFILE_PATH} is shell form: {cmd_line!r}. "
-        "Switch to exec form (JSON array): "
-        '`CMD ["curl", "-fsS", "http://localhost:8000/health"]`. '
-        "Issue #363."
+    argv = _parse_healthcheck_argv(cmd_line)
+    assert argv, (
+        f"HEALTHCHECK CMD in {_DOCKERFILE_PATH} has an empty argv: "
+        f"{cmd_line!r}. Docker requires at least one argument."
+    )
+    assert argv[0] == "curl", (
+        f"HEALTHCHECK CMD in {_DOCKERFILE_PATH} does not invoke `curl` "
+        f"directly: {argv!r}. Issue #363 explicitly chose `curl` over a "
+        "Python-based probe; if a replacement probe is intended, update "
+        "this guardrail and docs/decisions.md with the rationale."
+    )
+    shell_smuggling = {"sh", "bash", "/bin/sh", "/bin/bash", "-c"}
+    offending = shell_smuggling.intersection(argv)
+    assert not offending, (
+        f"HEALTHCHECK CMD in {_DOCKERFILE_PATH} smuggles a shell into "
+        f"exec form: {argv!r}. Removing the `/bin/sh -c` wrapper was the "
+        'load-bearing win of issue #363 — `CMD ["sh", "-c", "curl ..."]` '
+        "is functionally equivalent to shell form and defeats the fix."
     )
 
 
@@ -141,3 +196,27 @@ def test_healthcheck_does_not_invoke_python() -> None:
         "Use a non-Python probe (curl or wget) so the healthcheck does "
         "not pay the venv-import cost every 30s. Issue #363."
     )
+
+
+def test_healthcheck_curl_is_silent_on_success() -> None:
+    """HEALTHCHECK `curl` must discard the `/health` response body.
+
+    `curl -fsS` is quieter than default curl (no progress bar, no error
+    noise), but it still writes the HTTP response body to stdout on
+    success. For a `/health` endpoint that returns `{"status":"ok"}`,
+    that means Docker's healthcheck log captures `{"status":"ok"}` every
+    30s forever, inflating log volume with useless noise. Routing stdout
+    to `/dev/null` (either via `--output /dev/null` or `-o /dev/null`)
+    keeps the probe truly silent on success while preserving the `-S`
+    error-on-failure surface.
+    """
+    cmd_line = _extract_healthcheck_cmd_line(_read_dockerfile_text())
+    argv = _parse_healthcheck_argv(cmd_line)
+    silent_flags = {"--output", "-o"}
+    if not silent_flags.intersection(argv):
+        pytest.fail(
+            f"HEALTHCHECK CMD in {_DOCKERFILE_PATH} does not silence curl "
+            f"stdout: {argv!r}. Add `--output /dev/null` (or `-o /dev/null`) "
+            "so the probe does not spam the healthcheck log with the "
+            "response body every 30s. Issue #363 / review round 2."
+        )
