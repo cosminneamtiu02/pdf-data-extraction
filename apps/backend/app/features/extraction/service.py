@@ -68,9 +68,6 @@ if TYPE_CHECKING:
 _logger = structlog.get_logger(__name__)
 
 
-_logger = structlog.get_logger(__name__)
-
-
 class ExtractionService:
     """Orchestrate the full extraction pipeline under an end-to-end timeout."""
 

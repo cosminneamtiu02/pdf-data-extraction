@@ -12,7 +12,6 @@ import time
 from typing import Any
 
 import pytest
-import structlog
 
 from app.core.config import Settings
 from app.exceptions import (
@@ -1028,7 +1027,37 @@ async def test_extraction_service_timeout_budget_seconds_matches_configured() ->
     assert excinfo.value.params.model_dump() == {"budget_seconds": 0.05}
 
 
-async def test_extraction_service_emits_structured_success_event_on_happy_path() -> None:
+class _SpyLogger:
+    """Test double for ``service_module._logger`` (Copilot-review #439).
+
+    Why we don't use ``structlog.testing.capture_logs()`` here: the service
+    module defines ``_logger = structlog.get_logger(__name__)`` at import
+    time, and our ``configure_logging()`` registers
+    ``cache_logger_on_first_use=True``. Whichever test first touches the
+    service's ``_logger`` outside a ``capture_logs()`` context can cause
+    structlog to cache a bound logger that subsequent ``capture_logs()``
+    contexts won't see — making log-assertion tests order-dependent. A
+    direct monkeypatched spy sidesteps structlog's global state entirely,
+    the same pattern used in
+    ``tests/unit/features/extraction/skills/test_skill_loader.py``.
+    """
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict[str, object]]] = []
+
+    def info(self, event: str, **kwargs: object) -> None:
+        self.events.append((event, kwargs))
+
+    def warning(self, event: str, **kwargs: object) -> None:  # pragma: no cover
+        self.events.append((event, kwargs))
+
+    def error(self, event: str, **kwargs: object) -> None:  # pragma: no cover
+        self.events.append((event, kwargs))
+
+
+async def test_extraction_service_emits_structured_success_event_on_happy_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Issue #336: the service emits exactly one ``extraction_completed`` structured
     log event at the END of a successful pipeline, with the skill name, resolved
     skill version, page count, pipeline duration, and per-status field counts.
@@ -1039,6 +1068,13 @@ async def test_extraction_service_emits_structured_success_event_on_happy_path()
     itself is silent on the happy path. The event closes the observability
     gap so a single log query resolves "did this request succeed and how
     long did it take".
+
+    Uses the ``_SpyLogger`` pattern rather than ``structlog.testing.capture_logs()``
+    because our ``configure_logging()`` sets ``cache_logger_on_first_use=True``
+    and the service module resolves ``_logger`` at import — whichever earlier
+    test first touches that logger outside a ``capture_logs()`` context can
+    cache a bound logger that subsequent ``capture_logs()`` contexts won't
+    see, making log-assertion tests order-dependent (Copilot-review #467).
     """
     skill = _build_skill(version=2, fields=("a", "b", "c"))
     manifest = _FakeManifest(skill=skill)
@@ -1048,22 +1084,22 @@ async def test_extraction_service_emits_structured_success_event_on_happy_path()
     resolver = _FakeResolver(fields=fields)
     service = _build_service(manifest=manifest, resolver=resolver)
 
-    with structlog.testing.capture_logs() as captured:
-        result = await service.extract(
-            _PDF_BYTES,
-            "invoice",
-            "latest",
-            OutputMode.JSON_ONLY,
-        )
+    spy = _SpyLogger()
+    monkeypatch.setattr(service_module, "_logger", spy)
+
+    result = await service.extract(
+        _PDF_BYTES,
+        "invoice",
+        "latest",
+        OutputMode.JSON_ONLY,
+    )
 
     assert isinstance(result, ExtractionResult)
-    success_events = [e for e in captured if e.get("event") == "extraction_completed"]
+    success_events = [kwargs for event, kwargs in spy.events if event == "extraction_completed"]
     assert len(success_events) == 1, (
-        f"Expected exactly one extraction_completed event, got {len(success_events)}: "
-        f"{success_events!r}"
+        f"Expected exactly one extraction_completed event; got {spy.events!r}"
     )
     event = success_events[0]
-    assert event["log_level"] == "info"
     assert event["skill_name"] == "invoice"
     # Resolved int version, not the "latest" sentinel the caller sent in.
     assert event["skill_version"] == 2
@@ -1078,17 +1114,25 @@ async def test_extraction_service_emits_structured_success_event_on_happy_path()
     assert event["failed"] == 2
 
 
-async def test_extraction_service_does_not_emit_success_event_on_all_failed() -> None:
+async def test_extraction_service_does_not_emit_success_event_on_all_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Total extraction failure (zero extracted fields) raises
     ``StructuredOutputFailedError`` before the success breadcrumb is reached
     — operators distinguish "pipeline succeeded" from "pipeline raised" by
     the presence or absence of the ``extraction_completed`` event.
+
+    Uses ``_SpyLogger`` (not ``capture_logs()``) for the same reason as the
+    happy-path test above (Copilot-review #467).
     """
     fields = _build_extracted_fields(all_failed=True)
     resolver = _FakeResolver(fields=fields)
     service = _build_service(resolver=resolver)
 
-    with structlog.testing.capture_logs() as captured, pytest.raises(StructuredOutputFailedError):
+    spy = _SpyLogger()
+    monkeypatch.setattr(service_module, "_logger", spy)
+
+    with pytest.raises(StructuredOutputFailedError):
         await service.extract(
             _PDF_BYTES,
             "invoice",
@@ -1096,7 +1140,7 @@ async def test_extraction_service_does_not_emit_success_event_on_all_failed() ->
             OutputMode.JSON_ONLY,
         )
 
-    success_events = [e for e in captured if e.get("event") == "extraction_completed"]
+    success_events = [kwargs for event, kwargs in spy.events if event == "extraction_completed"]
     assert success_events == []
 
 
@@ -1145,34 +1189,6 @@ async def test_ollama_internal_timeout_is_not_remapped_to_extraction_budget_erro
 # ``extraction_cancelled`` for caller cancellation, ``extraction_timeout``
 # for pipeline-budget expiry.
 # ---------------------------------------------------------------------------
-
-
-class _SpyLogger:
-    """Test double for ``service_module._logger`` (Copilot-review #439).
-
-    Why we don't use ``structlog.testing.capture_logs()`` here: the service
-    module defines ``_logger = structlog.get_logger(__name__)`` at import
-    time, and our ``configure_logging()`` registers
-    ``cache_logger_on_first_use=True``. Whichever test first touches the
-    service's ``_logger`` outside a ``capture_logs()`` context can cause
-    structlog to cache a bound logger that subsequent ``capture_logs()``
-    contexts won't see — making log-assertion tests order-dependent. A
-    direct monkeypatched spy sidesteps structlog's global state entirely,
-    the same pattern used in
-    ``tests/unit/features/extraction/skills/test_skill_loader.py``.
-    """
-
-    def __init__(self) -> None:
-        self.events: list[tuple[str, dict[str, object]]] = []
-
-    def info(self, event: str, **kwargs: object) -> None:
-        self.events.append((event, kwargs))
-
-    def warning(self, event: str, **kwargs: object) -> None:  # pragma: no cover
-        self.events.append((event, kwargs))
-
-    def error(self, event: str, **kwargs: object) -> None:  # pragma: no cover
-        self.events.append((event, kwargs))
 
 
 class _CancellingEngine:
