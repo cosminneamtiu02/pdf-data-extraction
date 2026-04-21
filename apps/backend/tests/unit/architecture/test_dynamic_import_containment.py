@@ -13,9 +13,13 @@ three gaps:
    `importlib.import_module("pymupdf")`, the equivalent `__import__`
    builtin form (e.g. `__import__("docling")`), and
    `importlib.util.find_spec("langextract")` all bypass import-linter's
-   static graph. This test walks every .py file under `app/` and asserts
-   that dynamic imports (or availability probes) of contained third-party
-   packages only appear in their designated files.
+   static graph. This test walks every .py file under each containment
+   root listed in `_CONTAINMENT_ROOTS` (currently `app/` and `scripts/`)
+   and asserts that dynamic imports (or availability probes) of contained
+   third-party packages only appear in their designated files. `scripts/`
+   is included because it ships as part of the same deployable unit and
+   was previously able to import contained packages without tripping any
+   gate (issue #327).
 
 3. **Composition-root containment for `app/api/`** (issue #229) - the
    `shared-no-features` import-linter contract covers `app.shared`,
