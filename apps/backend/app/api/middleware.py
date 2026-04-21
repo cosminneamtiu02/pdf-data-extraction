@@ -68,13 +68,14 @@ _GUARDED_UPLOAD_PATHS: tuple[str, ...] = (
 _MULTIPART_OVERHEAD_ALLOWANCE_BYTES: int = 64 * 1024
 
 
-def configure_middleware(
+def configure_middleware(  # noqa: PLR0913 — one kwarg per Settings-driven knob, keeps wildcards out
     app: FastAPI,
     cors_origins: list[str],
     *,
     max_upload_bytes: int,
     cors_methods: list[str],
     cors_headers: list[str],
+    cors_allow_credentials: bool,
 ) -> None:
     """Attach all middleware to the FastAPI app.
 
@@ -93,7 +94,10 @@ def configure_middleware(
 
     ``cors_methods`` and ``cors_headers`` are required keyword-only so the
     call site must source them from ``Settings`` — no hidden wildcards
-    (issue #211).
+    (issue #211). ``cors_allow_credentials`` is similarly required and
+    settings-driven — hardcoding it to ``True`` was extra attack surface on
+    a service with no cookie / session authentication and silently collided
+    with ``cors_origins=['*']`` (issue #346).
     """
     app.add_middleware(
         UploadSizeLimitMiddleware,
@@ -106,7 +110,7 @@ def configure_middleware(
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,
-        allow_credentials=True,
+        allow_credentials=cors_allow_credentials,
         allow_methods=cors_methods,
         allow_headers=cors_headers,
     )
