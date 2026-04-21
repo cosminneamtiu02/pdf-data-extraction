@@ -22,6 +22,10 @@ This module parses `.pre-commit-config.yaml` and asserts:
 - A `.yamllint` config file exists at the repo root so the `yamllint` hook
   has deterministic rules (without it, yamllint applies its "default" preset,
   which clashes with the repo's 2-space-indented YAML style).
+- A `.hadolint.yaml` config file exists at the repo root so the `hadolint`
+  hook's `--config .hadolint.yaml` argument resolves at runtime (closing the
+  PR #434 review gap — the hook is wired to read the file, so its absence
+  should be a test failure rather than a runtime hook-load error).
 
 The tests are deliberately structural — they assert hook registration, not
 hook behaviour. To validate hook behaviour, run `pre-commit run --all-files`
@@ -40,6 +44,7 @@ import yaml
 _REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[5]
 _PRECOMMIT_PATH: Final[Path] = _REPO_ROOT / ".pre-commit-config.yaml"
 _YAMLLINT_CONFIG_PATH: Final[Path] = _REPO_ROOT / ".yamllint"
+_HADOLINT_CONFIG_PATH: Final[Path] = _REPO_ROOT / ".hadolint.yaml"
 
 # The literal path we test every `exclude` regex against. pre-commit matches
 # `exclude` patterns with `re.search` against forward-slash-normalised file
@@ -174,6 +179,26 @@ def test_yamllint_config_file_exists() -> None:
         "its default preset, which is stricter than this repo's YAML "
         "style. Create a minimal `.yamllint` that extends the default "
         "and relaxes the rules that do not match repo conventions."
+    )
+
+
+def test_hadolint_config_file_exists() -> None:
+    """A `.hadolint.yaml` config file pins the hadolint ruleset explicitly.
+
+    The hadolint hook is wired with `args: ["--config", ".hadolint.yaml"]`
+    in `.pre-commit-config.yaml`; if the config file is removed or renamed,
+    pre-commit fails at hook runtime with a "config not found" error rather
+    than a clear test failure. Paralleling `test_yamllint_config_file_exists`,
+    this meta-test pins the invariant that `.hadolint.yaml` exists at the
+    repo root so the hook's `--config` argument resolves and the
+    DL3008-ignored-by-design rationale (digest-pinned base image, see
+    PR #431 / issue #362) stays in force.
+    """
+    assert _HADOLINT_CONFIG_PATH.is_file(), (
+        f"{_HADOLINT_CONFIG_PATH} is missing. The hadolint hook in "
+        ".pre-commit-config.yaml references it via `--config .hadolint.yaml`, "
+        "so pre-commit will fail at runtime without it. Restore the file "
+        "(or update the hook's `args` to point at the new location)."
     )
 
 
