@@ -112,9 +112,9 @@ _CONTAINED_PACKAGES: Final[dict[str, frozenset[str]]] = {
     # `benchmark.py` ships the local-latency benchmark CLI under `scripts/`
     # and uses `httpx` as a plain HTTP client to talk to the running FastAPI
     # service — NOT as an Ollama client. It is listed here because the
-    # containment scan covers both `_APP_ROOT` and `_SCRIPTS_ROOT` (issue
-    # #327); restricting the allowlist to the two Ollama-client files inside
-    # the feature would make `benchmark.py` a false-positive offender.
+    # containment scan covers both `_APP_ROOT` and `_SCRIPTS_ROOT` (issue #327);
+    # restricting the allowlist to the two Ollama-client files inside the
+    # feature would make `benchmark.py` a false-positive offender.
     "httpx": frozenset(
         {"ollama_gemma_provider.py", "ollama_health_probe.py", "benchmark.py"},
     ),
@@ -1288,16 +1288,15 @@ def test_containment_scan_covers_scripts_directory(tmp_path: Path) -> None:
     """Issue #327: planted Docling import under `scripts/` must be flagged.
 
     Synthesizes a two-root backend-style layout under `tmp_path`:
-    ``tmp_path/app/core/config.py`` (clean) and
-    ``tmp_path/scripts/rogue.py`` (plants ``import docling``). The
-    predicate under test — the same helper that the production
-    parametrized walk uses — MUST flag ``scripts/rogue.py`` and
-    leave ``app/core/config.py`` alone. Before the fix the scan
-    only walked `app/`, so the planted rogue sailed through; the
-    assertion here is what goes red against that code.
-
-    A companion case plants ``import_module("langextract")`` to
-    prove the dynamic-import branch picks up `scripts/` too.
+    ``tmp_path/app/core/config.py`` (clean) and two rogue files under
+    ``tmp_path/scripts/``: ``rogue_static.py`` (plants
+    ``import docling``) and ``rogue_dynamic.py`` (plants
+    ``import_module("langextract")`` to exercise the dynamic-import
+    branch too). The predicate under test — the same helper that the
+    production parametrized walk uses — MUST flag both rogue files
+    and leave ``app/core/config.py`` alone. Before the fix the scan
+    only walked `app/`, so the planted rogues sailed through; the
+    assertions here are what go red against that code.
 
     Keying the test on ``tmp_path`` (not on the real `scripts/`
     tree) keeps it independent of whatever real scripts ship today
