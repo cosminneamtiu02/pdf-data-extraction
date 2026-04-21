@@ -38,6 +38,8 @@ import asyncio
 import time
 from typing import TYPE_CHECKING
 
+import structlog
+
 from app.exceptions import (
     ExtractionBudgetExceededError,
     ExtractionOverloadedError,
@@ -62,6 +64,9 @@ if TYPE_CHECKING:
     )
     from app.features.extraction.parsing.document_parser import DocumentParser
     from app.features.extraction.skills.skill_manifest import SkillManifest
+
+
+_logger = structlog.get_logger(__name__)
 
 
 class ExtractionService:
@@ -257,6 +262,28 @@ class ExtractionService:
                     response=response,
                     annotated_pdf_bytes=annotated_pdf,
                 )
+        except asyncio.CancelledError:
+            # Issue #416: caller-driven cancellation (task cancel, client
+            # disconnect) must be distinguishable from budget expiry in
+            # structured logs. ``asyncio.timeout`` converts its own internal
+            # ``CancelledError`` to ``TimeoutError`` at the context-manager
+            # boundary when the deadline fired, so any ``CancelledError``
+            # reaching here is an outer cancellation — not a budget timeout.
+            # Logging ``extraction_cancelled`` (separate from the
+            # ``extraction_timeout`` event in the ``TimeoutError`` branch
+            # below) gives operators a greppable breadcrumb to tell the
+            # two apart in triage dashboards. We MUST re-raise —
+            # ``CancelledError`` is a ``BaseException`` in supported
+            # runtimes, and swallowing it breaks cooperative task
+            # cancellation.
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            _logger.info(
+                "extraction_cancelled",
+                skill_name=skill_name,
+                skill_version=skill_version,
+                duration_ms=elapsed_ms,
+            )
+            raise
         except TimeoutError:
             # Only remap when *this* timeout context caused the raise.
             # Unrelated inner TimeoutErrors (e.g. a parser/annotator/library's
@@ -277,6 +304,20 @@ class ExtractionService:
             # HTTP 504) with the pipeline budget attached.
             if not budget_cm.expired():
                 raise
+            # Issue #416: emit a distinct ``extraction_timeout`` event so
+            # operators can tell a pipeline-budget timeout apart from a
+            # caller-cancellation (``extraction_cancelled`` above) in
+            # structured logs. The event carries the configured budget and
+            # elapsed duration so triage can tell at a glance how long the
+            # pipeline ran before hitting the cap.
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            _logger.info(
+                "extraction_timeout",
+                skill_name=skill_name,
+                skill_version=skill_version,
+                budget_seconds=self._timeout_seconds,
+                duration_ms=elapsed_ms,
+            )
             raise ExtractionBudgetExceededError(
                 budget_seconds=self._timeout_seconds,
             ) from None
