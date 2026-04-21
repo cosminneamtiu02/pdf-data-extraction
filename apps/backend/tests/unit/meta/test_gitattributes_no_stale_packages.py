@@ -56,8 +56,10 @@ def _path_targets() -> list[tuple[int, str]]:
             # Bare-extension rules like `*.png binary` are content-type
             # rules, not path rules.
             continue
-        # Reduce the pattern to the directory prefix before any glob.
-        prefix = pattern.split("*", 1)[0].rstrip("/")
+        # Root-anchored patterns (e.g. `/pnpm-lock.yaml`) must be treated as
+        # relative to the repo root; without the strip, `_REPO_ROOT / prefix`
+        # would evaluate to an absolute path and bypass the repo boundary.
+        prefix = pattern.removeprefix("/").split("*", 1)[0].rstrip("/")
         if prefix:
             targets.append((lineno, prefix))
     return targets
@@ -69,20 +71,15 @@ def test_gitattributes_paths_all_exist_or_are_generated() -> None:
         candidate = _REPO_ROOT / prefix
         if candidate.exists():
             continue
-        # Walk up to find a generated-on-demand ancestor.
+        # Walk up to find a generated-on-demand ancestor. This already
+        # covers the "specific file under a codegen directory" case,
+        # because `prefix.startswith(allowed + "/")` matches any file or
+        # deeper directory beneath an allowed prefix.
         if any(
             prefix == allowed or prefix.startswith(allowed + "/")
             for allowed in _GENERATED_ON_DEMAND
         ):
             continue
-        parent = candidate.parent
-        if parent.exists():
-            # The containing directory exists but the specific file is
-            # codegen output — accept if the parent path prefix is in the
-            # generated-on-demand allow list.
-            rel_parent = parent.relative_to(_REPO_ROOT).as_posix()
-            if rel_parent in _GENERATED_ON_DEMAND:
-                continue
         missing.append(f".gitattributes:{lineno} references missing path {prefix!r}")
     assert not missing, (
         "Stale paths in .gitattributes (the rule is a silent no-op because "
