@@ -106,12 +106,13 @@ def test_main_produces_valid_json_for_required_keys(tmp_path: Path) -> None:
     python_dir = tmp_path / "python"
     ts_path = tmp_path / "generated.ts"
     keys_path = tmp_path / "required-keys.json"
-    generate_all_main(
+    exit_code = generate_all_main(
         errors_yaml=errors_yaml,
         python_dir=python_dir,
         typescript_path=ts_path,
         required_keys_path=keys_path,
     )
+    assert exit_code == 0
 
     payload = json.loads(keys_path.read_text())
     assert payload["namespace"] == "errors"
@@ -128,12 +129,13 @@ def test_main_writes_all_three_artifact_families(tmp_path: Path) -> None:
     python_dir = tmp_path / "python"
     ts_path = tmp_path / "generated.ts"
     keys_path = tmp_path / "required-keys.json"
-    generate_all_main(
+    exit_code = generate_all_main(
         errors_yaml=errors_yaml,
         python_dir=python_dir,
         typescript_path=ts_path,
         required_keys_path=keys_path,
     )
+    assert exit_code == 0
 
     # Python artifacts: at minimum __init__.py + _registry.py + one file per class.
     python_files = {p.name for p in python_dir.iterdir() if p.is_file()}
@@ -152,11 +154,12 @@ def test_main_writes_all_three_artifact_families(tmp_path: Path) -> None:
 def test_main_module_invocation_exits_zero_and_writes_live_artifacts(
     tmp_path: Path,
 ) -> None:
-    """End-to-end: `python -m scripts.generate_all` on the real errors.yaml.
+    """End-to-end: `python -m scripts.generate_all` with an isolated errors.yaml.
 
-    Exercises the exact command the Taskfile and CI workflow run. The test
-    copies the package layout (scripts/ + errors.yaml) into `tmp_path` so
-    we don't mutate the live `apps/backend/app/exceptions/_generated`
+    Exercises the exact command shape the Taskfile and CI workflow run.
+    The test stages `scripts/` in `tmp_path` and writes a temporary
+    `errors.yaml` from ``SAMPLE_YAML``, so we verify module invocation
+    without mutating the live `apps/backend/app/exceptions/_generated`
     tree — that's `task errors:generate`'s job on demand, not a side
     effect of `task check`.
     """

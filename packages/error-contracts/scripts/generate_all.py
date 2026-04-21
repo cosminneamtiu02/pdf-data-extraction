@@ -16,11 +16,15 @@ required-keys). Each generator independently re-reads and re-validates
 ``errors.yaml``; the wrapper does not share the parsed result across
 calls. That redundancy is cheap at the current size of ``errors.yaml``
 and keeps each generator usable standalone from ``generate.py``. Paths
-default to the monorepo layout relative to this script's location, so
-the command works with no arguments as long as it runs from
-``packages/error-contracts/`` (the Taskfile + CI working directory).
-``--errors-yaml`` and the three output-path flags exist for tests that
-need to point at fixtures.
+default to the monorepo layout derived from this script's absolute
+``__file__`` location, so the no-argument form resolves correct output
+locations regardless of the caller's working directory. The one
+practical constraint on ``python -m scripts.generate_all`` is module
+resolution — ``scripts/`` must be on ``sys.path``, which Python gets
+for free when the command runs from ``packages/error-contracts/`` (the
+Taskfile + CI working directory) or when ``PYTHONPATH`` includes that
+directory. ``--errors-yaml`` and the three output-path flags exist for
+tests that need to point at fixtures.
 """
 
 from __future__ import annotations
