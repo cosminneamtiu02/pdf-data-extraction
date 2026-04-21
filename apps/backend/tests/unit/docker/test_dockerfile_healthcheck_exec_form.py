@@ -10,10 +10,11 @@ misleading `unhealthy` flap right before the container exits.
 
 The fix is to replace the `python -c` check with a non-Python probe
 (`curl -fsS --output /dev/null http://localhost:8000/health`) in exec
-form. Exec form is required by the Docker reference as the "preferred"
-invocation because it avoids wrapping the command in `/bin/sh -c`, and —
-more importantly for this issue — curl is a small system binary that
-probes HTTP without invoking Python or touching the app venv at all.
+form. The Docker reference describes exec form as the preferred /
+recommended invocation because it avoids wrapping the command in
+`/bin/sh -c`, and — more importantly for this issue — curl is a small
+system binary that probes HTTP without invoking Python or touching
+the app venv at all.
 
 This test pins the fix so a future edit cannot silently regress the
 HEALTHCHECK back to `python -c` or to shell form.
@@ -170,8 +171,15 @@ def test_healthcheck_uses_exec_form() -> None:
         "Python-based probe; if a replacement probe is intended, update "
         "this guardrail and docs/decisions.md with the rationale."
     )
-    shell_smuggling = {"sh", "bash", "/bin/sh", "/bin/bash", "-c"}
-    offending = shell_smuggling.intersection(argv)
+    # `-c` is intentionally NOT in this set — curl uses `-c <file>` as the
+    # short form of `--cookie-jar`, so banning it anywhere in argv would
+    # false-positive any future PR that adds cookie handling. Detecting the
+    # smuggled shell via its binary name alone is sufficient: the
+    # `argv[0] == "curl"` assertion above already rejects argv starting
+    # with sh/bash, and listing the shell binaries here catches any odd
+    # case where a shell name appears later in argv.
+    shell_binaries = {"sh", "bash", "/bin/sh", "/bin/bash"}
+    offending = shell_binaries.intersection(argv)
     assert not offending, (
         f"HEALTHCHECK CMD in {_DOCKERFILE_PATH} smuggles a shell into "
         f"exec form: {argv!r}. Removing the `/bin/sh -c` wrapper was the "
@@ -213,13 +221,34 @@ def test_healthcheck_curl_is_silent_on_success() -> None:
     to `/dev/null` (either via `--output /dev/null` or `-o /dev/null`)
     keeps the probe truly silent on success while preserving the `-S`
     error-on-failure surface.
+
+    Merely asserting `--output`/`-o` is present is not enough — the flag
+    has to be paired with `/dev/null` specifically; otherwise
+    `--output somefile` would pass this test while still writing the
+    response body to disk on every probe. We locate the flag in argv and
+    verify the argument immediately after it is `/dev/null`.
     """
     cmd_line = _extract_healthcheck_cmd_line(_read_dockerfile_text())
     argv = _parse_healthcheck_argv(cmd_line)
-    silent_flags = {"--output", "-o"}
-    assert silent_flags.intersection(argv), (
+    silent_flags = ("--output", "-o")
+    flag_indices = [i for i, token in enumerate(argv) if token in silent_flags]
+    assert flag_indices, (
         f"HEALTHCHECK CMD in {_DOCKERFILE_PATH} does not silence curl "
         f"stdout: {argv!r}. Add `--output /dev/null` (or `-o /dev/null`) "
         "so the probe does not spam the healthcheck log with the "
         "response body every 30s. Issue #363 / review round 2."
     )
+    for idx in flag_indices:
+        next_idx = idx + 1
+        assert next_idx < len(argv), (
+            f"HEALTHCHECK CMD in {_DOCKERFILE_PATH} has "
+            f"{argv[idx]!r} with no following argument: {argv!r}. "
+            f"Expected `{argv[idx]} /dev/null`."
+        )
+        destination = argv[next_idx]
+        assert destination == "/dev/null", (
+            f"HEALTHCHECK CMD in {_DOCKERFILE_PATH} routes curl output "
+            f"to {destination!r}, not /dev/null: {argv!r}. Issue #363 / "
+            "review round 2 — the silent-on-success guarantee depends on "
+            "discarding the body, not redirecting it to a file."
+        )

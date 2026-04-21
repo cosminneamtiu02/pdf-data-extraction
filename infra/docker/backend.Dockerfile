@@ -141,10 +141,13 @@ EXPOSE 8000
 # wrapping the probe in `/bin/sh -c`, and — more importantly — avoids
 # re-spawning a cold Python interpreter against the ~500 MB app venv
 # (Docling + LangExtract + PyMuPDF + torch CPU wheels) every 30s.
-# `curl -fsS` exits non-zero on HTTP 4xx/5xx responses (3xx redirects
-# are followed/allowed only with `-L`, which we do not set), and `-s`
-# silences the progress bar while `-S` preserves error messages on
-# failure. `--output /dev/null` discards the response body so the probe
+# `curl -fsS` exits non-zero on HTTP 4xx/5xx responses. 3xx redirects
+# exit zero (curl treats them as success) but are NOT followed, since
+# `-L` is deliberately not set — the local FastAPI `/health` handler
+# never redirects, so a surprise 3xx from localhost:8000 signals a
+# configuration bug we want surfaced rather than silently followed.
+# `-s` silences the progress bar while `-S` preserves error messages
+# on failure. `--output /dev/null` discards the response body so the probe
 # does not spam Docker's healthcheck log with `{"status":"ok"}` every
 # 30s. `/health` is the right endpoint for container-level liveness
 # (the compose-level healthcheck hits `/ready` for readiness — see
