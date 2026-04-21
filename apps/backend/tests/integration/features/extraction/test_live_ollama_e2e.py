@@ -207,7 +207,6 @@ def _write_invoice_skill(base: Path) -> None:
 @pytest.mark.skipif(not _DOCLING_AVAILABLE, reason=_SKIP_REASON_DOCLING)
 @pytest.mark.skipif(not _FIXTURE_PDF.exists(), reason=_SKIP_REASON_FIXTURE)
 @pytest.mark.usefixtures("_ollama_reachable_fixture")
-@pytest.mark.asyncio
 async def test_extract_endpoint_end_to_end_against_live_ollama(
     tmp_path: Path,
 ) -> None:
