@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 
 from app.exceptions import InternalError, ValidationFailedError
 from app.exceptions.base import DomainError
+from app.schemas import ErrorBody, ErrorResponse
 
 logger = structlog.get_logger(__name__)
 
@@ -55,17 +56,23 @@ def register_exception_handlers(app: FastAPI) -> None:
                 http_status=exc.http_status,
                 request_id=request_id,
             )
+        # Route through ``ErrorResponse`` / ``ErrorBody`` so Pydantic asserts
+        # at response time that the constructed envelope actually matches the
+        # declared schema advertised in OpenAPI (issue #345). Building the
+        # dict inline bypassed that round-trip and let a future ``*Params``
+        # model with ``None`` / nested-object / list values ship silently.
+        envelope = ErrorResponse(
+            error=ErrorBody(
+                code=exc.code,
+                params=exc.params.model_dump() if exc.params else {},
+                details=None,
+                request_id=request_id,
+            ),
+        )
         return JSONResponse(
             status_code=exc.http_status,
             headers={"X-Request-Id": request_id},
-            content={
-                "error": {
-                    "code": exc.code,
-                    "params": exc.params.model_dump() if exc.params else {},
-                    "details": None,
-                    "request_id": request_id,
-                },
-            },
+            content=envelope.model_dump(),
         )
 
     @app.exception_handler(RequestValidationError)
