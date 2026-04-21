@@ -176,13 +176,26 @@ Excluded: property-based, performance, mutation, snapshot, fuzz beyond Schemathe
 All human-authored pull requests on this repo are opened by
 `cosminneamtiu02`. Dependabot-authored PRs remain the exception — they
 are scoped under the Dependabot section below and their own auto-merge
-workflow. This deliberately gives up Copilot auto-review for humans:
-the `copilot_code_review` rule on the `main-protection` ruleset only
-fires for PR authors with an active Copilot code-review seat scoped to
-this repo, and cosmin's personal Copilot Pro does not extend to repos
-he does not own. Reviews now come from human reviewers or explicit
-reviewer assignment, not the ruleset. (Switched 2026-04-20 from an
-earlier Ioana-as-author routing.)
+workflow. The `copilot_code_review` rule on the `main-protection`
+ruleset fires on every PR because cosmin's personal Copilot Pro extends
+to repos he owns, and the repo is owned by `cosminneamtiu02` as of
+2026-04-21. (PRs authored by Ioana — still a `WRITE` collaborator on
+the new repo — also trigger the rule because she retained her Copilot
+code-review seat scoped here from the prior ownership; both authors
+were verified on batch #426–#434.) Prefer cosmin as author for direct
+contribution-graph credit without the `Co-authored-by:` trailer dance.
+
+### Canonical origin URL
+
+After the 2026-04-21 transfer, the canonical URL is
+`https://github.com/cosminneamtiu02/pdf-data-extraction.git`.
+`git push` follows GitHub's server-side redirect from the old URL
+silently, but `gh pr create` uses GraphQL which does NOT follow
+redirects — if `git remote get-url origin` still points at
+`ioanaecaterinastan-collab`, `gh pr create` fails with
+"Head ref must be a branch, not all refs are readable".
+Fix once per clone:
+`git remote set-url origin https://github.com/cosminneamtiu02/pdf-data-extraction.git`.
 
 ### Before `gh pr create` on this repo
 
@@ -250,8 +263,18 @@ all attribution off the fragile trailer path.
   PRs #9–#17 as cosmin got no review). Cosmin's contribution credit on
   those Ioana-authored PRs flowed through an auto-extracted
   `Co-authored-by:` squash trailer from the branch-commit author field.
+  Repo was at `ioanaecaterinastan-collab/pdf-data-extraction`.
 - **2026-04-20:** routing switched to cosmin as direct author. Copilot
-  auto-review accepted as lost; no `Co-authored-by:` trailer needed.
+  auto-review went dormant because cosmin's Copilot Pro did not cover a
+  repo he did not own. No `Co-authored-by:` trailer needed.
+- **2026-04-21:** repo ownership transferred to
+  `cosminneamtiu02/pdf-data-extraction`. Copilot auto-review resumed —
+  cosmin's Copilot Pro now covers the repo, and Ioana retained her
+  Copilot code-review seat scoped here. Verified on batch #426–#434
+  (mix of cosmin- and Ioana-authored): every PR received a Copilot
+  review. Local clones need
+  `git remote set-url origin https://github.com/cosminneamtiu02/pdf-data-extraction.git`
+  for `gh pr create` to succeed (GraphQL doesn't follow git redirects).
 
 ## Dependabot
 
