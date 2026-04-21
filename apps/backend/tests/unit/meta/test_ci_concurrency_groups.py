@@ -1,27 +1,37 @@
-"""Meta-tests for job-level concurrency groups in `.github/workflows/ci.yml`.
+"""Meta-tests for the `error-contracts` job-level concurrency block in `.github/workflows/ci.yml`.
 
-Issue #410: the `error-contracts` job shared the workflow-level concurrency
-group `${{ github.workflow }}-${{ github.ref }}` (with
-`cancel-in-progress: true`). Stacked pushes to the same branch therefore
-cancelled in-flight error-contracts runs alongside the long `backend-checks`
-job. A cancelled status check does NOT satisfy the ruleset's
-required-status-checks gate: cancelled shows as "missing" to
-`gh pr merge --auto`, which then waits forever.
+Issue #410: pin the shape of the job-level `concurrency` block on the
+`error-contracts` job so future edits cannot silently drop it or rename it
+into a group that collides with another workflow's concurrency group.
 
-The fix is to add a job-level `concurrency` block to the `error-contracts`
-job so it uses its own job-scoped group instead of reusing the
-workflow-level group. That keeps the short-lived `error-contracts`
-concurrency policy isolated at the job level, even though stacked pushes
-may still cancel the prior workflow run while workflow-level
-`cancel-in-progress: true` remains enabled. The job-scoped group also
-includes `${{ github.workflow }}` so it cannot collide with similarly
-named groups defined in other workflows — `concurrency.group` names are
-repository-global, not per-workflow.
+What this block DOES enforce (and what this test pins):
 
-This test pins the invariant: if a future edit removes the job-level
-`concurrency` block, drops `cancel-in-progress: true`, or drops the
-`${{ github.workflow }}` prefix from the group, CI fails loudly with a
-pointer back to #410.
+1. `error-contracts` declares its own job-level `concurrency` mapping,
+   separate from the workflow-level block at the top of `ci.yml`.
+2. The group name is prefixed with `${{ github.workflow }}` so it cannot
+   collide with similarly named groups in other workflows in this repo
+   (e.g. `deploy.yml`, `dependabot-*.yml`). `concurrency.group` names are
+   repository-global and case-insensitive per GitHub's docs, so a prefix
+   is the only way to guarantee cross-workflow isolation.
+3. The group includes `${{ github.ref }}` so concurrent runs on different
+   branches/PRs do not cancel each other.
+4. `cancel-in-progress: true` is pinned at the job level so this job's
+   cancellation semantics are documented locally and cannot be weakened
+   by a future change to the workflow-level block alone.
+
+What this block does NOT do (and what this test does NOT claim):
+
+The workflow-level `concurrency` block at the top of `ci.yml` still uses
+`cancel-in-progress: true`, which cancels the ENTIRE prior workflow run
+(including `error-contracts`) on stacked pushes to the same ref. Job-level
+concurrency layers on top of workflow-level concurrency — it does not
+override or replace it. Preventing stacked-push cancellation of
+`error-contracts` specifically would require a separate change to the
+workflow-level block, which is out of scope for #410.
+
+If a future edit removes the job-level `concurrency` block, drops
+`cancel-in-progress: true`, or drops the `${{ github.workflow }}` prefix
+from the group, CI fails loudly here with a pointer back to #410.
 """
 
 from __future__ import annotations
@@ -68,8 +78,10 @@ def _get_job(name: str) -> dict[str, Any]:
 def test_error_contracts_job_has_concurrency_block() -> None:
     """The `error-contracts` job must declare a job-level `concurrency` block.
 
-    Without it, the job inherits only the workflow-level group and gets
-    cancelled alongside `backend-checks` on every stacked push — see #410.
+    The block pins cross-workflow isolation (group prefix) and
+    `cancel-in-progress` semantics locally so a future edit to the
+    workflow-level block cannot silently weaken them. See #410 for the
+    scope of what this block does and does not address.
     """
     job = _get_job("error-contracts")
     concurrency = job.get("concurrency")
@@ -128,8 +140,11 @@ def test_error_contracts_concurrency_cancels_in_progress() -> None:
     """`cancel-in-progress: true` at the job level is required.
 
     Without it, a second push to the same ref would queue behind the
-    stale error-contracts run instead of cancelling it, wasting runner
-    minutes (the core complaint of #410).
+    stale error-contracts run instead of cancelling it within this
+    job-scoped group, wasting runner minutes for the specific case where
+    the workflow-level cancellation did not apply (e.g. a future edit
+    that removes or scopes the workflow-level block differently). See
+    issue #410.
     """
     job = _get_job("error-contracts")
     concurrency = job.get("concurrency")
@@ -138,6 +153,6 @@ def test_error_contracts_concurrency_cancels_in_progress() -> None:
     assert cancel is True, (
         "error-contracts job's concurrency.cancel-in-progress must be "
         f"literally `true` (got {cancel!r}). Without it, stacked pushes "
-        "queue instead of cancelling, defeating the point of the "
-        "job-level concurrency group. See issue #410."
+        "queue instead of cancelling in this job-scoped group, defeating "
+        "the point of the job-level concurrency block. See issue #410."
     )
