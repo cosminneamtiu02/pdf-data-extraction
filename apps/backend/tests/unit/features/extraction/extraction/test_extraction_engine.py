@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import inspect
 import json
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
@@ -24,6 +25,7 @@ from app.features.extraction.extraction import extraction_engine as engine_modul
 from app.features.extraction.extraction.extraction_engine import (
     ExtractionEngine,
     _ValidatingLangExtractAdapter,
+    declared_field_names,
 )
 from app.features.extraction.intelligence.generation_result import GenerationResult
 from app.features.extraction.skills.skill import Skill
@@ -382,6 +384,142 @@ async def test_extract_works_with_skill_from_schema_using_mappingproxy(
     assert [r.field_name for r in results] == ["name", "age"]
     assert results[0].value == "Alice"
     assert results[1].value == "30"
+
+
+def test_declared_field_names_pins_yaml_declaration_order_through_loader(
+    tmp_path: Path,
+) -> None:
+    """Pin the ORDER of `declared_field_names` through the full YAML->Skill path.
+
+    Issue #390: `declared_field_names` iterates `skill.output_schema["properties"]`
+    and Python's dict is insertion-ordered in 3.7+, but nothing in the test
+    suite asserts that the order round-trips unchanged from the YAML source
+    through `DuplicateKeyDetectingSafeLoader` -> Pydantic's
+    `dict[str, Any]` storage -> `deep_freeze_mapping` -> `MappingProxyType`
+    -> `declared_field_names`'s `tuple(...)`. A future loader refactor
+    (e.g. introducing `frozenset`/`set` for dedup, or switching the YAML
+    loader to one that does not preserve mapping-node order) would silently
+    reorder the response fields emitted by the API's response builder —
+    and CLAUDE.md's "every declared field always present" invariant has
+    ORDER as its natural companion for response determinism.
+
+    This test locks the contract end-to-end with an intentionally
+    non-alphabetical, non-insertion-tempting field order — so both
+    "accidentally alphabetize" and "accidentally insertion-sort by
+    hashing" regressions are caught clearly by the final assertion after
+    loading/parsing completes.
+    """
+    from app.features.extraction.skills.skill import Skill
+    from app.features.extraction.skills.skill_yaml_schema import SkillYamlSchema
+
+    # Deliberately NOT alphabetical, NOT reverse-alphabetical, NOT
+    # length-sorted. This is the load-bearing expected order.
+    expected_order: tuple[str, ...] = (
+        "invoice_number",
+        "amount_due",
+        "issued_at",
+        "vendor_name",
+        "currency",
+    )
+    # Write YAML as literal text (not via `yaml.safe_dump`, which sorts keys
+    # by default) so the source ORDER on disk is the exact ORDER the test
+    # pins. This verifies that the YAML loader preserves node order all
+    # the way through the stack — which is the bit that would silently
+    # regress if someone swapped `DuplicateKeyDetectingSafeLoader` for a
+    # loader that drops ordering, or if a future refactor routed
+    # `properties` through a `set`/`frozenset` for dedup.
+    yaml_text = (
+        "name: pin-order\n"
+        "version: 1\n"
+        "description: Canonical fixture used to pin declared_field_names order.\n"
+        "prompt: Extract the invoice fields.\n"
+        "examples:\n"
+        '  - input: "INV-1 total 10 USD issued 2024-01-01 from Acme"\n'
+        "    output:\n"
+        '      invoice_number: "INV-1"\n'
+        '      amount_due: "10"\n'
+        '      issued_at: "2024-01-01"\n'
+        '      vendor_name: "Acme"\n'
+        '      currency: "USD"\n'
+        "output_schema:\n"
+        "  type: object\n"
+        "  properties:\n"
+        "    invoice_number:\n"
+        "      type: string\n"
+        "    amount_due:\n"
+        "      type: string\n"
+        "    issued_at:\n"
+        "      type: string\n"
+        "    vendor_name:\n"
+        "      type: string\n"
+        "    currency:\n"
+        "      type: string\n"
+        # `required` is deliberately scrambled vs. `properties` order so the
+        # test unambiguously pins that `declared_field_names` derives order
+        # from `properties`, not from `required`. If a future refactor
+        # accidentally sourced order from `required`, this test would fail
+        # instead of silently passing.
+        "  required:\n"
+        "    - currency\n"
+        "    - vendor_name\n"
+        "    - issued_at\n"
+        "    - amount_due\n"
+        "    - invoice_number\n"
+    )
+    path: Path = tmp_path / "1.yaml"
+    path.write_text(yaml_text, encoding="utf-8")
+
+    schema = SkillYamlSchema.load_from_file(path)
+    skill = Skill.from_schema(schema)
+
+    # Capture the result once; tuple equality pins the exact declared
+    # field order and pytest already shows positional diffs for tuples.
+    # A separate `list(result) == list(expected_order)` assertion would be
+    # unreachable (the tuple-equality assert above fails first), so it is
+    # omitted to keep the test's intent clear.
+    result = declared_field_names(skill)
+    assert result == expected_order
+
+
+def test_declared_field_names_is_tuple_not_set_so_order_is_observable(
+    tmp_path: Path,
+) -> None:
+    """Companion guard for #390: the return type must be ``tuple``, not
+    ``set``/``frozenset`` — a set return would structurally discard order
+    and silently hide a future reorder regression from the pinning test.
+    Return type is the contract, not an implementation detail.
+    """
+    from app.features.extraction.skills.skill import Skill
+    from app.features.extraction.skills.skill_yaml_schema import SkillYamlSchema
+
+    yaml_text = (
+        "name: pin-return-type\n"
+        "version: 1\n"
+        "description: Return-type pinning fixture.\n"
+        "prompt: Extract fields.\n"
+        "examples:\n"
+        '  - input: "x"\n'
+        "    output:\n"
+        '      a: "1"\n'
+        "output_schema:\n"
+        "  type: object\n"
+        "  properties:\n"
+        "    a:\n"
+        "      type: string\n"
+        "    b:\n"
+        "      type: string\n"
+        "  required:\n"
+        "    - a\n"
+    )
+    path: Path = tmp_path / "1.yaml"
+    path.write_text(yaml_text, encoding="utf-8")
+
+    schema = SkillYamlSchema.load_from_file(path)
+    skill = Skill.from_schema(schema)
+
+    result = declared_field_names(skill)
+    assert isinstance(result, tuple)
+    assert result == ("a", "b")
 
 
 async def test_extract_normalizes_malformed_langextract_interval_to_ungrounded(
