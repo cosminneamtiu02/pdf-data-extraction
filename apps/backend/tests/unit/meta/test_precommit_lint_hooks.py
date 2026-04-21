@@ -113,7 +113,16 @@ def _repo_with_hook_id_registered(repo_substring: str, hook_id: str) -> bool:
     config = _load_precommit_config()
     for repo, hook in _iter_hooks(config):
         url = repo.get("repo")
-        if not isinstance(url, str) or repo_substring not in url:
+        if not isinstance(url, str):
+            if "repo" in repo:
+                msg = (
+                    f"{_PRECOMMIT_PATH} repo entry has 'repo' as "
+                    f"{type(url).__name__!r} (expected str); pre-commit "
+                    f"schema may have changed."
+                )
+                raise AssertionError(msg)
+            continue
+        if repo_substring not in url:
             continue
         if hook.get("id") == hook_id:
             return True
