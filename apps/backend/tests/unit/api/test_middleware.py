@@ -21,6 +21,7 @@ no need to spin up a live server to observe dispatch order.
 
 from __future__ import annotations
 
+import pytest
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.testclient import TestClient
@@ -247,7 +248,9 @@ def test_cors_preflight_allows_listed_method() -> None:
     )
 
 
-def test_cors_allow_credentials_defaults_to_false_from_settings() -> None:
+def test_cors_allow_credentials_defaults_to_false_from_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The CORSMiddleware receives ``allow_credentials`` from Settings (default False).
 
     Issue #346: previously this flag was hardcoded to ``True`` in source, which
@@ -256,9 +259,14 @@ def test_cors_allow_credentials_defaults_to_false_from_settings() -> None:
     (CORS spec forbids credentials + wildcard origin). Driving it from
     ``Settings.cors_allow_credentials`` (defaulting to ``False``) gives
     operators a single knob and a safe default.
+
+    ``_env_file=None`` disables ``apps/backend/.env`` loading and
+    ``monkeypatch.delenv`` clears any workstation-local override, so this
+    test validates the code default rather than the developer's environment.
     """
+    monkeypatch.delenv("CORS_ALLOW_CREDENTIALS", raising=False)
     app = FastAPI()
-    settings_default = Settings()
+    settings_default = Settings(_env_file=None)  # type: ignore[call-arg]
 
     configure_middleware(
         app,

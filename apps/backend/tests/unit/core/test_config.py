@@ -198,14 +198,21 @@ def test_settings_cors_origins_malformed_json_raises_clear_error() -> None:
 # -- cors_allow_credentials (issue #346) ------------------------------------
 
 
-def test_settings_cors_allow_credentials_default_is_false() -> None:
+def test_settings_cors_allow_credentials_default_is_false(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """``cors_allow_credentials`` must default to ``False`` (safe posture).
 
     The service runs without cookies or credentialed session state by default,
     so ``allow_credentials=True`` is extra attack surface we should only opt
     into explicitly. Issue #346.
+
+    ``_env_file=None`` disables ``apps/backend/.env`` loading and
+    ``monkeypatch.delenv`` clears any workstation-local override, so this
+    test validates the code default rather than the developer's environment.
     """
-    s = Settings()
+    monkeypatch.delenv("CORS_ALLOW_CREDENTIALS", raising=False)
+    s = Settings(_env_file=None)  # type: ignore[call-arg]
     assert s.cors_allow_credentials is False
 
 
