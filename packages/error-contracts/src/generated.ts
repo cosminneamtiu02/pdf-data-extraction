@@ -35,7 +35,7 @@ export interface ErrorParamsByCode {
   SKILL_NOT_FOUND: { name: string; version: string };
   SKILL_VALIDATION_FAILED: { file: string; reason: string };
   STRUCTURED_OUTPUT_FAILED: Record<string, never>;
-  VALIDATION_FAILED: { field: string; reason: string };
+  VALIDATION_FAILED: Record<string, never>;
 }
 
 export interface ApiErrorPayload<C extends ErrorCode = ErrorCode> {
