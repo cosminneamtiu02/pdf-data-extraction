@@ -52,12 +52,13 @@ repos:
   - repo: local
     hooks:
       # Pre-push: pyright strict across both subprojects, mirroring
-      # `task check:types`. Runs through `uv run` so each subproject's
-      # venv (apps/backend/.venv, packages/error-contracts/.venv) is on
-      # PYTHONPATH — otherwise pyright resolves imports against an empty
-      # root environment and fails with reportMissingImports for every
-      # third-party import in the monorepo (issue #453, which replaced
-      # the earlier `RobertCraigie/pyright-python` entry). Scoped to the
+      # `task check:types`. Runs through `uv run` so each subproject uses
+      # its own environment/interpreter context (apps/backend/.venv,
+      # packages/error-contracts/.venv) — otherwise pyright runs from the
+      # repo root context (no venv, no pyproject.toml) and fails with
+      # reportMissingImports for every third-party import in the monorepo
+      # (issue #453, which replaced the earlier
+      # `RobertCraigie/pyright-python` entry). Scoped to the
       # pre-push stage because a strict type check across app/ scripts/
       # tests/ is too slow for every commit — same reasoning as the
       # pytest-unit hook below. Version pinning is inherited from each

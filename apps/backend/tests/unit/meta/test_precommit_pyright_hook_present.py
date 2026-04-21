@@ -23,10 +23,15 @@ When this test fails, pick one of:
 
 - The `.pre-commit-config.yaml` has no hook with `id: pyright` at the
   pre-push stage — add a `repo: local` entry that runs `uv run pyright`
-  against at least the backend subproject.
+  against BOTH monorepo subprojects (`apps/backend` and
+  `packages/error-contracts`).
 - The entry stopped going through `uv run`, which would let pyright
   resolve outside the pinned lockfile version. Restore `uv run pyright`
   in the entry.
+- The entry dropped one of the subprojects (e.g. only
+  `uv run pyright` from the repo root, or only `apps/backend`). Restore
+  coverage of both subprojects so the pre-push hook matches
+  `task check:types`, which runs pyright against each subproject.
 """
 
 from __future__ import annotations
@@ -41,6 +46,8 @@ _PRECOMMIT_PATH = _REPO_ROOT / ".pre-commit-config.yaml"
 _PYRIGHT_HOOK_ID = "pyright"
 _PRE_PUSH_STAGE = "pre-push"
 _UV_RUN_PYRIGHT = "uv run pyright"
+_BACKEND_SUBPROJECT = "apps/backend"
+_ERROR_CONTRACTS_SUBPROJECT = "packages/error-contracts"
 
 
 def _precommit_pyright_hook() -> dict[str, object]:
@@ -104,15 +111,20 @@ def test_precommit_has_pyright_hook_at_pre_push() -> None:
     assert _PRE_PUSH_STAGE in stages_list, missing_msg
 
 
-def test_precommit_pyright_entry_goes_through_uv_run() -> None:
+def _precommit_pyright_entry_str() -> str:
     hook = _precommit_pyright_hook()
     entry = hook.get("entry")
     if not isinstance(entry, str):
         msg = (
             f"pyright hook in {_PRECOMMIT_PATH} is missing a string 'entry' "
-            f"(got {entry!r}); cannot verify it routes through {_UV_RUN_PYRIGHT!r}."
+            f"(got {entry!r}); cannot verify its shape."
         )
         raise AssertionError(msg)  # noqa: TRY004
+    return entry
+
+
+def test_precommit_pyright_entry_goes_through_uv_run() -> None:
+    entry = _precommit_pyright_entry_str()
     drift_msg = (
         f"pyright hook in {_PRECOMMIT_PATH} must invoke pyright through "
         f"`{_UV_RUN_PYRIGHT}` so the pinned version comes from each "
@@ -120,3 +132,38 @@ def test_precommit_pyright_entry_goes_through_uv_run() -> None:
         f"Got entry={entry!r}. Issue #453."
     )
     assert _UV_RUN_PYRIGHT in entry, drift_msg
+
+
+def test_precommit_pyright_entry_covers_both_subprojects() -> None:
+    """The pyright hook must invoke pyright against BOTH monorepo subprojects.
+
+    Why: the monorepo has two independent venvs — `apps/backend/.venv`
+    and `packages/error-contracts/.venv` — each with its own pinned
+    dependencies and its own `pyproject.toml`. `task check:types` runs
+    pyright once per subproject so each invocation picks up the correct
+    venv and config. The pre-push hook must mirror that coverage. A
+    bare `uv run pyright` from the repo root would resolve against
+    neither venv (there is no root `pyproject.toml`) and would fail
+    with `reportMissingImports` — exactly the regression #453 fixed. A
+    partial fix that covers only `apps/backend` would silently skip
+    `packages/error-contracts`, letting type errors in the error
+    contracts package reach CI.
+
+    This assertion intentionally stays shape-agnostic: it accepts
+    either the `cd <subproject> && uv run pyright` bash-chain spelling
+    used today, or an `uv run --project <subproject> pyright`
+    rewrite, since both select the right venv. The load-bearing
+    invariant is that both subproject paths appear in the hook entry.
+    """
+    entry = _precommit_pyright_entry_str()
+    missing = [
+        name for name in (_BACKEND_SUBPROJECT, _ERROR_CONTRACTS_SUBPROJECT) if name not in entry
+    ]
+    drift_msg = (
+        f"pyright hook in {_PRECOMMIT_PATH} must cover BOTH subprojects "
+        f"({_BACKEND_SUBPROJECT!r} AND {_ERROR_CONTRACTS_SUBPROJECT!r}); "
+        f"missing subproject(s): {missing!r}. Without both, the pre-push "
+        f"hook drifts from `task check:types` and lets one subproject's "
+        f"type errors ship to CI. Got entry={entry!r}. Issue #453."
+    )
+    assert not missing, drift_msg
