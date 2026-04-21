@@ -788,20 +788,22 @@ def test_multi_block_dedups_repeated_block_ids_in_offset_index() -> None:
         blocks_by_id=blocks_by_id,
     )
 
-    # Dedup guard: the list must contain one ref per unique (page, bbox)
-    # tuple, not one ref per index entry. Set-equality on the fingerprint
-    # proves there are no duplicate rectangles flowing into the response.
-    fingerprints = [(r.page, r.x0, r.y0, r.x1, r.y1) for r in refs]
-    assert len(fingerprints) == len(set(fingerprints)), (
-        f"Expected deduped bbox_refs; got duplicates: {fingerprints}"
-    )
-    # And specifically: exactly three bboxes (b_shared + b_other + b_end),
-    # not four (b_shared + b_other + b_shared + b_end).
+    # Dedup guard: repeated offset-index entries for the same `block_id`
+    # must not produce duplicate bbox refs. The production contract is
+    # keyed on `block_id` (not on the `(page, bbox)` fingerprint), so two
+    # distinct blocks with identical rectangles would legitimately emit two
+    # refs — but a single block referenced twice in the index must emit
+    # exactly one.
+    #
+    # Specifically: exactly three refs (b_shared + b_other + b_end), not
+    # four (b_shared + b_other + b_shared + b_end), in the order the blocks
+    # are first encountered along the span.
     assert len(refs) == 3
-    # The deduped set of block ids must cover exactly the three unique
-    # blocks touched by the span.
-    seen_bboxes = {(r.x0, r.y0, r.x1, r.y1) for r in refs}
-    assert seen_bboxes == {(0.0, 0.0, 50.0, 10.0), (0.0, 20.0, 50.0, 30.0), (0.0, 40.0, 50.0, 50.0)}
+    assert [(r.page, r.x0, r.y0, r.x1, r.y1) for r in refs] == [
+        (1, 0.0, 0.0, 50.0, 10.0),
+        (1, 0.0, 20.0, 50.0, 30.0),
+        (1, 0.0, 40.0, 50.0, 50.0),
+    ]
 
 
 def test_happy_path_emits_no_span_resolver_logs() -> None:
