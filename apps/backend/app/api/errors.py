@@ -82,6 +82,21 @@ def register_exception_handlers(app: FastAPI) -> None:
     ) -> JSONResponse:
         request_id = _get_request_id(request)
         errors = exc.errors()
+        # Issue #369: an empty ``exc.errors()`` list means FastAPI raised
+        # ``RequestValidationError`` with no underlying Pydantic errors —
+        # a framework-level anomaly. The prior ``unknown/unknown`` fallback
+        # (and its post-#344 replacement of silently returning
+        # ``details=[]``) papered over the bug with a normal 422. Raising
+        # ``InternalError`` routes the anomaly through ``handle_domain_error``,
+        # which logs at warning with ``exc_info=True`` and serves a 500 so
+        # the bug is visible and actionable instead of silently masked.
+        if not errors:
+            # ``InternalError`` is parameterless (see ``errors.yaml``); the
+            # anomaly context is emitted via the structured ``logger.warning``
+            # call in ``handle_domain_error`` (code, http_status, request_id,
+            # exc_info) which gives on-call responders the traceback. Adding
+            # a log line here would duplicate the observability event.
+            raise InternalError
         # Issue #344: VALIDATION_FAILED carries all per-field failures in
         # ``details``. ``params`` is intentionally empty — the prior
         # "first-of-N" shape silently truncated multi-field failures and

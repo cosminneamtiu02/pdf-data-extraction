@@ -25,6 +25,8 @@ from app.exceptions import (
 
 def _create_test_app_with_handler() -> FastAPI:
     """Create a minimal FastAPI app with the exception handler registered."""
+    from fastapi.exceptions import RequestValidationError
+
     from app.api.errors import register_exception_handlers
 
     test_app = FastAPI()
@@ -57,6 +59,17 @@ def _create_test_app_with_handler() -> FastAPI:
         second_required: int,  # noqa: ARG001 — required param drives the validation failure
     ) -> dict[str, bool]:
         return {"ok": True}
+
+    @test_app.get("/trigger-empty-validation-error")
+    async def trigger_empty_validation_error() -> None:
+        # Simulates a framework-level anomaly (issue #369): a
+        # ``RequestValidationError`` with an empty errors list. FastAPI
+        # should never raise this in practice; when it does, the
+        # ``unknown/unknown`` fallback that used to live in
+        # ``handle_validation_error`` silently covered up the bug. The
+        # handler must now surface it via ``InternalError`` so the
+        # 5xx ``handle_domain_error`` path logs a traceback.
+        raise RequestValidationError(errors=[])
 
     # Add request_id middleware for the handler to read
     from app.api.request_id_middleware import RequestIdMiddleware
@@ -164,6 +177,51 @@ def test_error_handler_surfaces_all_fields_when_multiple_fail(
     fields = {entry["field"] for entry in details}
     assert any("first_required" in f for f in fields)
     assert any("second_required" in f for f in fields)
+
+
+def test_handle_validation_error_empty_errors_raises_internal_error(
+    test_client: TestClient,
+) -> None:
+    """An empty ``exc.errors()`` list must surface as INTERNAL_ERROR (issue #369).
+
+    A ``RequestValidationError`` with no underlying Pydantic errors is a
+    framework-level anomaly — FastAPI should never raise it in practice.
+    The prior ``{'field': 'unknown', 'reason': 'unknown'}`` fallback (and
+    its post-#344 replacement of silently returning ``details=[]``)
+    papered over the bug by returning a normal 422. The handler must
+    instead raise ``InternalError`` so ``handle_domain_error`` catches
+    it, logs at warning with ``exc_info=True``, and serves a 500.
+    """
+    response = test_client.get("/trigger-empty-validation-error")
+
+    assert response.status_code == InternalError.http_status
+    body = response.json()
+    assert body["error"]["code"] == InternalError.code
+    assert body["error"]["params"] == {}
+    assert "request_id" in body["error"]
+
+
+def test_handle_validation_error_empty_errors_logs_traceback(
+    test_client: TestClient,
+) -> None:
+    """The empty-errors anomaly must be logged at warning level with a traceback.
+
+    Pins the observability half of the issue #369 fix: raising
+    ``InternalError`` instead of returning a silent 422 is only half the
+    point — the other half is that the 5xx ``handle_domain_error`` path
+    must fire with ``exc_info=True`` so the framework-level anomaly is
+    actionable rather than silently masked.
+    """
+    with patch.object(errors_module, "logger") as mock_logger:
+        response = test_client.get("/trigger-empty-validation-error")
+
+    assert response.status_code == InternalError.http_status
+    mock_logger.warning.assert_called_once()
+    args, kwargs = mock_logger.warning.call_args
+    assert args == ("domain_error",)
+    assert kwargs["code"] == InternalError.code
+    assert kwargs["http_status"] == InternalError.http_status
+    assert kwargs["exc_info"] is True
 
 
 def test_error_handler_maps_unhandled_to_internal_error(test_client: TestClient) -> None:
