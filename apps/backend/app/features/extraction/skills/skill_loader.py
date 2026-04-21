@@ -3,9 +3,17 @@
 Scans `skills_dir` with a strict two-level layout
 (`<skills_dir>/<name>/<version>.yaml`), validates every matched file via
 `SkillYamlSchema.load_from_file`, converts to `Skill` with merged Docling
-defaults, and returns a `dict[(name, version), Skill]`. All problems are
+defaults, and returns a `dict[(name, version), Skill]`.
+
+Validation problems (parse failures, schema violations, duplicates, layout
+violations, filename/body version mismatches, directory-name mismatches) are
 aggregated into one `SkillValidationFailedError` so the operator sees every
-offender in a single fail-fast boot.
+offender in a single fail-fast boot. I/O and other unexpected exceptions
+(`OSError`/`PermissionError`/`UnicodeDecodeError` from reading a file,
+`MemoryError`, `SystemError`, programming bugs) are intentionally NOT
+aggregated — they propagate unwrapped so the real root cause reaches the
+operator instead of being buried in a misleading "skill validation failed"
+label (issue #348).
 """
 
 from pathlib import Path
@@ -62,7 +70,9 @@ class SkillLoader:
                 # `ValidationError`, jsonschema `SchemaError`) into
                 # `SkillValidationFailedError`, so this is the only validation
                 # exception that should ever arrive here. Anything else —
-                # `OSError`/`PermissionError` from `path.read_text`,
+                # `OSError`/`PermissionError` or `UnicodeDecodeError` from
+                # `path.read_text` (the read is intentionally outside the
+                # wrap-try so I/O failures surface with their native type),
                 # `MemoryError`, `SystemError`, or a genuine programming bug —
                 # propagates unwrapped so operators see the real root cause
                 # instead of a misleading "skill validation failed" label

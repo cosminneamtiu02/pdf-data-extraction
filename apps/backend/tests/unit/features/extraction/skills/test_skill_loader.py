@@ -1,6 +1,7 @@
 """Unit tests for `SkillLoader` — filesystem walk + aggregated validation."""
 
 import os
+import stat
 import time
 from pathlib import Path
 from typing import Any
@@ -234,7 +235,10 @@ def test_load_unreadable_skill_file_raises_permission_error_not_validation_error
 
     _write_skill(tmp_path, dir_name="invoice", file_name="1.yaml", version=1)
     path = tmp_path / "invoice" / "1.yaml"
-    original_mode = path.stat().st_mode
+    # `stat().st_mode` includes the file-type bits (e.g. `S_IFREG`); `chmod`
+    # only wants permission bits, so mask via `stat.S_IMODE` to avoid relying
+    # on platform-specific silent masking of the high bits.
+    original_mode = stat.S_IMODE(path.stat().st_mode)
     path.chmod(0o000)
 
     try:
