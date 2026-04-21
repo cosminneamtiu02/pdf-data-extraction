@@ -37,13 +37,9 @@ _DOCKERFILE_PATH: Final[Path] = _REPO_ROOT / "infra" / "docker" / "backend.Docke
 def _read_dockerfile_text() -> str:
     """Return the Dockerfile contents, failing the calling test if missing.
 
-    Raises ``AssertionError`` (rather than calling ``pytest.fail``) so this
-    module does not need to import ``pytest``. The ``RobertCraigie/pyright-python``
-    pre-push hook runs pyright inside an isolated pre-commit venv that does
-    not have ``pytest`` available, so importing it here would trip
-    ``reportMissingImports`` at hook time. Pytest still surfaces the failure
-    via its ``AssertionError`` reporter, so the test UX is unchanged — this
-    pattern mirrors ``test_precommit_pyright_hook_present.py``.
+    This helper raises ``AssertionError`` directly when the Dockerfile is
+    missing. Pytest reports that failure normally, so the test UX remains
+    clear without needing any special handling in this helper.
     """
     if not _DOCKERFILE_PATH.is_file():
         msg = (
