@@ -229,7 +229,37 @@ def test_handler_both_raises_internal_error_when_bytes_none() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_handler_pdf_only_emits_log_context_before_internal_error() -> None:
+class _SpyLogger:
+    """Test double for ``router_module._logger`` (Copilot-review #465).
+
+    Why we don't use ``structlog.testing.capture_logs()`` here: the router
+    module defines ``_logger = structlog.get_logger(__name__)`` at import
+    time, and our ``configure_logging()`` registers
+    ``cache_logger_on_first_use=True``. Whichever test first touches the
+    router's ``_logger`` outside a ``capture_logs()`` context can cause
+    structlog to cache a bound logger that subsequent ``capture_logs()``
+    contexts won't see — making log-assertion tests order-dependent. A
+    direct monkeypatched spy sidesteps structlog's global state entirely,
+    the same pattern used in
+    ``tests/unit/features/extraction/test_extraction_service.py``.
+    """
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict[str, object]]] = []
+
+    def info(self, event: str, **kwargs: object) -> None:  # pragma: no cover
+        self.events.append((event, kwargs))
+
+    def warning(self, event: str, **kwargs: object) -> None:  # pragma: no cover
+        self.events.append((event, kwargs))
+
+    def error(self, event: str, **kwargs: object) -> None:
+        self.events.append((event, kwargs))
+
+
+def test_handler_pdf_only_emits_log_context_before_internal_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """PDF_ONLY invariant violation emits a structured log event before raising.
 
     Issue #337: ``raise InternalError()`` in ``_serialize_result`` was silent —
@@ -237,47 +267,59 @@ def test_handler_pdf_only_emits_log_context_before_internal_error() -> None:
     issue. The fix attaches structlog context (event name, output_mode,
     has_annotated_pdf) immediately before the raise.
     """
-    from structlog.testing import capture_logs
-
     from app.exceptions import InternalError
+    from app.features.extraction import router as router_module
     from app.features.extraction.router import _serialize_result
     from app.features.extraction.schemas.output_mode import OutputMode
 
+    spy = _SpyLogger()
+    monkeypatch.setattr(router_module, "_logger", spy)
     result = _make_extraction_result(annotated_pdf_bytes=None)
 
-    with capture_logs() as logs, pytest.raises(InternalError):
+    with pytest.raises(InternalError):
         _serialize_result(result, OutputMode.PDF_ONLY)
 
     event = next(
-        (e for e in logs if e.get("event") == "router_serialization_invariant_violated"),
+        (
+            kwargs
+            for name, kwargs in spy.events
+            if name == "router_serialization_invariant_violated"
+        ),
         None,
     )
     assert event is not None, (
-        f"expected 'router_serialization_invariant_violated' log event, got {logs!r}"
+        f"expected 'router_serialization_invariant_violated' log event, got {spy.events!r}"
     )
     assert event["output_mode"] == OutputMode.PDF_ONLY.value
     assert event["has_annotated_pdf"] is False
 
 
-def test_handler_both_emits_log_context_before_internal_error() -> None:
+def test_handler_both_emits_log_context_before_internal_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """BOTH invariant violation emits a structured log event before raising."""
-    from structlog.testing import capture_logs
-
     from app.exceptions import InternalError
+    from app.features.extraction import router as router_module
     from app.features.extraction.router import _serialize_result
     from app.features.extraction.schemas.output_mode import OutputMode
 
+    spy = _SpyLogger()
+    monkeypatch.setattr(router_module, "_logger", spy)
     result = _make_extraction_result(annotated_pdf_bytes=None)
 
-    with capture_logs() as logs, pytest.raises(InternalError):
+    with pytest.raises(InternalError):
         _serialize_result(result, OutputMode.BOTH)
 
     event = next(
-        (e for e in logs if e.get("event") == "router_serialization_invariant_violated"),
+        (
+            kwargs
+            for name, kwargs in spy.events
+            if name == "router_serialization_invariant_violated"
+        ),
         None,
     )
     assert event is not None, (
-        f"expected 'router_serialization_invariant_violated' log event, got {logs!r}"
+        f"expected 'router_serialization_invariant_violated' log event, got {spy.events!r}"
     )
     assert event["output_mode"] == OutputMode.BOTH.value
     assert event["has_annotated_pdf"] is False
