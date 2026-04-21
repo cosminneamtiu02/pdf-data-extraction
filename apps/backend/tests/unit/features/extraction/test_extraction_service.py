@@ -8,6 +8,7 @@ assertions.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from typing import Any
 
@@ -958,31 +959,48 @@ async def test_extraction_service_simultaneous_arrivals_fail_fast_not_queue() ->
     total_calls = 10
     t0 = time.monotonic()
     gather_task = asyncio.gather(*[_one_call() for _ in range(total_calls)])
-    # Yield until one call is in-flight, then capture wall-clock.
-    for _ in range(100):
-        await asyncio.sleep(0)
-        if engine.in_flight >= 1:
-            break
-    assert engine.in_flight == 1, "Exactly one call should have entered the pipeline"
-    elapsed_admission = time.monotonic() - t0
+    # Wrap the rest of the burst in try/finally so that if any assertion
+    # below fails on a slow/loaded runner, ``gather_task`` and its spawned
+    # child Tasks (including the holder blocked on ``gate``) do not leak as
+    # "Task was destroyed but it is pending!" warnings into sibling tests.
+    # Mirrors the cleanup shape used for background tasks elsewhere in this
+    # repo (e.g. ``test_pdf_annotator.py`` lines 411-418).
+    try:
+        # Yield until one call is in-flight, then capture wall-clock.
+        for _ in range(100):
+            await asyncio.sleep(0)
+            if engine.in_flight >= 1:
+                break
+        assert engine.in_flight == 1, "Exactly one call should have entered the pipeline"
+        elapsed_admission = time.monotonic() - t0
 
-    # Admission-phase wall-clock: the scheduler only spun long enough to
-    # dispatch each call's try-acquire decision. If any over-cap caller
-    # were queueing on the semaphore instead of rejecting, ``engine.in_flight``
-    # would still be 1 (cap), but the elapsed time to reach this point is
-    # bounded by the number of event-loop turns needed to drain the admission
-    # decisions, not by the pipeline hold.
-    assert elapsed_admission < 0.5, (
-        f"Admission-phase wall-clock {elapsed_admission:.3f}s — admission "
-        "path is queueing under concurrent arrivals instead of rejecting "
-        "immediately (issue #340)."
-    )
+        # Admission-phase wall-clock: the scheduler only spun long enough to
+        # dispatch each call's try-acquire decision. If any over-cap caller
+        # were queueing on the semaphore instead of rejecting, ``engine.in_flight``
+        # would still be 1 (cap), but the elapsed time to reach this point is
+        # bounded by the number of event-loop turns needed to drain the admission
+        # decisions, not by the pipeline hold.
+        assert elapsed_admission < 0.5, (
+            f"Admission-phase wall-clock {elapsed_admission:.3f}s — admission "
+            "path is queueing under concurrent arrivals instead of rejecting "
+            "immediately (issue #340)."
+        )
 
-    # Release the holder and await the full gather. The holder completes
-    # via the fake pipeline; the N-1 rejections were already decided.
-    gate.set()
-    results = await gather_task
-    elapsed_total = time.monotonic() - t0
+        # Release the holder and await the full gather. The holder completes
+        # via the fake pipeline; the N-1 rejections were already decided.
+        gate.set()
+        results = await gather_task
+        elapsed_total = time.monotonic() - t0
+    finally:
+        # Happy path: ``gather_task`` is already done, ``gate`` is already
+        # set, and both operations below are no-ops. Failure path: the holder
+        # is still blocked on ``gate`` (or some children are still pending),
+        # so we release the gate and cancel the gather to drain every child
+        # Task before pytest-asyncio tears down the loop.
+        gate.set()
+        gather_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await gather_task
 
     successes = [r for r in results if isinstance(r, ExtractionResult)]
     rejections = [r for r in results if isinstance(r, ExtractionOverloadedError)]
