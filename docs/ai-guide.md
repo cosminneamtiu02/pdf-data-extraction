@@ -41,12 +41,15 @@ Python exception class per error code in `app/exceptions/_generated/`. A single
 exception handler in `app/api/errors.py` maps all `DomainError` subclasses to a
 consistent JSON response shape: `{error: {code, params, details, request_id}}`.
 Alongside the three generic codes (`NOT_FOUND`, `VALIDATION_FAILED`,
-`INTERNAL_ERROR`), the extraction pipeline's codes are in place:
-`SKILL_NOT_FOUND`, `SKILL_VALIDATION_FAILED`, `PDF_INVALID`,
-`PDF_PASSWORD_PROTECTED`, `PDF_TOO_LARGE`, `PDF_TOO_MANY_PAGES`,
-`PDF_NO_TEXT_EXTRACTABLE`, `PDF_PARSER_UNAVAILABLE`, `INTELLIGENCE_UNAVAILABLE`,
-`INTELLIGENCE_TIMEOUT`, `STRUCTURED_OUTPUT_FAILED`,
-`EXTRACTION_BUDGET_EXCEEDED`, `EXTRACTION_OVERLOADED`.
+`INTERNAL_ERROR`), the HTTP-returned extraction/runtime codes are:
+`SKILL_NOT_FOUND`, `PDF_INVALID`, `PDF_PASSWORD_PROTECTED`, `PDF_TOO_LARGE`,
+`PDF_TOO_MANY_PAGES`, `PDF_NO_TEXT_EXTRACTABLE`, `PDF_PARSER_UNAVAILABLE`,
+`INTELLIGENCE_UNAVAILABLE`, `INTELLIGENCE_TIMEOUT`,
+`STRUCTURED_OUTPUT_FAILED`, `EXTRACTION_BUDGET_EXCEEDED`,
+`EXTRACTION_OVERLOADED`. The contract also defines `SKILL_VALIDATION_FAILED`,
+but that is a startup/operator failure raised during `create_app()` when a
+skill YAML fails to validate; clients should not expect it as an HTTP API
+response.
 
 **Health endpoints.** `/health` is a pure liveness probe returning
 `{"status":"ok"}`. `/ready` is gated on a TTL-cached Ollama probe
@@ -127,12 +130,14 @@ downstream handler via `Depends(get_settings)`.
 **Extraction request lifecycle.** Byte-size enforcement on `POST /api/v1/extract`
 is a defense-in-depth pair, not a single gate. `UploadSizeLimitMiddleware` is
 the true streaming-time guard: it runs at the ASGI layer before route dispatch,
-inspects `Content-Length`, and rejects oversized (or chunked-without-length)
-requests before Starlette's multipart parser spools any bytes. By the time
-`router.extract` receives a FastAPI `UploadFile`, Starlette has already
-parsed and spooled the multipart upload, so the route-level
-`read_with_byte_limit` check is a backstop in case a proxy stripped
-`Content-Length` — it is not the mechanism that prevents multipart spooling.
+inspects `Content-Length`, and rejects oversized or missing/ambiguous-length
+requests (fail-closed) before Starlette's multipart parser spools any bytes.
+By the time `router.extract` receives a FastAPI `UploadFile`, Starlette has
+already parsed and spooled the multipart upload, so the route-level
+`read_with_byte_limit` check is a secondary safeguard if the ASGI guard is
+bypassed, misconfigured, or not applied to a given upload route (for example,
+a newly added upload endpoint not covered by the guarded paths). It is not the
+mechanism that prevents multipart spooling on a correctly guarded route.
 `router.extract` then calls `ExtractionService.extract(...)`, which runs the
 pipeline under a single `asyncio.timeout` budget
 (`Settings.extraction_timeout_seconds`) and a per-service semaphore cap
@@ -142,9 +147,14 @@ work (Docling / Ollama) is allowed to finish but its result is discarded.
 
 **Error handling.** Any layer that raises a `DomainError` subclass gets
 serialized via the registered exception handler into a consistent response
-envelope. The error code is machine-readable and stable. The extraction
-pipeline's layers do NOT raise generic `ValueError` / `RuntimeError`; they
-raise a generated `DomainError` subclass from `errors.yaml`.
+envelope. The error code is machine-readable and stable. Expected,
+user-facing failures inside the extraction pipeline do NOT surface as bare
+`ValueError` / `RuntimeError`; they raise a generated `DomainError` subclass
+from `errors.yaml`. Value-object constructors (e.g. `CharRange`,
+`BoundingBox`, `DoclingConfig`) still raise `ValueError` from their
+`__post_init__` / `__init__` invariant checks because those guard against
+programmer errors — wrong arguments at call-site — not runtime pipeline
+failures; see `CLAUDE.md` for the carve-out.
 
 **Request correlation.** `RequestIdMiddleware` generates a UUID per request
 and binds it to `structlog.contextvars` so every log line inside the request

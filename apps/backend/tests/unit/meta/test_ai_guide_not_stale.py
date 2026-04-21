@@ -38,6 +38,11 @@ _STALE_PHRASES: tuple[str, ...] = (
 
 
 def _ai_guide_text_lower() -> str:
+    assert _AI_GUIDE_PATH.is_file(), (
+        f"Expected AI guide at {_AI_GUIDE_PATH}, but it does not exist. "
+        "If docs/ai-guide.md was moved or renamed, update this test to point "
+        "to the new location."
+    )
     return _AI_GUIDE_PATH.read_text(encoding="utf-8").lower()
 
 
@@ -55,6 +60,11 @@ def test_ai_guide_does_not_contain_stale_phrases() -> None:
 def test_ai_guide_mentions_every_existing_extraction_subpackage() -> None:
     """Every implemented extraction subpackage must be named in the guide."""
     text_lower = _ai_guide_text_lower()
+    assert _EXTRACTION_FEATURE_DIR.is_dir(), (
+        f"Expected extraction feature directory at {_EXTRACTION_FEATURE_DIR}, "
+        "but it does not exist. If the extraction feature was relocated or "
+        "renamed, update this test to point to the new location."
+    )
     subpackages = sorted(
         entry.name
         for entry in _EXTRACTION_FEATURE_DIR.iterdir()
