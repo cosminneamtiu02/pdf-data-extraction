@@ -24,6 +24,17 @@ include = ["scripts", "tests"]
 # imports from tests. Pytest adds the package root to sys.path at runtime; this
 # gives pyright the same view statically. See issue #163.
 extraPaths = ["."]
+# Pin the venv explicitly so pyright resolves imports from site-packages
+# without relying on its brittle auto-detection. The repo's pre-push pyright
+# hook (local hook in .pre-commit-config.yaml) invokes `uv run pyright` from
+# this directory; without this pin, pyright's own heuristic for locating a
+# venv relative to the config file has proven unreliable in pre-commit
+# contexts and fails on newly-added test files that import pytest/yaml with
+# reportMissingImports.
+# Both `venvPath` and `venv` are required per pyright docs: venvPath is the
+# directory containing the venv, venv is the subdirectory name within it.
+venvPath = "."
+venv = ".venv"
 
 # Tests may pass arguments that exercise validation (intentionally malformed
 # structures). Relax the strict noise on the tests tree so the codegen script

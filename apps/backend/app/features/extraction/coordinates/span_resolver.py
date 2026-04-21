@@ -50,8 +50,14 @@ class SpanResolver:
                                           BoundingBoxRef as case 3.
     5. Multi-block / cross-page span    → one whole-block BoundingBoxRef per
                                           touched block, all with grounded=True.
-    6. Offsets outside any block        → grounded=False with empty bbox_refs
-                                          (hallucinated offsets).
+    6. Offsets outside any block        → status=extracted, source=inferred,
+                                          grounded=False, empty bbox_refs
+                                          (hallucinated offsets). The model
+                                          claimed grounding, but the resolver
+                                          proved the claim wrong, so the emit
+                                          must NOT advertise `source=document`
+                                          (issue #338). Routed through the
+                                          same shape as case 2.
 
     The resolver does not mutate any input and guarantees no ExtractedField
     is emitted twice: if `raw_extractions` contains duplicates for the same
@@ -127,11 +133,19 @@ class SpanResolver:
                 field_name=raw.field_name,
                 reason="hallucinated_offsets",
             )
+            # Issue #338: `source="document"` contractually means "the value
+            # was located in the parsed document text." When offsets do not
+            # land in any block we have the opposite — LangExtract claimed
+            # grounding, but the resolver proved the claim wrong. Route
+            # through the same `source="inferred"` shape as the `not
+            # raw.grounded` branch above so the emit is not a provenance
+            # lie, avoiding the same status/source contradiction discussed
+            # in #279.
             return ExtractedField(
                 name=raw.field_name,
                 value=raw.value,
                 status=FieldStatus.extracted,
-                source="document",
+                source="inferred",
                 grounded=False,
                 bbox_refs=[],
             )
@@ -233,13 +247,22 @@ def _collect_multi_block_bboxes(
     offset_index: OffsetIndex,
     blocks_by_id: dict[str, TextBlock],
 ) -> list[BoundingBoxRef]:
+    # Issue #288: an `OffsetIndex` is allowed to contain multiple entries
+    # sharing the same `block_id` as long as their `[start, end)` ranges don't
+    # overlap — which happens for multi-page table cells whose content spans
+    # discontiguous chunks of the concatenated text. Without a dedup guard the
+    # loop would emit one `BoundingBoxRef` per repeated entry, polluting the
+    # grounded response with identical rectangles. The `seen` set keys on
+    # block_id so each unique block is emitted exactly once per call.
     refs: list[BoundingBoxRef] = []
+    seen: set[str] = set()
     in_span = False
     for entry in offset_index.entries:
         if entry.block_id == start_block_id:
             in_span = True
-        if in_span and entry.start < entry.end:
+        if in_span and entry.start < entry.end and entry.block_id not in seen:
             refs.append(_whole_block_bbox(blocks_by_id[entry.block_id]))
+            seen.add(entry.block_id)
         if entry.block_id == end_block_id:
             break
     return refs

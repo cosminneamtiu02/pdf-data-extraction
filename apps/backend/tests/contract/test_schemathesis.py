@@ -167,38 +167,10 @@ async def _post_extract(  # noqa: PLR0913 — kwargs-only test helper with per-c
         return await client.send(request)
 
 
-@pytest.fixture(scope="module")
-def extract_schema(tmp_path_factory: pytest.TempPathFactory) -> schemathesis.BaseSchema:
-    """Load the schemathesis schema once for the whole module.
-
-    Build the schema against a dedicated `create_app(Settings(...))` rather
-    than the module-level `app` (which is created from env-derived
-    settings): if the test runner has `APP_ENV=production` in the
-    environment, `create_app` disables `/openapi.json` and this fixture
-    would 404 — breaking every contract test that depends on it. Giving
-    the fixture its own `app_env="development"` Settings makes it robust
-    to ambient environment variables.
-
-    `schemathesis.openapi.from_asgi` uses `starlette_testclient.TestClient`
-    under the hood, which is synchronous. Loading the schema inside an
-    `async def` test would run `TestClient` against its own event-loop
-    portal and deadlock against the outer pytest-asyncio loop. The OpenAPI
-    contract for `POST /api/v1/extract` is identical across every
-    `Settings` variation the per-test apps use (the declared response
-    shapes don't depend on runtime config), so loading the schema once
-    module-scope with a clean app is correct and avoids the collision.
-    """
-    # Module-scoped temporary skills dir: the skill YAML only needs to be
-    # present for `create_app` to pass validation at startup; no test
-    # actually hits the extraction pipeline via this fixture's app.
-    skills_dir = tmp_path_factory.mktemp("extract_schema_skills")
-    _write_valid_skill(skills_dir)
-    schema_app = create_app(_settings(skills_dir))
-    # `openapi.from_asgi` returns a `BaseSchema`; the returned schema
-    # exposes operations via `schema[path][method]` with
-    # `.validate_response(response)` that raises on contract drift — this
-    # is the load-bearing assertion in every test below.
-    return schemathesis.openapi.from_asgi("/openapi.json", schema_app)
+# The `extract_schema` fixture lives in `tests/contract/conftest.py` and
+# is session-scoped per issue #352 (previously module-scoped here, which
+# still rebuilt the schema for every contract module and — prior to the
+# #352 fix — leaked a `tempfile.mkdtemp` skills directory per invocation).
 
 
 def _validate(
