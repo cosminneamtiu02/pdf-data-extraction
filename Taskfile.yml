@@ -163,7 +163,7 @@ tasks:
       - uv run --with pyyaml python -m scripts.check
 
   errors:generate:
-    desc: Generate error classes from errors.yaml
+    desc: Regenerate Python exception classes, TypeScript types, and required-keys.json from errors.yaml
     dir: packages/error-contracts
     cmds:
       # Single shared entry point; .github/workflows/ci.yml calls the same

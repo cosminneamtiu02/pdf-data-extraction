@@ -10,13 +10,17 @@ Both callers now invoke::
 
     uv run --with pyyaml python -m scripts.generate_all
 
-which walks ``errors.yaml`` once and materialises all three output
-families (Python exception classes, TypeScript types, JSON translation
-required-keys). Paths default to the monorepo layout relative to this
-script's location, so the command works with no arguments as long as
-it runs from ``packages/error-contracts/`` (the Taskfile + CI working
-directory). ``--errors-yaml`` and the three output-path flags exist for
-tests that need to point at fixtures.
+which regenerates all three output families from ``errors.yaml``
+(Python exception classes, TypeScript types, JSON translation
+required-keys). Each generator independently re-reads and re-validates
+``errors.yaml``; the wrapper does not share the parsed result across
+calls. That redundancy is cheap at the current size of ``errors.yaml``
+and keeps each generator usable standalone from ``generate.py``. Paths
+default to the monorepo layout relative to this script's location, so
+the command works with no arguments as long as it runs from
+``packages/error-contracts/`` (the Taskfile + CI working directory).
+``--errors-yaml`` and the three output-path flags exist for tests that
+need to point at fixtures.
 """
 
 from __future__ import annotations
@@ -99,7 +103,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         default=None,
         help=(
             "Directory to write generated Python exception modules "
-            "(defaults to apps/backend/app/exceptions/_generated)."
+            "(defaults to apps/backend/app/exceptions/_generated). "
+            "Override is intended for tests writing to tmp_path: the "
+            "generated __init__.py and _registry.py emit hard-coded "
+            "`app.exceptions._generated.*` import paths, so artifacts "
+            "written elsewhere won't be importable without renaming."
         ),
     )
     parser.add_argument(

@@ -14,12 +14,15 @@ already have their own coverage in ``test_generate.py``. We check:
 1. Invoking ``main()`` with explicit paths produces Python + TS + JSON
    artifacts identical to calling the three generators directly (i.e.
    the wrapper does not reorder arguments or drop calls).
-2. ``main()`` defaults its paths from the project layout when called
-   with no arguments, so the module-as-script invocation used by the
-   Taskfile / CI works without environment setup.
-3. Running the script as a module via ``python -m scripts.generate_all``
+2. Running the script as a module via ``python -m scripts.generate_all``
    exits zero and writes all three artifact families — the end-to-end
    path the Taskfile and CI workflow actually execute.
+
+The zero-argument / default-path branch of ``main()`` is exercised
+transitively whenever ``task errors:check`` regenerates artifacts
+against the real ``errors.yaml`` and byte-compares them; duplicating
+that in this file would require spinning up a temp repo layout and
+adds no signal over what the drift check already provides.
 """
 
 from __future__ import annotations
