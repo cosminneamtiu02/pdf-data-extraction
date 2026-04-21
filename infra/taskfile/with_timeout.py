@@ -162,7 +162,16 @@ def _terminate_process_tree(proc: subprocess.Popen[bytes]) -> None:
     after a short grace window if the process hasn't exited. The grace
     window is intentionally short (5 s) so CI doesn't stall beyond the
     user-declared deadline by more than a small constant.
+
+    Short-circuit if the child has already exited. POSIX PIDs can be
+    reused after a process reaps, so calling `os.killpg(proc.pid, ...)`
+    once the original child is gone could signal a completely unrelated
+    process group — e.g. a sibling `task` run that happened to be
+    assigned the recycled PID. Checking `proc.poll()` first guarantees
+    we only signal while our own child is still running.
     """
+    if proc.poll() is not None:
+        return
     grace_seconds = 5
     if os.name == "posix":
         try:

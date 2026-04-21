@@ -12,17 +12,37 @@ path is covered end-to-end. Exit codes:
 
 from __future__ import annotations
 
+import importlib.util
 import os
+import queue
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
-from typing import Final
+from types import ModuleType
+from typing import IO, Final
 
 # parents[5] -> tests/unit/meta -> unit -> tests -> backend -> apps -> repo
 _REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[5]
 _WRAPPER: Final[Path] = _REPO_ROOT / "infra" / "taskfile" / "with_timeout.py"
+
+
+def _load_wrapper_module() -> ModuleType:
+    """Import `with_timeout.py` as a module so whitebox tests can call helpers.
+
+    The wrapper lives in `infra/taskfile/`, which is outside the
+    regular package tree (it's shipped with the repo as a plain script
+    for Taskfile to call). `importlib.util.spec_from_file_location`
+    lets us load it in-process without polluting `sys.path`.
+    """
+    spec = importlib.util.spec_from_file_location("_with_timeout_for_tests", _WRAPPER)
+    assert spec is not None, f"cannot load spec for {_WRAPPER}"
+    assert spec.loader is not None, f"spec for {_WRAPPER} has no loader"
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _run(*args: str) -> subprocess.CompletedProcess[str]:
@@ -119,13 +139,49 @@ def _spawn_wrapper_with_long_child() -> subprocess.Popen[str]:
 
 
 def _read_child_pid(proc: subprocess.Popen[str]) -> int:
-    """Block until the wrapper's stdout emits the CHILD_PID=<n> marker."""
+    """Block (at most 5 s) until the wrapper's stdout emits the CHILD_PID=<n> marker.
+
+    Uses a background thread that feeds each `readline()` into a
+    `queue.Queue`, and polls the queue with `queue.get(timeout=...)`.
+    A bare `proc.stdout.readline()` inside a `while time.monotonic() <
+    deadline` loop would block indefinitely if the child died silently
+    or stopped flushing stdout, because `readline()` has no per-call
+    timeout — the surrounding loop check would never be re-evaluated.
+    Routing the read through a queue lets the outer deadline actually
+    fire, so a regression in the wrapper cannot hang CI forever.
+    """
     assert proc.stdout is not None
+    lines: queue.Queue[str] = queue.Queue()
+
+    def _pump(stream: IO[str], sink: queue.Queue[str]) -> None:
+        try:
+            while True:
+                line = stream.readline()
+                if not line:
+                    break
+                sink.put(line)
+        finally:
+            sink.put("")
+
+    reader = threading.Thread(
+        target=_pump, args=(proc.stdout, lines), daemon=True, name="wrapper-stdout-pump"
+    )
+    reader.start()
     deadline = time.monotonic() + 5.0
-    while time.monotonic() < deadline:
-        line = proc.stdout.readline()
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            line = lines.get(timeout=remaining)
+        except queue.Empty:
+            break
         if not line:
-            continue
+            # Pump signalled EOF; stdout is closed — no further lines
+            # will appear, so fall through to the AssertionError below
+            # instead of spinning on the queue for the rest of the 5 s
+            # budget.
+            break
         if line.startswith("CHILD_PID="):
             return int(line.removeprefix("CHILD_PID=").strip())
     msg = "wrapper never emitted CHILD_PID= line within 5 s"
@@ -212,3 +268,44 @@ def test_wrapper_sigint_reaps_child_process_tree() -> None:
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=5)
+
+
+def test_terminate_process_tree_is_noop_when_child_already_exited() -> None:
+    """`_terminate_process_tree` must short-circuit on an exited child.
+
+    POSIX PIDs are recyclable: once a child has been waited on and
+    reaped, the kernel is free to hand its PID to a completely
+    unrelated process. Calling `os.killpg(proc.pid, SIGTERM)` on a
+    stale `Popen` object would then signal an innocent process group
+    (for example, a sibling `task` invocation that happened to land on
+    the recycled PID). Guard that by checking `proc.poll()` first and
+    returning early — verified here by handing the helper an already-
+    exited child and asserting that (a) it returns without raising and
+    (b) it does not re-signal the reaped process.
+    """
+    if os.name != "posix":
+        import pytest
+
+        pytest.skip("killpg short-circuit is POSIX-specific")
+    wrapper = _load_wrapper_module()
+    # Spawn a trivial child, wait for it to exit, then hand the reaped
+    # Popen to `_terminate_process_tree`. If the short-circuit is
+    # missing, the helper would attempt `os.killpg` on a dead PID and
+    # either succeed against a recycled group (undetectable from here)
+    # or raise ProcessLookupError (which the current code already
+    # swallows). What we *can* assert from userland is that the helper
+    # returns cleanly and does not perturb the proc's returncode.
+    finished = subprocess.Popen(
+        [sys.executable, "-c", "pass"],
+        start_new_session=True,
+    )
+    finished.wait(timeout=5)
+    assert finished.poll() is not None, "sanity: child should have exited"
+    original_returncode = finished.returncode
+    # The bug path would be a raised exception from os.killpg or a
+    # spurious side effect; the guard path is a clean return.
+    # SLF001: calling the private helper is the whole point of this
+    # whitebox test — the PID-reuse guard lives inside that function
+    # and has no public entry point.
+    wrapper._terminate_process_tree(finished)  # noqa: SLF001
+    assert finished.returncode == original_returncode

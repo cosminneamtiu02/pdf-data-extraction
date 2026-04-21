@@ -97,11 +97,37 @@ def _shell_cmds(task_def: dict[str, Any]) -> list[str]:
         if isinstance(entry, str):
             shell.append(entry)
         elif isinstance(entry, dict):
+            # Independent checks: a single mapping can legally carry
+            # both `cmd:` and `defer:` (the deferred command runs after
+            # the main one). Using `elif` here would silently drop the
+            # `defer:` payload and let it bypass the timeout-marker
+            # guardrails below.
             if "cmd" in entry:
                 shell.append(str(entry["cmd"]))
-            elif "defer" in entry:
+            if "defer" in entry:
                 shell.append(str(entry["defer"]))
     return shell
+
+
+def test_shell_cmds_includes_both_cmd_and_defer_when_both_present() -> None:
+    """A mapping entry with both `cmd:` and `defer:` must yield both payloads.
+
+    go-task's schema lets a single `cmds:` entry declare a main `cmd:`
+    together with a `defer:` that runs after the task finishes. An
+    `elif` branch in `_shell_cmds` would silently drop the `defer:`
+    leg, letting a deferred shell command bypass the timeout-marker
+    guardrail in `test_every_long_running_task_wraps_shell_cmds_with_timeout`.
+    Pin the "both present -> both returned" behaviour so the regression
+    cannot sneak back in.
+    """
+    task_def: dict[str, Any] = {
+        "cmds": [
+            {"cmd": "main-command.sh", "defer": "cleanup-command.sh"},
+        ],
+    }
+    extracted = _shell_cmds(task_def)
+    assert "main-command.sh" in extracted, extracted
+    assert "cleanup-command.sh" in extracted, extracted
 
 
 def test_timeout_wrapper_script_exists() -> None:
