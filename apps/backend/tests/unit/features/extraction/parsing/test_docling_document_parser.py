@@ -1159,3 +1159,96 @@ def test_iter_text_items_falls_back_to_texts_when_iterate_items_missing() -> Non
     items = list(adapter.iter_text_items())
 
     assert [item.text for item in items] == ["legacy"]
+
+
+# ---------------------------------------------------------------------------
+# Reading-order fallback: surface shape drift instead of silently truncating
+# (regression for GH issue #341)
+#
+# The `_iter_reading_order` fallback used to do
+# `yield from getattr(self._docling_document, "texts", None) or []`, which
+# silently yielded nothing whenever `.texts` was missing OR non-iterable
+# (e.g., an int, a string, a method object). A Docling version change that
+# renamed `.texts` or mutated its shape would then produce empty reading-
+# order output with no error and no log — "Docling shape broken" would
+# surface downstream as the misleading `PdfNoTextExtractableError`. The
+# adapter must raise a structured `PdfParserUnavailableError` instead so
+# operators see the drift at the true failure site.
+# ---------------------------------------------------------------------------
+
+
+def test_iter_text_items_raises_when_iterate_items_missing_and_texts_absent() -> None:
+    """Issue #341: if neither `iterate_items` nor `.texts` is available, the
+    adapter must raise `PdfParserUnavailableError(dependency='docling')`
+    instead of silently yielding zero items and letting the parser
+    misattribute the failure to the PDF.
+    """
+    from app.exceptions import PdfParserUnavailableError
+
+    @dataclass
+    class _ShapeBrokenDoclingDocument:
+        # No `iterate_items`, no `.texts` — simulates a future Docling shape
+        # change that the adapter does not understand.
+        pages: dict[int, _FakeDoclingPageItem]
+
+    raw_doc = _ShapeBrokenDoclingDocument(
+        pages={1: _FakeDoclingPageItem(size=_FakeDoclingPageSize(height=1000.0))},
+    )
+    adapter = RealDoclingDocumentAdapter(raw_doc)
+
+    with pytest.raises(PdfParserUnavailableError) as excinfo:
+        list(adapter.iter_text_items())
+
+    assert excinfo.value.params is not None
+    assert excinfo.value.params.model_dump() == {"dependency": "docling"}
+
+
+def test_iter_text_items_raises_when_iterate_items_missing_and_texts_non_iterable() -> None:
+    """Issue #341: a `.texts` attribute whose value is not iterable (e.g., an
+    integer, a method object, or any other scalar from a Docling shape
+    change) must surface as `PdfParserUnavailableError` instead of silently
+    truncating the reading-order stream.
+    """
+    from app.exceptions import PdfParserUnavailableError
+
+    @dataclass
+    class _NonIterableTextsDoclingDocument:
+        # `.texts` is a scalar — cannot be iterated. Mimics a Docling rename
+        # that turns `.texts` into a count/length or a method accessor.
+        texts: int
+        pages: dict[int, _FakeDoclingPageItem]
+
+    raw_doc = _NonIterableTextsDoclingDocument(
+        texts=42,
+        pages={1: _FakeDoclingPageItem(size=_FakeDoclingPageSize(height=1000.0))},
+    )
+    adapter = RealDoclingDocumentAdapter(raw_doc)
+
+    with pytest.raises(PdfParserUnavailableError) as excinfo:
+        list(adapter.iter_text_items())
+
+    assert excinfo.value.params is not None
+    assert excinfo.value.params.model_dump() == {"dependency": "docling"}
+
+
+def test_iter_text_items_fallback_accepts_empty_iterable_texts() -> None:
+    """Issue #341 boundary: the "surface shape drift" guard must NOT misfire
+    on a legitimately empty `.texts` sequence. An empty list/tuple is a
+    valid shape — the document simply has no text items — and must return
+    no items rather than raising.
+    """
+
+    @dataclass
+    class _EmptyLegacyDoclingDocument:
+        texts: list[_FakeDoclingTextNode]
+        pages: dict[int, _FakeDoclingPageItem]
+
+    raw_doc = _EmptyLegacyDoclingDocument(
+        texts=[],
+        pages={1: _FakeDoclingPageItem(size=_FakeDoclingPageSize(height=1000.0))},
+    )
+    adapter = RealDoclingDocumentAdapter(raw_doc)
+
+    items = list(adapter.iter_text_items())
+
+    assert items == []

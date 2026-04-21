@@ -18,12 +18,17 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+import structlog
+
+from app.exceptions import PdfParserUnavailableError
 from app.features.extraction.parsing._flat_docling_text_item import FlatDoclingTextItem
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
     from app.features.extraction.parsing._docling_text_item_like import DoclingTextItemLike
+
+_log = structlog.get_logger(__name__)
 
 
 class RealDoclingDocumentAdapter:
@@ -119,6 +124,16 @@ class RealDoclingDocumentAdapter:
         fallback is imperfect on multi-column layouts but keeps the adapter
         robust against shape drift. Real Docling-produced documents always
         expose ``iterate_items()``.
+
+        If neither ``iterate_items()`` nor an iterable ``.texts`` is
+        available — a Docling shape change that the adapter does not
+        understand — the method raises ``PdfParserUnavailableError`` with
+        ``dependency='docling'`` so operators see the drift at the true
+        failure site. An earlier revision returned ``[]`` in that case
+        (``getattr(..., "texts", None) or []``), which silently truncated
+        the reading-order stream and let the parser misattribute the
+        failure to the PDF (surfacing as ``PDF_NO_TEXT_EXTRACTABLE``).
+        Issue #341.
         """
         iterate_items: Any = getattr(self._docling_document, "iterate_items", None)
         if callable(iterate_items):
@@ -127,7 +142,28 @@ class RealDoclingDocumentAdapter:
                 item: Any = pair[0]
                 yield item
             return
-        yield from getattr(self._docling_document, "texts", None) or []
+        # Fallback path: `.texts` must be present AND iterable. An empty
+        # iterable is fine (legitimately empty document); a missing attr or
+        # a scalar value signals a Docling shape change.
+        sentinel = object()
+        texts: Any = getattr(self._docling_document, "texts", sentinel)
+        if texts is sentinel or not hasattr(texts, "__iter__"):
+            document_type: str = type(self._docling_document).__name__
+            texts_type: str = "<missing>" if texts is sentinel else type(texts).__name__
+            _log.error(
+                "docling_shape_unrecognized",
+                document_type=document_type,
+                has_iterate_items=False,
+                has_texts=texts is not sentinel,
+                texts_type=texts_type,
+                detail=(
+                    "DoclingDocument exposes neither a callable `iterate_items` "
+                    "nor an iterable `.texts` attribute. This indicates Docling "
+                    "shape drift; the adapter cannot surface any text items."
+                ),
+            )
+            raise PdfParserUnavailableError(dependency="docling")
+        yield from texts
 
 
 __all__ = ["RealDoclingDocumentAdapter"]
