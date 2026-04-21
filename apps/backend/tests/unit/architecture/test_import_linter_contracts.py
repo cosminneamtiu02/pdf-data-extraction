@@ -14,15 +14,18 @@ in `test_contract_enforcement.py`, and the live subprocess runs live in
 
 from __future__ import annotations
 
+import ast
 import configparser
 import re
+from pathlib import Path
 
 import pytest
 import yaml
 
-from ._linter_subprocess import REAL_CONTRACTS_PATH, REPO_ROOT
+from ._linter_subprocess import BACKEND_DIR, REAL_CONTRACTS_PATH, REPO_ROOT
 
 _TASKFILE_PATH = REPO_ROOT / "Taskfile.yml"
+_APP_ROOT: Path = BACKEND_DIR / "app"
 
 
 # The stable keyword each contract section must advertise in its section name,
@@ -225,6 +228,425 @@ def test_third_party_containment_contracts_alert_on_unmatched_ignores(
         "carve-outs surface as warnings instead of silently shrinking "
         f"enforcement. Offenders: {offenders}"
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Third-party containment: ignore-list entries must actually import the
+# contained package (issue #394).
+#
+# `ignore_imports` on C3/C4/C5/C6 is a carve-out list saying "these
+# specific files are allowed to import the forbidden third-party module."
+# An entry that references a file which does NOT import the module is
+# dead: it carves out a reference that does not exist. Today
+# `unmatched_ignore_imports_alerting = warn` only produces a warning on
+# `lint-imports` runs — and a warning is easy to miss in CI logs, and
+# worse, the dead entry would silently re-activate if the file later
+# starts importing the contained package for unrelated reasons (the
+# ignore would pre-authorize an import the linter would otherwise
+# forbid, defeating containment).
+#
+# The scanner treats BOTH static imports (`import docling` /
+# `from docling.X import Y`) AND dynamic imports
+# (`importlib.import_module("docling")` / `__import__("docling")` /
+# `importlib.util.find_spec("docling")`) as references, because every
+# containment file in this repo today uses lazy `importlib.import_module`
+# to defer the heavy third-party import off the cold start path. The
+# `ignore_imports` carve-outs are written proactively against those lazy
+# imports so the contract stays green when a future refactor switches
+# to static imports. A pure static-import check would false-fail every
+# live entry today.
+# ─────────────────────────────────────────────────────────────────────────
+
+# Section-keyword tokens that identify third-party containment contracts.
+# Mirrors the `_CONTAINED_PACKAGES` map in `test_dynamic_import_containment.py`,
+# but keyed by contract-id keyword (not package name) because this test walks
+# the INI file section-by-section. The *target* module in each ignore-imports
+# line is what gets validated against the corresponding file — NOT a
+# per-contract package tuple — so a carve-out like ``pdf_annotator -> fitz``
+# fails the dead-entry check when the file only references ``pymupdf``, even
+# though both names are aliases of the same library. Checking against the
+# specific target matches the reviewer-requested semantics on PR #443: dead
+# entries stay dead regardless of whether an alias is "close enough".
+_THIRD_PARTY_CONTRACT_KEYWORDS: frozenset[str] = frozenset(
+    {"docling", "pymupdf", "langextract", "httpx"},
+)
+
+
+def _parse_ignore_imports(raw: str) -> list[tuple[str, str]]:
+    """Parse a multi-line `ignore_imports` value into (source, target) pairs.
+
+    The INI value is a newline-separated list of ``source -> target`` lines.
+    configparser gives us the flattened text (with embedded newlines), so we
+    split on newlines and then on the literal ``->`` arrow. Whitespace
+    around both sides is stripped. Blank lines and ``#`` comment lines are
+    skipped.
+
+    A non-empty, non-comment line that does not contain ``->`` is a typo in
+    the INI (a missing arrow makes the line unparseable as an ignore entry).
+    Since this helper feeds a contract-enforcement test, silently skipping a
+    malformed line would let the test pass while the INI is wrong — the
+    exact failure mode issue #394 exists to prevent on the containment
+    side. Treat any such line as a hard error so the typo surfaces loudly.
+    """
+    pairs: list[tuple[str, str]] = []
+    for raw_line in raw.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "->" not in line:
+            msg = (
+                f"malformed `ignore_imports` line: {line!r}. Each non-blank, "
+                "non-comment line must be `source -> target`."
+            )
+            raise AssertionError(msg)
+        left, right = line.split("->", 1)
+        pairs.append((left.strip(), right.strip()))
+    return pairs
+
+
+def _module_path_for(module_dotted: str) -> Path:
+    """Resolve a ``app.features.extraction.parsing.foo`` dotted name to a file path.
+
+    ``app`` maps to ``apps/backend/app/`` (see `_APP_ROOT`). Every segment after
+    the ``app`` prefix becomes a directory component, with the final segment
+    being the ``.py`` file. Returns the resolved file path even if it does not
+    exist — the caller is responsible for checking existence and failing with
+    a clear error message.
+    """
+    if not module_dotted.startswith("app."):
+        msg = f"unexpected module prefix for ignore-imports source: {module_dotted!r}"
+        raise ValueError(msg)
+    remainder = module_dotted[len("app.") :]
+    parts = remainder.split(".")
+    return _APP_ROOT.joinpath(*parts[:-1], f"{parts[-1]}.py")
+
+
+_DYNAMIC_IMPORT_CALLABLE_NAMES: frozenset[str] = frozenset(
+    {"import_module", "find_spec", "__import__"},
+)
+
+
+def _is_dynamic_import_call(func: ast.expr) -> bool:
+    """Return True iff `func` names a dynamic-import callable.
+
+    Matches both the attribute forms (``importlib.import_module(...)``,
+    ``importlib.util.find_spec(...)``) and the bare-name forms
+    (``import_module(...)``, ``__import__(...)``, ``find_spec(...)``)
+    without tracking import aliases, because this helper is intentionally
+    permissive — the question is "does this file reference the package
+    through ANY plausible import mechanism," not "is this a properly-guarded
+    containment point" (the latter is the job of
+    `test_dynamic_import_containment.py`). A false positive here would only
+    matter if a file binds a different callable to a name like
+    `import_module`, which is vanishingly unlikely in production code.
+    """
+    if isinstance(func, ast.Attribute):
+        return func.attr in _DYNAMIC_IMPORT_CALLABLE_NAMES
+    if isinstance(func, ast.Name):
+        return func.id in _DYNAMIC_IMPORT_CALLABLE_NAMES
+    return False
+
+
+def _first_string_arg(node: ast.Call) -> str | None:
+    """Return the first positional or ``name=`` kwarg as a string literal, else None.
+
+    Mirrors the keyword-fallback logic from
+    ``_collect_dynamic_import_targets`` in `test_dynamic_import_containment.py`
+    — ``importlib.import_module(name="docling")`` and
+    ``importlib.util.find_spec(name="docling")`` are both canonical and must
+    not silently evade the gate.
+    """
+    arg: ast.expr | None = None
+    if node.args:
+        arg = node.args[0]
+    else:
+        for kw in node.keywords:
+            if kw.arg == "name":
+                arg = kw.value
+                break
+    if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+        return arg.value
+    return None
+
+
+def _target_matches_any_package(target: str, packages: tuple[str, ...]) -> bool:
+    """Return True iff `target` equals any package or is a submodule of one.
+
+    Matches `pkg` itself and any `pkg.X.Y` dotted child, but not lookalike
+    names like `pkgish`. Same rule as ``_target_matches_package`` in
+    `test_dynamic_import_containment.py`.
+    """
+    return any(target == pkg or target.startswith(pkg + ".") for pkg in packages)
+
+
+def _module_references_package(source: str, packages: tuple[str, ...]) -> bool:
+    """Return True iff `source` statically or dynamically references any package.
+
+    Walks the parsed AST once and checks:
+      - ``import <pkg>`` / ``import <pkg>.X`` (static).
+      - ``from <pkg>[.X] import ...`` (static).
+      - ``importlib.import_module("<pkg>[.X]")`` / ``__import__("<pkg>[.X]")``
+        / ``importlib.util.find_spec("<pkg>[.X]")`` (dynamic, string literal).
+
+    A dotted target like ``"docling.datamodel.base_models"`` matches
+    ``"docling"`` via prefix boundary (same rule as
+    `_target_matches_package` in `test_dynamic_import_containment.py`).
+
+    We reimplement the minimal AST walk here (rather than import from
+    `test_dynamic_import_containment`) because that module's helpers target a
+    different use case (narrow false-positive filtering for the containment
+    gate) and importing across test modules creates a coupling this test does
+    not need — we want to accept any plausible reference to the package,
+    including module-scope dynamic imports without alias tracking, because
+    the question here is "is this entry doing SOMETHING with the package?"
+    not "is this a properly-guarded containment point?"
+    """
+    tree = ast.parse(source)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            if any(_target_matches_any_package(alias.name, packages) for alias in node.names):
+                return True
+        elif (
+            isinstance(node, ast.ImportFrom)
+            and node.module is not None
+            and node.level == 0
+            and _target_matches_any_package(node.module, packages)
+        ):
+            return True
+        elif isinstance(node, ast.Call) and _is_dynamic_import_call(node.func):
+            arg_value = _first_string_arg(node)
+            if arg_value is not None and _target_matches_any_package(arg_value, packages):
+                return True
+    return False
+
+
+def _collect_third_party_ignore_entries(
+    contracts_parser: configparser.ConfigParser,
+) -> list[tuple[str, str, str, str]]:
+    """Return (section, contract_keyword, source_module, target) for every ignore entry.
+
+    Walks every ``importlinter:contract:*`` section whose id contains one of
+    the third-party keywords (docling/pymupdf/langextract/httpx), parses its
+    ``ignore_imports`` multi-line value, and yields one tuple per
+    ``source -> target`` line.
+
+    The *target* side is returned (not a contract-wide package tuple) so the
+    dead-entry check in
+    ``test_third_party_ignore_list_entries_actually_reference_their_package``
+    can validate each carve-out against the specific module it names. This
+    matters for C4 (pymupdf/fitz), where the contract forbids two alias
+    names for the same library: a ``pdf_annotator -> fitz`` entry must be
+    backed by a ``fitz`` reference in the file — not a ``pymupdf`` one —
+    otherwise the ignore is dead and the reviewer's concern on PR #443
+    stands. A previous draft of this helper returned the contract's full
+    package tuple, which made ``pymupdf`` references satisfy ``fitz``
+    carve-outs (and vice versa) by accident.
+    """
+    entries: list[tuple[str, str, str, str]] = []
+    for section in contracts_parser.sections():
+        if not section.startswith("importlinter:contract:"):
+            continue
+        lowered = section.lower()
+        matched_keyword: str | None = next(
+            (kw for kw in _THIRD_PARTY_CONTRACT_KEYWORDS if kw in lowered),
+            None,
+        )
+        if matched_keyword is None:
+            continue
+        if not contracts_parser.has_option(section, "ignore_imports"):
+            continue
+        raw = contracts_parser.get(section, "ignore_imports")
+        for source_module, target in _parse_ignore_imports(raw):
+            entries.append((section, matched_keyword, source_module, target))
+    return entries
+
+
+def test_third_party_ignore_list_entries_actually_reference_their_package(
+    contracts_parser: configparser.ConfigParser,
+) -> None:
+    """Issue #394: every file listed in a C3-C6 `ignore_imports` entry must
+    actually reference the forbidden third-party package.
+
+    An ignore entry like
+    ``app.features.extraction.parsing._flat_docling_text_item -> docling`` is
+    "dead" if `_flat_docling_text_item.py` contains no static or dynamic
+    reference to the `docling` package. Dead entries silently mask future
+    regressions: `unmatched_ignore_imports_alerting = warn` only emits a
+    warning (easy to miss in CI logs), and if the file later starts
+    importing docling for any reason, the dead ignore pre-authorizes the
+    import the containment contract would otherwise forbid.
+
+    This test walks every third-party containment contract's `ignore_imports`
+    list and for each source module, reads the file and asserts it
+    references the forbidden package via at least one mechanism:
+      - static ``import <pkg>[.X]`` / ``from <pkg>[.X] import ...``
+      - dynamic ``importlib.import_module("<pkg>[.X]")`` /
+        ``__import__("<pkg>[.X]")`` /
+        ``importlib.util.find_spec("<pkg>[.X]")``
+
+    Both static and dynamic forms count because every containment file in
+    this repo today uses lazy `importlib.import_module` to defer the heavy
+    third-party import off the cold start path, and the carve-outs are
+    written proactively to stay green when a refactor switches to static
+    imports.
+    """
+    dead_entries: list[str] = []
+    missing_files: list[str] = []
+    for section, _keyword, source_module, target in _collect_third_party_ignore_entries(
+        contracts_parser
+    ):
+        file_path = _module_path_for(source_module)
+        if not file_path.exists():
+            missing_files.append(f"{section}: {source_module} -> {file_path} (file missing)")
+            continue
+        source = file_path.read_text(encoding="utf-8")
+        if not _module_references_package(source, (target,)):
+            dead_entries.append(
+                f"{section}: {source_module} -> {target} is in `ignore_imports` but the "
+                f"file contains no static or dynamic reference to `{target}`"
+            )
+
+    assert not missing_files, (
+        "`ignore_imports` entry references a module whose source file does not exist. "
+        "Either the file was deleted (remove the ignore) or the dotted name is wrong.\n"
+        + "\n".join(f"  - {m}" for m in missing_files)
+    )
+    assert not dead_entries, (
+        "Dead `ignore_imports` entries found: the file does not actually import the "
+        "contained package. Remove the ignore — leaving it in place silently masks "
+        "future regressions (a warning is not a gate, and the ignore would pre-"
+        "authorize any future import the containment contract would otherwise "
+        "forbid). See issue #394.\n" + "\n".join(f"  - {d}" for d in dead_entries)
+    )
+
+
+def test_dead_ignore_detector_catches_synthetic_non_importing_source() -> None:
+    """Regression: the `_module_references_package` predicate must reject a
+    file that does not reference the package.
+
+    Pairs with `test_third_party_ignore_list_entries_actually_reference_their_package`:
+    the filesystem walk could pass vacuously if `_module_references_package`
+    silently returns True for everything. This synthetic check asserts the
+    predicate correctly says "no reference" for a plain dataclass file like
+    `_flat_docling_text_item.py` (the exact shape that motivated issue #394).
+    If someone weakens the predicate, this test fails even though the
+    filesystem walk stays green.
+    """
+    plain_dataclass_source = (
+        "from __future__ import annotations\n"
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class FlatDoclingTextItem:\n"
+        "    text: str\n"
+        "    page_number: int\n"
+    )
+    assert not _module_references_package(plain_dataclass_source, ("docling",)), (
+        "predicate falsely claimed a plain dataclass source references `docling`; "
+        "dead-entry detection is broken"
+    )
+
+
+def test_dead_ignore_detector_accepts_static_and_dynamic_references() -> None:
+    """Regression: the predicate must fire on every supported import mechanism.
+
+    Covers the shapes used by real C3-C6 containment files today:
+      - static ``import docling``
+      - static ``from docling.X import Y``
+      - dynamic ``importlib.import_module("docling.X")``
+      - dynamic ``__import__("docling")``
+      - dynamic ``importlib.util.find_spec("docling")``
+
+    If the predicate regresses to (for example) only checking static imports,
+    every live C3 entry would fail the filesystem walk because all three C3
+    files use lazy `importlib.import_module`. This regression test catches
+    that class of predicate weakening.
+    """
+    # Static `import <pkg>`
+    assert _module_references_package("import docling\n", ("docling",))
+    # Static `from <pkg>.X import Y`
+    assert _module_references_package(
+        "from docling.datamodel.base_models import Something\n", ("docling",)
+    )
+    # Dynamic attribute form
+    assert _module_references_package(
+        'import importlib\nimportlib.import_module("docling.datamodel")\n', ("docling",)
+    )
+    # Dynamic builtin form
+    assert _module_references_package('__import__("docling")\n', ("docling",))
+    # Dynamic find_spec
+    assert _module_references_package(
+        'import importlib.util\nimportlib.util.find_spec("docling")\n', ("docling",)
+    )
+    # Negative control: reference to a different package must NOT match.
+    assert not _module_references_package("import pymupdf\n", ("docling",))
+
+
+def test_dead_ignore_detector_target_is_validated_per_entry_not_per_contract() -> None:
+    """Regression (PR #443 review): each ``source -> target`` entry must be
+    validated against THAT specific target, not the contract's package tuple.
+
+    Before the fix, C4 treated ``pymupdf`` and ``fitz`` as interchangeable
+    — a file that imported ``pymupdf`` was accepted as evidence that a
+    ``-> fitz`` carve-out was live. That masks dead alias entries. This
+    synthetic check pins the tightened semantics by asserting the predicate
+    correctly rejects a ``pymupdf``-only source when asked whether it
+    references ``fitz`` (and vice versa).
+    """
+    pymupdf_only_source = "import pymupdf\nrect = pymupdf.Rect(0, 0, 1, 1)\n"
+    # A file that imports only `pymupdf` does NOT satisfy a `-> fitz` carve-out.
+    assert not _module_references_package(pymupdf_only_source, ("fitz",)), (
+        "predicate falsely claimed a `pymupdf`-only source references `fitz`; "
+        "per-target dead-entry detection is broken"
+    )
+    # Symmetric check: a `fitz`-only source does NOT satisfy a `-> pymupdf` carve-out.
+    fitz_only_source = "import fitz\nrect = fitz.Rect(0, 0, 1, 1)\n"
+    assert not _module_references_package(fitz_only_source, ("pymupdf",)), (
+        "predicate falsely claimed a `fitz`-only source references `pymupdf`; "
+        "per-target dead-entry detection is broken"
+    )
+
+
+def test_parse_ignore_imports_rejects_malformed_lines_without_arrow() -> None:
+    """Regression (PR #443 review): a non-empty, non-comment line without
+    ``->`` is a typo in ``ignore_imports`` and must raise, not be silently
+    skipped.
+
+    A contract-enforcement test that silently drops malformed lines risks
+    letting a typo in ``ignore_imports`` pass unnoticed — the same class of
+    failure mode issue #394 addresses on the containment side. This test
+    pins the loud-fail behaviour so a future refactor cannot regress to
+    silent skip.
+    """
+    malformed_ini_value = (
+        "app.features.extraction.parsing.foo -> docling\n"
+        "app.features.extraction.parsing.bar_missing_arrow_docling\n"
+    )
+    with pytest.raises(AssertionError, match="malformed `ignore_imports` line"):
+        _parse_ignore_imports(malformed_ini_value)
+
+
+def test_parse_ignore_imports_skips_blank_and_comment_lines() -> None:
+    """Regression: blank lines and ``#`` comments must still be tolerated.
+
+    Pairs with ``test_parse_ignore_imports_rejects_malformed_lines_without_arrow``
+    to pin the asymmetry: malformed content lines are loud, but blanks and
+    comment lines are structural noise and stay silent skips.
+    """
+    ini_value = (
+        "\n"
+        "# a rationale comment block\n"
+        "app.features.extraction.parsing.foo -> docling\n"
+        "\n"
+        "    # indented comment also tolerated\n"
+        "app.features.extraction.parsing.bar -> docling\n"
+    )
+    pairs = _parse_ignore_imports(ini_value)
+    assert pairs == [
+        ("app.features.extraction.parsing.foo", "docling"),
+        ("app.features.extraction.parsing.bar", "docling"),
+    ]
 
 
 def test_taskfile_wires_lint_imports_into_task_check() -> None:
