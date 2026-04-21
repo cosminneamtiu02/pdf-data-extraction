@@ -74,10 +74,17 @@ tasks:
       - task: test:contract
 
   test:unit:
-    desc: Run unit tests
+    desc: Run unit tests with coverage gate (--cov-fail-under pins issue #358 wiring)
     dir: "{{.BACKEND_DIR}}"
     cmds:
-      - uv run pytest tests/unit/ -v
+      # Coverage wiring (issue #358): `--cov=app` hooks pytest-cov into the
+      # run so the `[tool.coverage.report] fail_under = 80` gate in
+      # pyproject.toml actually fires. `--cov-fail-under=80` restates the
+      # same threshold at the call site so a future refactor of pyproject
+      # cannot silently drop the gate. `--cov-report=term-missing` surfaces
+      # uncovered lines in the local loop; `--cov-report=xml` emits
+      # `coverage.xml` for CI artifact upload (gitignored locally).
+      - uv run pytest tests/unit/ -v --cov=app --cov-report=term-missing --cov-report=xml --cov-fail-under=80
 
   test:integration:
     desc: Run integration tests (in-process ASGI; no external services)
