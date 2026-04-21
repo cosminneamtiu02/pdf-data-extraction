@@ -1114,6 +1114,13 @@ async def test_cancelled_error_emits_extraction_cancelled_event_and_reraises() -
     assert len(cancelled_events) == 1, (
         f"Expected exactly one extraction_cancelled event; got {captured!r}"
     )
+    # Pin the structured context fields the PR relies on for operability.
+    # These keys drive on-call triage dashboards; silent renames/drops
+    # would degrade the fix without failing any other test (#439 review).
+    cancelled_event = cancelled_events[0]
+    assert cancelled_event["skill_name"] == "invoice"
+    assert cancelled_event["skill_version"] == "1"
+    assert isinstance(cancelled_event["duration_ms"], int)
     # Must NOT masquerade as the timeout event.
     timeout_events = [e for e in captured if e["event"] == "extraction_timeout"]
     assert timeout_events == []
@@ -1142,7 +1149,14 @@ async def test_timeout_emits_extraction_timeout_event_with_budget_seconds() -> N
     assert len(timeout_events) == 1, (
         f"Expected exactly one extraction_timeout event; got {captured!r}"
     )
-    assert timeout_events[0]["budget_seconds"] == 0.05
+    # Pin the structured context fields the PR relies on for operability.
+    # These keys drive on-call triage dashboards; silent renames/drops
+    # would degrade the fix without failing any other test (#439 review).
+    timeout_event = timeout_events[0]
+    assert timeout_event["skill_name"] == "invoice"
+    assert timeout_event["skill_version"] == "1"
+    assert timeout_event["budget_seconds"] == 0.05
+    assert isinstance(timeout_event["duration_ms"], int)
     # Must NOT masquerade as the cancellation event.
     cancelled_events = [e for e in captured if e["event"] == "extraction_cancelled"]
     assert cancelled_events == []
