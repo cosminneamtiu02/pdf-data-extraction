@@ -468,9 +468,12 @@ def test_main_invalid_env_var_writes_error_to_injected_err_not_process_stderr(
     assert "BENCH_ITERATIONS" in err_text or "iterations" in err_text.lower()
 
     # No leakage to process-global stderr — the whole point of the err kwarg.
+    # ``BENCH_ITERATIONS`` is the operator-facing token unique to this failure
+    # path (pydantic-settings surfaces it verbatim), so checking it alone is
+    # specific enough; a broader ``"iterations"`` match would false-trip on
+    # any unrelated warning/log line that happens to use the word.
     captured = capsys.readouterr()
     assert "BENCH_ITERATIONS" not in captured.err
-    assert "iterations" not in captured.err.lower()
     assert fake_out.getvalue() == ""
 
 
@@ -493,8 +496,12 @@ def test_main_invalid_cli_flag_writes_error_to_injected_err_not_process_stderr(
     err_text = fake_err.getvalue()
     assert "--iterations" in err_text or "iterations" in err_text.lower()
 
+    # Guard against stream leakage using the operator-facing token
+    # ``--iterations`` rather than the bare word ``iterations`` — the bare
+    # word could appear in any unrelated stderr log line and false-trip the
+    # assertion even when the benchmark error correctly went to ``fake_err``.
     captured = capsys.readouterr()
-    assert "iterations" not in captured.err.lower()
+    assert "--iterations" not in captured.err
     assert fake_out.getvalue() == ""
 
 
