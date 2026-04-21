@@ -155,8 +155,14 @@ def _propagate_cancellation_to(proc: subprocess.Popen[bytes]) -> Iterator[None]:
         yield
     finally:
         for signum, previous in previous_handlers.items():
-            with contextlib.suppress(OSError, ValueError):
-                signal.signal(signum, previous)
+            # If `signal.signal` previously returned None (no Python handler
+            # was in effect), passing None back raises TypeError, which
+            # would crash this finally block and mask the wrapped command's
+            # exit code. Coerce to SIG_DFL in that case and keep TypeError
+            # in the suppress list as belt-and-suspenders.
+            restored = signal.SIG_DFL if previous is None else previous
+            with contextlib.suppress(OSError, ValueError, TypeError):
+                signal.signal(signum, restored)
 
 
 def _terminate_process_tree(proc: subprocess.Popen[bytes]) -> None:
@@ -204,7 +210,7 @@ def _terminate_process_tree(proc: subprocess.Popen[bytes]) -> None:
         pass
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: Union[list[str], None] = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     seconds, command = _parse_args(args)
     return _run_with_deadline(seconds, command)
