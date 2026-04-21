@@ -67,6 +67,41 @@ FROM ${PYTHON_IMAGE}
 # tini is a tiny (~10 KB) binary; apt's Debian-stable package is kept to
 # just the binary via `--no-install-recommends`, respecting the
 # #139 / #192 image-size budget.
+#
+# reproducibility-boundary:digest-only (issue #362)
+# -------------------------------------------------
+# The apt packages below are INTENTIONALLY not pinned to `pkg=version`
+# tuples. That means rebuilds are expected to pick up newer Debian
+# package versions over time, by design, when `apt-get update` reads
+# from the default moving apt repositories. This is how the image
+# receives Debian security fixes between base-image pin bumps.
+#
+# The `@sha256:…` digest on the `python:3.13-slim` base declared at the
+# top of this file pins the starting filesystem for both stages, but it
+# does NOT pin the apt repository snapshot consulted during
+# `apt-get update`. So an unchanged base-image digest does not
+# guarantee identical apt results or byte-for-byte identical layers
+# across rebuilds.
+#
+# Full reproducibility for these apt installs would require pointing
+# apt at a snapshot repository (for example `snapshot.debian.org` or
+# another dated mirror) and/or pinning exact package versions as
+# `pkg=version`. We intentionally do not do that here because the
+# desired policy is to keep apt packages floating for security updates.
+#
+# If a future contributor needs to pin a package as `pkg=version`
+# and/or switch to a snapshot apt repository, the correct sequence is:
+#   1. Explain the reproducibility/security tradeoff in the PR
+#      description (pins buy determinism at the cost of Debian
+#      security updates, and can become brittle as repositories rotate
+#      older builds).
+#   2. Update the `apps/backend/tests/unit/meta/`
+#      `test_dockerfile_apt_intentional_floating.py` guard rails to
+#      match the new policy.
+# Skipping any of those steps means the test below will fire. That is
+# the intended behavior — the marker string on the first line of this
+# block (`reproducibility-boundary:digest-only`) is the anchor the
+# test greps.
 RUN apt-get update \
     && apt-get install --no-install-recommends -y \
         tesseract-ocr \
