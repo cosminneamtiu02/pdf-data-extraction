@@ -367,7 +367,6 @@ def test_annotate_is_async_coroutine_function() -> None:
     assert inspect.iscoroutinefunction(PdfAnnotator.annotate)
 
 
-@pytest.mark.asyncio
 async def test_annotate_does_not_block_event_loop_during_pymupdf_work(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -147,7 +147,6 @@ def test_parser_satisfies_document_parser_protocol() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_parse_returns_parsed_document_with_page_count_and_nonempty_blocks() -> None:
     parser = DoclingDocumentParser(
         converter_factory=_make_factory(_two_page_document()), pdf_preflight=_noop_preflight
@@ -160,7 +159,6 @@ async def test_parse_returns_parsed_document_with_page_count_and_nonempty_blocks
     assert len(result.blocks) > 0
 
 
-@pytest.mark.asyncio
 async def test_every_block_has_valid_page_text_bbox_and_unique_id() -> None:
     parser = DoclingDocumentParser(
         converter_factory=_make_factory(_two_page_document()), pdf_preflight=_noop_preflight
@@ -177,7 +175,6 @@ async def test_every_block_has_valid_page_text_bbox_and_unique_id() -> None:
     assert len(set(block_ids)) == len(block_ids)
 
 
-@pytest.mark.asyncio
 async def test_block_ids_follow_p_page_b_index_format() -> None:
     parser = DoclingDocumentParser(
         converter_factory=_make_factory(_two_page_document()), pdf_preflight=_noop_preflight
@@ -189,7 +186,6 @@ async def test_block_ids_follow_p_page_b_index_format() -> None:
     assert {block.block_id for block in result.blocks} == expected
 
 
-@pytest.mark.asyncio
 async def test_reading_order_is_preserved_from_iter_text_items() -> None:
     parser = DoclingDocumentParser(
         converter_factory=_make_factory(_two_page_document()), pdf_preflight=_noop_preflight
@@ -200,7 +196,6 @@ async def test_reading_order_is_preserved_from_iter_text_items() -> None:
     assert [block.text for block in result.blocks] == ["hello", "world", "page two"]
 
 
-@pytest.mark.asyncio
 async def test_bounding_boxes_are_passed_through_without_coordinate_flip() -> None:
     """Adapter contract: items expose bottom-left-origin coords, parser trusts them."""
     parser = DoclingDocumentParser(
@@ -221,7 +216,6 @@ async def test_bounding_boxes_are_passed_through_without_coordinate_flip() -> No
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_docling_config_is_passed_to_converter_factory() -> None:
     captured: list[_RecordingFakeConverter] = []
     parser = DoclingDocumentParser(
@@ -236,7 +230,6 @@ async def test_docling_config_is_passed_to_converter_factory() -> None:
     assert captured[0].config is config
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("ocr", "table_mode"),
     [("auto", "fast"), ("force", "accurate"), ("off", "fast")],
@@ -258,7 +251,6 @@ async def test_distinct_configs_produce_distinct_factory_invocations(
     assert captured[0].config.table_mode == table_mode
 
 
-@pytest.mark.asyncio
 async def test_parser_is_stateless_across_sequential_calls() -> None:
     first_doc = _FakeDoclingDocument(
         _items=(
@@ -315,7 +307,6 @@ async def test_parser_is_stateless_across_sequential_calls() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_parse_does_not_block_event_loop_during_synchronous_convert() -> None:
     """If `asyncio.to_thread` is used, a parallel coroutine must make progress."""
 
@@ -354,7 +345,6 @@ async def test_parse_does_not_block_event_loop_during_synchronous_convert() -> N
     assert ticks >= 5
 
 
-@pytest.mark.asyncio
 async def test_parse_does_not_block_event_loop_during_converter_factory() -> None:
     """The converter factory (lazy Docling import + pipeline construction) is
     CPU-bound on cold start. It must be offloaded to a worker thread alongside
@@ -449,7 +439,6 @@ def test_docling_logger_level_is_raised_after_configure_logging() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_parser_does_not_wrap_converter_errors_as_domain_pdf_errors() -> None:
     """PDFX-E003-F004 owns PDF_* error codes; this parser must not preempt it."""
 
