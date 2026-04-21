@@ -86,6 +86,49 @@ _HTTP_SERVER_ERROR_MIN = 500
 # stall callers.
 _STALE_CLIENT_ACLOSE_TIMEOUT_SECONDS = 2.0
 
+# Ollama ``/api/generate`` ``options`` keys the provider is willing to forward
+# from caller-supplied kwargs on the ``infer()`` path (issue #385). LangExtract
+# passes whatever ``language_model_params`` dict the user hands to
+# ``lx.extract`` straight through to ``BaseLanguageModel.infer`` as ``**kwargs``;
+# before this allowlist the provider silently dropped every entry. Keeping the
+# list explicit (rather than forwarding ``**kwargs`` wholesale) means:
+#
+#   * only kwargs whose names appear in this allowlist can affect Ollama
+#     sampling; all other caller-supplied kwargs are ignored and logged at
+#     DEBUG rather than forwarded,
+#   * unknown / future Ollama options do not leak into the payload without a
+#     deliberate code change (and a matching test),
+#   * the ``generate()`` path is unaffected — it never receives caller kwargs,
+#     so the module-level ``_DEFAULT_SAMPLING_OPTIONS`` baseline (below)
+#     remains in force for validator retries.
+#
+# Sampling keys only (seed, temperature, top_p, top_k, num_ctx, num_predict,
+# repeat_penalty, mirostat family). Streaming / format / keep_alive / raw are
+# deliberately excluded: they are transport-shape concerns the provider owns,
+# not sampling concerns callers should override.
+_OLLAMA_SAMPLING_OPTION_KEYS: frozenset[str] = frozenset(
+    {
+        "temperature",
+        "top_p",
+        "top_k",
+        "seed",
+        "num_ctx",
+        "num_predict",
+        "repeat_penalty",
+        "mirostat",
+        "mirostat_tau",
+        "mirostat_eta",
+    },
+)
+
+# Default sampling options applied when the caller does not override them.
+# Pinning ``temperature=0`` keeps the validator-retry determinism contract from
+# issue #136 intact for callers (including the ``generate()`` path and plain
+# ``infer()`` with no kwargs). This is a module-level constant, not a
+# ``Settings``-backed field — operators who need to change the baseline do so
+# here, not via env var. Caller overrides win — see ``_merge_sampling_options``.
+_DEFAULT_SAMPLING_OPTIONS: dict[str, Any] = {"temperature": 0}
+
 
 def _build_generate_url(base_url: str) -> str:
     return f"{base_url.rstrip('/')}/api/generate"
@@ -95,21 +138,62 @@ def build_tags_url(base_url: str) -> str:
     return f"{base_url.rstrip('/')}/api/tags"
 
 
-def _build_payload(model: str, prompt: str) -> dict[str, Any]:
+def _merge_sampling_options(**kwargs: Any) -> tuple[dict[str, Any], list[str]]:
+    """Return the merged Ollama ``options`` dict plus the ignored-kwarg key list.
+
+    Splits the raw LangExtract-forwarded kwargs dict into two buckets:
+
+    * keys in ``_OLLAMA_SAMPLING_OPTION_KEYS`` whose value is not ``None``
+      are copied over the ``_DEFAULT_SAMPLING_OPTIONS`` baseline (caller
+      wins) and returned as the first element of the tuple. An allowlisted
+      key whose value IS ``None`` is treated as "not provided" — the
+      default is preserved rather than being clobbered with ``None``.
+      Forwarding ``null`` to Ollama would break the determinism contract
+      for ``temperature`` and risks a server-side 400 for keys Ollama
+      validates (e.g. ``seed``),
+    * keys NOT in the allowlist are collected into a list and returned as
+      the second element so the caller can log them for observability
+      (issue #385: operators need to see drift when LangExtract forwards
+      something new).
+
+    The default baseline is copied rather than mutated so concurrent
+    ``infer()`` calls do not race on a shared dict.
+    """
+    options: dict[str, Any] = dict(_DEFAULT_SAMPLING_OPTIONS)
+    ignored: list[str] = []
+    for key, value in kwargs.items():
+        if key in _OLLAMA_SAMPLING_OPTION_KEYS:
+            if value is not None:
+                options[key] = value
+        else:
+            ignored.append(key)
+    return options, ignored
+
+
+def _build_payload(
+    model: str,
+    prompt: str,
+    *,
+    sampling_options: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     # ``format="json"`` engages Ollama's native JSON-constrained decoding so the
     # server returns well-formed JSON on the first attempt instead of forcing
     # ``StructuredOutputValidator`` to re-prompt for parse errors on every
-    # request. ``options={"temperature": 0}`` pins deterministic sampling: same
-    # prompt -> same completion, so any validator retry repeats from a stable
-    # baseline rather than drifting between attempts. The validator still
-    # enforces our downstream schema shape, but it no longer pays the malformed-
-    # output retry cost on the happy path. See issue #136.
+    # request. ``options`` pins sampling parameters; without overrides it keeps
+    # the module-level ``_DEFAULT_SAMPLING_OPTIONS`` baseline (``temperature=0``
+    # from issue #136) so validator retries repeat from a stable baseline
+    # rather than drifting between attempts. When the caller supplies
+    # ``sampling_options`` (the ``infer()`` path on a LangExtract-forwarded
+    # kwarg — issue #385), those values replace the baseline per-key. The
+    # validator still enforces our downstream schema shape, but it no longer
+    # pays the malformed-output retry cost on the happy path.
+    options = sampling_options if sampling_options is not None else dict(_DEFAULT_SAMPLING_OPTIONS)
     return {
         "model": model,
         "prompt": prompt,
         "stream": False,
         "format": "json",
-        "options": {"temperature": 0},
+        "options": options,
     }
 
 
@@ -297,8 +381,11 @@ class OllamaGemmaProvider(BaseLanguageModel):
             except RuntimeError:
                 # Loop transitioned closed between the state checks and
                 # ``run_coroutine_threadsafe`` submit. Fall through to
-                # the current-loop best-effort branch below.
-                _logger.debug("stale_client_old_loop_raced_closed")
+                # the current-loop best-effort branch below. ``exc_info``
+                # surfaces the scheduler's own message (issue #335) so
+                # operators see the full teardown trail, not just the
+                # event name.
+                _logger.warning("stale_client_old_loop_raced_closed", exc_info=True)
             else:
                 try:
                     await asyncio.wait_for(
@@ -313,19 +400,41 @@ class OllamaGemmaProvider(BaseLanguageModel):
                     # remains on the old loop's queue; if that loop is
                     # subsequently closed its sockets go with it, and if
                     # it is later restarted the close runs harmlessly
-                    # against the already-detached client.
-                    _logger.debug("stale_client_old_loop_close_timed_out")
+                    # against the already-detached client. Logged at
+                    # ``warning`` (issue #335) because a bounded
+                    # teardown that hit its deadline is an operator
+                    # signal, not a debug note.
+                    _logger.warning("stale_client_old_loop_close_timed_out")
+                except Exception:  # noqa: BLE001 — best-effort teardown must not crash the rebuild; all failure modes are logged
+                    # ``aclose()`` itself raised inside the old loop
+                    # (bad socket, httpx internal error, etc.). The
+                    # scheduled coroutine propagates its exception
+                    # back through ``asyncio.wrap_future``. Before
+                    # issue #335 this fell through uncaught and
+                    # crashed the rebuild; the fix captures it as
+                    # best-effort with ``exc_info`` so the full
+                    # traceback reaches operators.
+                    _logger.warning("stale_client_aclose_failed", exc_info=True)
                 else:
                     return
         try:
             await old_client.aclose()
-        except RuntimeError as exc:
+        except Exception:  # noqa: BLE001 — best-effort teardown must not crash the rebuild; all failure modes are logged
             # Expected when the old client's transport was bound to a
-            # now-dead loop: httpcore raises `RuntimeError: Event loop is
-            # closed`. The sockets were reaped when the loop closed, so
-            # the leak window is already zero. Log for observability and
-            # continue — the fresh client on the current loop is valid.
-            _logger.debug("stale_client_aclose_skipped", error=str(exc))
+            # now-dead loop: httpcore raises ``RuntimeError: Event
+            # loop is closed``. Other failure modes (bad socket, httpx
+            # internal error) are also possible here — before issue
+            # #335 only ``RuntimeError`` was caught and the log was at
+            # ``debug`` with just ``error=str(exc)``, so operators
+            # running at the default ``WARNING`` level saw nothing. The
+            # fix widens the catch to ``Exception``, raises the level
+            # to ``warning``, and attaches ``exc_info=True`` so the
+            # full traceback renders into the ``exception`` field via
+            # structlog's ``format_exc_info`` processor. The sockets
+            # were reaped when the loop closed, so the leak window is
+            # already zero and we still do not re-raise — the fresh
+            # client on the current loop is valid.
+            _logger.warning("stale_client_aclose_failed", exc_info=True)
 
     async def generate(
         self,
@@ -341,6 +450,7 @@ class OllamaGemmaProvider(BaseLanguageModel):
         schema: dict[str, Any],
         *,
         client: httpx.AsyncClient,
+        sampling_options: dict[str, Any] | None = None,
     ) -> GenerationResult:
         """Shared validate-and-retry path for both ``generate()`` and ``infer()``.
 
@@ -348,11 +458,26 @@ class OllamaGemmaProvider(BaseLanguageModel):
         ``StructuredOutputValidator`` fence-strip + JSON-parse + retry loop
         against *schema*. Retries also route through the same *client* so
         connection-pool affinity is preserved within a single event loop.
+
+        ``sampling_options``, when provided, threads caller-supplied Ollama
+        ``options`` (temperature, top_p, seed, …) into the payload so
+        LangExtract-forwarded kwargs on the ``infer()`` path are honored
+        (issue #385). Retries reuse the same options dict so every
+        regeneration samples under the caller's requested parameters rather
+        than drifting back to defaults on retry.
         """
-        raw_text = await self._raw_generate(prompt, client=client)
+        raw_text = await self._raw_generate(
+            prompt,
+            client=client,
+            sampling_options=sampling_options,
+        )
 
         async def _regenerate(correction_prompt: str) -> str:
-            return await self._raw_generate(correction_prompt, client=client)
+            return await self._raw_generate(
+                correction_prompt,
+                client=client,
+                sampling_options=sampling_options,
+            )
 
         return await self._validator.validate_and_retry(
             raw_text,
@@ -366,6 +491,7 @@ class OllamaGemmaProvider(BaseLanguageModel):
         prompt: str,
         *,
         client: httpx.AsyncClient,
+        sampling_options: dict[str, Any] | None = None,
     ) -> str:
         # ``client`` is required (not defaulted to ``self.http_client``) so any
         # caller is forced to go through ``_get_http_client()`` for loop-bound
@@ -373,7 +499,12 @@ class OllamaGemmaProvider(BaseLanguageModel):
         # rebuild-on-loop-switch logic and was a foot-gun for any new caller
         # that forgot to call ``_get_http_client()`` first — Pyright strict
         # now surfaces the mistake at author time (issue #277).
-        payload = _build_payload(self._model, prompt)
+        # ``sampling_options`` is threaded through from ``infer()`` so
+        # LangExtract-forwarded sampling kwargs land in the Ollama payload
+        # (issue #385). When ``None`` (the ``generate()`` path), ``_build_payload``
+        # falls back to the module-level default sampling options, including
+        # ``temperature=0``.
+        payload = _build_payload(self._model, prompt, sampling_options=sampling_options)
         try:
             response = await client.post(self._generate_url, json=payload)
             response.raise_for_status()
@@ -440,11 +571,36 @@ class OllamaGemmaProvider(BaseLanguageModel):
         body = cast("dict[str, Any]", decoded)
         response_text = body.get("response")
         if not isinstance(response_text, str):
-            _logger.warning("intelligence_unavailable", cause="missing_response_field")
+            # Ollama (and proxies that front it) may answer a 200 with a JSON
+            # body that omits ``response`` and instead carries an explicit
+            # diagnostic under the ``error`` key — e.g.
+            # ``{"error": "model not loaded"}`` when the runner has not yet
+            # warmed the requested weights. Before surfacing the classified
+            # ``missing_response_field`` cause, lift that string onto the log
+            # line under ``ollama_error`` so operators debugging failures see
+            # the upstream's own explanation instead of a bare classification.
+            # The log field is elided (not emitted as ``None``) when the body
+            # either has no ``error`` key or carries a non-string value there;
+            # forwarding a non-string would defeat the diagnostic purpose and
+            # pollute the log schema. The ``error`` value is a server-owned
+            # string and never echoes prompt content, so there is no
+            # prompt-leak concern (see issue #333). See also the guidance in
+            # the CLAUDE.md "Forbidden Patterns" against silently swallowing
+            # error bodies.
+            log_kwargs: dict[str, Any] = {"cause": "missing_response_field"}
+            ollama_error = body.get("error")
+            if isinstance(ollama_error, str):
+                log_kwargs["ollama_error"] = ollama_error
+            _logger.warning("intelligence_unavailable", **log_kwargs)
             raise IntelligenceUnavailableError from None
         return response_text
 
-    async def _validated_generate_batch(self, batch_prompts: Sequence[str]) -> list[str]:
+    async def _validated_generate_batch(
+        self,
+        batch_prompts: Sequence[str],
+        *,
+        sampling_options: dict[str, Any] | None = None,
+    ) -> list[str]:
         # A fresh ``AsyncClient`` is created per ``infer()`` call so that each
         # ``asyncio.run`` scope gets its own loop+client pair. Reusing the
         # instance-level ``self.http_client`` across separate ``asyncio.run``
@@ -461,6 +617,12 @@ class OllamaGemmaProvider(BaseLanguageModel):
         # plugin entry path enforces the same CLAUDE.md-mandated "no bypass"
         # invariant as the ``generate()`` path the
         # ``_ValidatingLangExtractAdapter`` in ``extraction_engine.py`` uses.
+        #
+        # ``sampling_options`` is forwarded from ``infer()`` to decorate every
+        # prompt in the batch with the caller-supplied Ollama options (issue
+        # #385). The same dict is shared across prompts — sampling is a
+        # per-call concern, not per-prompt, so reusing it is correct; no
+        # prompt is mutating the dict.
         async with httpx.AsyncClient(timeout=self._timeout) as batch_client:
             outputs: list[str] = []
             for prompt in batch_prompts:
@@ -468,6 +630,7 @@ class OllamaGemmaProvider(BaseLanguageModel):
                     prompt,
                     LANGEXTRACT_WRAPPER_SCHEMA,
                     client=batch_client,
+                    sampling_options=sampling_options,
                 )
                 outputs.append(json.dumps(result.data))
             return outputs
@@ -475,9 +638,34 @@ class OllamaGemmaProvider(BaseLanguageModel):
     def infer(
         self,
         batch_prompts: Sequence[str],
-        **kwargs: Any,  # noqa: ARG002 - LangExtract passes orchestrator kwargs that we do not consume
+        **kwargs: Any,
     ) -> Iterator[Sequence[ScoredOutput]]:
-        validated_outputs = asyncio.run(self._validated_generate_batch(batch_prompts))
+        """Run LangExtract-driven inference and yield one ``ScoredOutput`` per prompt.
+
+        LangExtract's orchestrator forwards ``language_model_params`` (from
+        ``lx.extract(..., language_model_params={"temperature": 0.7})``) to
+        this method as ``**kwargs``. The provider threads the allowlisted
+        Ollama sampling options (temperature, top_p, top_k, seed, num_ctx,
+        num_predict, repeat_penalty, mirostat family) into the
+        ``/api/generate`` payload so caller overrides actually reach Ollama
+        (issue #385). Any non-sampling kwarg LangExtract forwards —
+        ``format_type``, ``constraint``, ``model_url``, …, or a new option
+        added in a future LangExtract release — is logged at DEBUG under the
+        ``ollama_provider_ignored_kwargs`` event so operators can see drift
+        and add it to the allowlist deliberately if it turns out to matter.
+        """
+        sampling_options, ignored_keys = _merge_sampling_options(**kwargs)
+        if ignored_keys:
+            _logger.debug(
+                "ollama_provider_ignored_kwargs",
+                keys=sorted(ignored_keys),
+            )
+        validated_outputs = asyncio.run(
+            self._validated_generate_batch(
+                batch_prompts,
+                sampling_options=sampling_options,
+            ),
+        )
         for output in validated_outputs:
             yield [ScoredOutput(score=1.0, output=output)]
 

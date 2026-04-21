@@ -8,6 +8,7 @@ assertions.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from typing import Any
 
@@ -22,6 +23,7 @@ from app.exceptions import (
     SkillNotFoundError,
     StructuredOutputFailedError,
 )
+from app.features.extraction import service as service_module
 from app.features.extraction.coordinates.offset_index import OffsetIndex
 from app.features.extraction.coordinates.offset_index_entry import OffsetIndexEntry
 from app.features.extraction.extraction.raw_extraction import RawExtraction
@@ -908,6 +910,129 @@ async def test_extraction_service_admission_is_atomic_not_check_then_acquire() -
     assert isinstance(result, ExtractionResult)
 
 
+async def test_extraction_service_simultaneous_arrivals_fail_fast_not_queue() -> None:
+    """Regression guard for issue #340: N simultaneous arrivals beyond cap fail
+    fast, not after extraction time.
+
+    Issue #340 worries that when ``max_concurrent=1`` and N>1 requests arrive
+    truly simultaneously (scheduled in the same event-loop turn via
+    ``asyncio.gather``), the N-1 over-cap callers might queue on the
+    semaphore and serialize through the pipeline instead of fail-fasting
+    with ``ExtractionOverloadedError``.
+
+    The invariant under the atomic ``asyncio.timeout(0) + acquire`` pattern:
+    exactly ONE call acquires the permit synchronously and enters the slow
+    pipeline; every other call finds ``acquire`` has to suspend, at which
+    point ``timeout(0)`` fires and the admission path raises
+    ``ExtractionOverloadedError``. The rejections return in wall-clock time
+    far shorter than the gated engine's hold time — that wall-clock gap is
+    the fail-fast observable this test locks in.
+
+    A regression that reverted to an awaiting ``acquire`` (or any pattern
+    that queued over-cap callers behind the cap holder) would make the
+    N-1 callers wait on the gate, then complete the full fake pipeline
+    one at a time after ``gate.set()``. The test would then see
+    ``total_calls`` successes instead of one success + N-1 rejections,
+    failing the explicit counts assertion below.
+    """
+    gate = asyncio.Event()
+    engine = _GatedInFlightEngine(gate)
+    settings = _build_settings(max_concurrent_extractions=1)
+    service = _build_service(engine=engine, settings=settings)
+
+    async def _one_call() -> ExtractionResult | ExtractionOverloadedError:
+        try:
+            return await service.extract(
+                _PDF_BYTES,
+                "invoice",
+                "1",
+                OutputMode.JSON_ONLY,
+            )
+        except ExtractionOverloadedError as err:
+            return err
+
+    # Fire N concurrent arrivals in the same scheduling turn via
+    # ``asyncio.gather``. ``gather`` wraps each coroutine in a Task and
+    # schedules them all before awaiting any — this is the simultaneous-
+    # arrival scenario from #340. One will acquire the permit synchronously
+    # and block on the gate; the other N-1 must fail fast.
+    total_calls = 10
+    t0 = time.monotonic()
+    gather_task = asyncio.gather(*[_one_call() for _ in range(total_calls)])
+    # Wrap the rest of the burst in try/finally so that if any assertion
+    # below fails on a slow/loaded runner, ``gather_task`` and its spawned
+    # child Tasks (including the holder blocked on ``gate``) do not leak as
+    # "Task was destroyed but it is pending!" warnings into sibling tests.
+    # Mirrors the cleanup shape used for background tasks elsewhere in this
+    # repo (e.g. ``test_pdf_annotator.py`` lines 411-418).
+    try:
+        # Yield until one call is in-flight, then capture wall-clock.
+        for _ in range(100):
+            await asyncio.sleep(0)
+            if engine.in_flight >= 1:
+                break
+        assert engine.in_flight == 1, "Exactly one call should have entered the pipeline"
+        elapsed_admission = time.monotonic() - t0
+
+        # Admission-phase wall-clock: the scheduler only spun long enough to
+        # dispatch each call's try-acquire decision. If any over-cap caller
+        # were queueing on the semaphore instead of rejecting, ``engine.in_flight``
+        # would still be 1 (cap), but the elapsed time to reach this point is
+        # bounded by the number of event-loop turns needed to drain the admission
+        # decisions, not by the pipeline hold.
+        assert elapsed_admission < 0.5, (
+            f"Admission-phase wall-clock {elapsed_admission:.3f}s — admission "
+            "path is queueing under concurrent arrivals instead of rejecting "
+            "immediately (issue #340)."
+        )
+
+        # Release the holder and await the full gather. The holder completes
+        # via the fake pipeline; the N-1 rejections were already decided.
+        gate.set()
+        results = await gather_task
+        elapsed_total = time.monotonic() - t0
+    finally:
+        # Happy path: ``gather_task`` is already done, ``gate`` is already
+        # set, and both operations below are no-ops. Failure path: the holder
+        # is still blocked on ``gate`` (or some children are still pending),
+        # so we release the gate and cancel the gather to drain every child
+        # Task before pytest-asyncio tears down the loop.
+        gate.set()
+        gather_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await gather_task
+
+    successes = [r for r in results if isinstance(r, ExtractionResult)]
+    rejections = [r for r in results if isinstance(r, ExtractionOverloadedError)]
+    assert len(successes) == 1, (
+        f"Expected exactly one success under cap=1, got {len(successes)}. Results: {results!r}"
+    )
+    assert len(rejections) == total_calls - 1, (
+        f"Expected {total_calls - 1} fail-fast rejections, got {len(rejections)}. "
+        f"Results: {results!r}"
+    )
+    for rej in rejections:
+        assert rej.http_status == 503
+        assert rej.params is not None
+        assert rej.params.model_dump() == {"max_concurrent": 1}
+
+    # Outer wall-clock ceiling. With fake collaborators the pipeline is
+    # effectively instant, so even a queued regression would not balloon
+    # elapsed_total noticeably under these fakes — the primary signal is
+    # the successes/rejections count split above. This ceiling just pins
+    # a sanity bound to catch an obvious runaway.
+    assert elapsed_total < 1.0, (
+        f"Full concurrent burst took {elapsed_total:.3f}s — something is "
+        "queueing or sleeping unexpectedly."
+    )
+
+    # The gated engine must never observe more than one in-flight call.
+    assert engine.max_in_flight == 1, (
+        f"Admission cap violated: {engine.max_in_flight} concurrent pipelines "
+        "observed against max_concurrent_extractions=1."
+    )
+
+
 async def test_extraction_service_releases_semaphore_on_success() -> None:
     """After a successful extract, the semaphore permit is returned."""
     settings = _build_settings(max_concurrent_extractions=1)
@@ -1055,3 +1180,164 @@ async def test_ollama_internal_timeout_is_not_remapped_to_extraction_budget_erro
     assert not isinstance(excinfo.value, ExtractionBudgetExceededError)
     assert excinfo.value.params is not None
     assert excinfo.value.params.model_dump() == {"budget_seconds": 30.0}
+
+
+# ---------------------------------------------------------------------------
+# Issue #416: cancellation vs. timeout log distinguishability.
+#
+# ``asyncio.timeout`` cancels cooperative awaits by injecting
+# ``asyncio.CancelledError`` and then converting it to ``TimeoutError`` at
+# the context-manager boundary when the deadline has expired. But if an
+# OUTER cancellation (caller cancelled the task, client disconnected) fires
+# inside the pipeline, the same ``CancelledError`` can propagate past the
+# ``except TimeoutError`` branch unlabelled — operators triaging a 5xx spike
+# have no way to tell "caller cancelled" from "we ran out of budget" from
+# the structured logs. These tests pin two distinct, greppable events:
+# ``extraction_cancelled`` for caller cancellation, ``extraction_timeout``
+# for pipeline-budget expiry.
+# ---------------------------------------------------------------------------
+
+
+class _SpyLogger:
+    """Test double for ``service_module._logger`` (Copilot-review #439).
+
+    Why we don't use ``structlog.testing.capture_logs()`` here: the service
+    module defines ``_logger = structlog.get_logger(__name__)`` at import
+    time, and our ``configure_logging()`` registers
+    ``cache_logger_on_first_use=True``. Whichever test first touches the
+    service's ``_logger`` outside a ``capture_logs()`` context can cause
+    structlog to cache a bound logger that subsequent ``capture_logs()``
+    contexts won't see — making log-assertion tests order-dependent. A
+    direct monkeypatched spy sidesteps structlog's global state entirely,
+    the same pattern used in
+    ``tests/unit/features/extraction/skills/test_skill_loader.py``.
+    """
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict[str, object]]] = []
+
+    def info(self, event: str, **kwargs: object) -> None:
+        self.events.append((event, kwargs))
+
+    def warning(self, event: str, **kwargs: object) -> None:  # pragma: no cover
+        self.events.append((event, kwargs))
+
+    def error(self, event: str, **kwargs: object) -> None:  # pragma: no cover
+        self.events.append((event, kwargs))
+
+
+class _CancellingEngine:
+    """Engine that raises ``asyncio.CancelledError`` mid-extraction.
+
+    Models the shape of a caller-driven cancellation (task cancel, client
+    disconnect) observed from inside the pipeline after the semaphore is
+    acquired but before the work completes. The service's ``CancelledError``
+    branch must fire unconditionally on this path — whether or not the
+    outer ``asyncio.timeout`` has anything to do with it.
+    """
+
+    async def extract(
+        self,
+        _text: str,
+        _skill: Any,
+        _provider: Any,
+    ) -> list[RawExtraction]:
+        raise asyncio.CancelledError
+
+
+async def test_cancelled_error_emits_extraction_cancelled_event_and_reraises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #416: CancelledError path logs ``extraction_cancelled`` and re-raises.
+
+    The extraction service must never swallow ``asyncio.CancelledError`` —
+    cooperative cancellation relies on it propagating out so the caller's
+    task can terminate cleanly. The fix is observability-only: we log a
+    distinct event so operators can tell a caller-cancellation breadcrumb
+    apart from a pipeline-budget timeout in structured logs.
+    """
+    spy = _SpyLogger()
+    monkeypatch.setattr(service_module, "_logger", spy)
+    service = _build_service(engine=_CancellingEngine())
+
+    with pytest.raises(asyncio.CancelledError):
+        await service.extract(_PDF_BYTES, "invoice", "1", OutputMode.JSON_ONLY)
+
+    cancelled_events = [kwargs for event, kwargs in spy.events if event == "extraction_cancelled"]
+    assert len(cancelled_events) == 1, (
+        f"Expected exactly one extraction_cancelled event; got {spy.events!r}"
+    )
+    # Pin the structured context fields the PR relies on for operability.
+    # These keys drive on-call triage dashboards; silent renames/drops
+    # would degrade the fix without failing any other test (#439 review).
+    cancelled_event = cancelled_events[0]
+    assert cancelled_event["skill_name"] == "invoice"
+    assert cancelled_event["skill_version"] == "1"
+    assert isinstance(cancelled_event["duration_ms"], int)
+    # Must NOT masquerade as the timeout event.
+    timeout_events = [kwargs for event, kwargs in spy.events if event == "extraction_timeout"]
+    assert timeout_events == []
+
+
+async def test_timeout_emits_extraction_timeout_event_with_budget_seconds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #416: pipeline-budget timeout logs ``extraction_timeout`` with context.
+
+    A ``extraction_timeout`` event must be emitted alongside the
+    ``ExtractionBudgetExceededError`` raise so operators can distinguish
+    a pipeline-budget timeout from a caller-cancellation in structured logs.
+    The event carries the configured budget so triage can tell at a glance
+    how long the pipeline ran before hitting the cap.
+    """
+    spy = _SpyLogger()
+    monkeypatch.setattr(service_module, "_logger", spy)
+    engine = _FakeEngine(sleep_seconds=0.2)
+    settings = _build_settings(extraction_timeout_seconds=0.05)
+    service = _build_service(engine=engine, settings=settings)
+
+    with pytest.raises(ExtractionBudgetExceededError):
+        await service.extract(_PDF_BYTES, "invoice", "1", OutputMode.JSON_ONLY)
+
+    timeout_events = [kwargs for event, kwargs in spy.events if event == "extraction_timeout"]
+    assert len(timeout_events) == 1, (
+        f"Expected exactly one extraction_timeout event; got {spy.events!r}"
+    )
+    # Pin the structured context fields the PR relies on for operability.
+    # These keys drive on-call triage dashboards; silent renames/drops
+    # would degrade the fix without failing any other test (#439 review).
+    timeout_event = timeout_events[0]
+    assert timeout_event["skill_name"] == "invoice"
+    assert timeout_event["skill_version"] == "1"
+    assert timeout_event["budget_seconds"] == 0.05
+    assert isinstance(timeout_event["duration_ms"], int)
+    # Must NOT masquerade as the cancellation event.
+    cancelled_events = [kwargs for event, kwargs in spy.events if event == "extraction_cancelled"]
+    assert cancelled_events == []
+
+
+async def test_inner_timeout_error_does_not_emit_extraction_timeout_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #416: the ``extraction_timeout`` event fires only for budget expiry.
+
+    A downstream component may raise a built-in ``TimeoutError`` for reasons
+    unrelated to the pipeline budget (e.g. a socket-layer timeout inside
+    Docling). That case re-raises the inner error as-is — without remapping
+    to ``ExtractionBudgetExceededError`` — so the ``extraction_timeout``
+    event, which is specifically the pipeline-budget breadcrumb, must not
+    fire either. Keeping the two concerns paired avoids a misleading
+    "budget exceeded" log line when the real failing component is elsewhere.
+    """
+    spy = _SpyLogger()
+    monkeypatch.setattr(service_module, "_logger", spy)
+    settings = _build_settings(extraction_timeout_seconds=60.0)
+    service = _build_service(parser=_InnerTimeoutParser(), settings=settings)
+
+    with pytest.raises(TimeoutError):
+        await service.extract(_PDF_BYTES, "invoice", "1", OutputMode.JSON_ONLY)
+
+    timeout_events = [kwargs for event, kwargs in spy.events if event == "extraction_timeout"]
+    assert timeout_events == []
+    cancelled_events = [kwargs for event, kwargs in spy.events if event == "extraction_cancelled"]
+    assert cancelled_events == []

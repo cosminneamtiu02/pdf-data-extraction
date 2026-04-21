@@ -9,10 +9,12 @@ errors:
 
   VALIDATION_FAILED:
     http_status: 422
-    description: Request payload failed validation
-    params:
-      field: string
-      reason: string
+    description: >-
+      Request payload failed validation. Per-field failures are enumerated in
+      the ``details`` array of the response envelope; ``params`` is always empty
+      for this code (see issue #344 — the earlier single-field ``params`` was
+      lossy when multiple fields failed simultaneously).
+    params: {}
 
   INTERNAL_ERROR:
     http_status: 500
@@ -75,7 +77,7 @@ errors:
 
   EXTRACTION_BUDGET_EXCEEDED:
     http_status: 504
-    description: The end-to-end extraction pipeline (parse + extract + resolve + annotate) exceeded the configured budget before completing; distinct from INTELLIGENCE_TIMEOUT, which is scoped to the Ollama request itself (issue #227)
+    description: "The end-to-end extraction pipeline (parse + extract + resolve + annotate) exceeded the configured budget before completing; distinct from INTELLIGENCE_TIMEOUT, which is scoped to the Ollama request itself (issue #227)"
     params:
       budget_seconds: number
 

@@ -429,6 +429,45 @@ async def test_generate_raises_intelligence_unavailable_when_body_json_is_string
     assert event["cause"] == "invalid_json_shape"
 
 
+async def test_generate_missing_response_field_surfaces_ollama_error_body() -> None:
+    """Regression guard for issue #333.
+
+    When Ollama (or an interposing proxy) returns a 200 whose body carries
+    ``{"error": "model not loaded"}`` and no ``response`` field, the
+    ``missing_response_field`` branch must include the error text in the
+    structured log under an ``ollama_error`` key. Before the fix, the
+    diagnostic was silently discarded — operators debugging failures saw
+    ``cause=missing_response_field`` with no hint that Ollama sent back an
+    explicit reason.
+    """
+    fake = _FakeAsyncClient(
+        post_outcomes=[_FakeResponse(body={"error": "model not loaded"})],
+    )
+    provider = _build_provider(fake_client=fake)
+
+    with capture_logs() as logs, pytest.raises(IntelligenceUnavailableError):
+        await provider.generate("hi", _NAME_STRING_SCHEMA)
+    event = next(e for e in logs if e.get("event") == "intelligence_unavailable")
+    assert event["cause"] == "missing_response_field"
+    assert event["ollama_error"] == "model not loaded"
+
+
+async def test_generate_missing_response_field_without_error_key_omits_ollama_error() -> None:
+    """When the body has neither ``response`` nor ``error``, the log line
+    must still emit ``cause=missing_response_field`` but MUST NOT carry a
+    stale or synthetic ``ollama_error`` value — the field is only present
+    when Ollama actually sent one.
+    """
+    fake = _FakeAsyncClient(post_outcomes=[_FakeResponse(body={"done": True})])
+    provider = _build_provider(fake_client=fake)
+
+    with capture_logs() as logs, pytest.raises(IntelligenceUnavailableError):
+        await provider.generate("hi", _NAME_STRING_SCHEMA)
+    event = next(e for e in logs if e.get("event") == "intelligence_unavailable")
+    assert event["cause"] == "missing_response_field"
+    assert "ollama_error" not in event
+
+
 async def test_generate_raises_intelligence_unavailable_when_body_is_not_json() -> None:
     # Ollama (or an interposing proxy) returned a body that response.json()
     # cannot parse. This must map to IntelligenceUnavailableError, not crash
@@ -762,6 +801,213 @@ def test_infer_uses_a_single_asyncio_run_for_the_whole_batch(
     assert call_count == 1
 
 
+# ── LangExtract sampling-kwargs forwarding (issue #385) ────────────────
+#
+# Before the fix, ``infer(batch_prompts, **kwargs)`` absorbed and silently
+# dropped every kwarg LangExtract forwarded. A caller setting
+# ``temperature=0.7`` through ``lx.extract(..., language_model_params={
+# "temperature": 0.7})`` got deterministic ``temperature=0`` output with no
+# indication the override had been ignored. The fix threads a known
+# allowlist of Ollama-options sampling keys (temperature, top_p, top_k,
+# seed, num_ctx, num_predict, repeat_penalty, mirostat, mirostat_tau,
+# mirostat_eta) from the ``infer`` kwargs into the ``/api/generate``
+# ``options`` object, with caller-supplied values overriding defaults.
+# Unknown kwargs are logged at DEBUG so operators see drift if LangExtract
+# starts forwarding something new.
+
+
+def test_infer_forwards_temperature_kwarg_into_payload_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``infer(temperature=0.7, ...)`` must post ``options.temperature == 0.7``.
+
+    Before the fix, ``_build_payload`` hardcoded ``options={"temperature": 0}``
+    and ignored every LangExtract-forwarded kwarg. A caller overriding the
+    sampling temperature via LangExtract got deterministic output with no
+    indication their override was dropped. This test pins the new contract:
+    caller-supplied ``temperature`` wins over the provider default.
+    """
+    fake = _patch_infer_client(
+        monkeypatch,
+        post_outcomes=[_FakeResponse(body={"response": '{"extractions":[]}'})],
+    )
+    provider = _build_provider(fake_client=_FakeAsyncClient())
+
+    list(provider.infer(["p1"], temperature=0.7))
+
+    _, payload = fake.post_calls[0]
+    assert payload["options"]["temperature"] == 0.7
+
+
+def test_infer_forwards_multiple_sampling_kwargs_into_payload_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every sampling kwarg from the allowlist must land in payload.options.
+
+    Pins the full allowlist surface (top_p, top_k, seed, num_ctx,
+    num_predict, repeat_penalty, mirostat family) so silently dropping any
+    one of them is a regression caught here rather than at runtime.
+    """
+    fake = _patch_infer_client(
+        monkeypatch,
+        post_outcomes=[_FakeResponse(body={"response": '{"extractions":[]}'})],
+    )
+    provider = _build_provider(fake_client=_FakeAsyncClient())
+
+    list(
+        provider.infer(
+            ["p1"],
+            temperature=0.9,
+            top_p=0.95,
+            top_k=40,
+            seed=42,
+            num_ctx=8192,
+            num_predict=512,
+            repeat_penalty=1.1,
+            mirostat=2,
+            mirostat_tau=5.0,
+            mirostat_eta=0.1,
+        )
+    )
+
+    _, payload = fake.post_calls[0]
+    options = payload["options"]
+    assert options["temperature"] == 0.9
+    assert options["top_p"] == 0.95
+    assert options["top_k"] == 40
+    assert options["seed"] == 42
+    assert options["num_ctx"] == 8192
+    assert options["num_predict"] == 512
+    assert options["repeat_penalty"] == 1.1
+    assert options["mirostat"] == 2
+    assert options["mirostat_tau"] == 5.0
+    assert options["mirostat_eta"] == 0.1
+
+
+def test_infer_without_kwargs_keeps_deterministic_temperature_zero_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no caller-supplied kwargs, ``options.temperature`` stays 0.
+
+    This regression guard protects the issue #136 contract
+    (``test_generate_payload_includes_format_json_and_zero_temperature``)
+    for the ``infer()`` seam. The fix must add kwarg forwarding without
+    changing the existing default sampling behavior for callers who
+    forward nothing.
+    """
+    fake = _patch_infer_client(
+        monkeypatch,
+        post_outcomes=[_FakeResponse(body={"response": '{"extractions":[]}'})],
+    )
+    provider = _build_provider(fake_client=_FakeAsyncClient())
+
+    list(provider.infer(["p1"]))
+
+    _, payload = fake.post_calls[0]
+    assert payload["options"]["temperature"] == 0
+    assert payload["format"] == "json"
+
+
+def test_infer_drops_non_sampling_kwargs_and_logs_them_at_debug(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unknown kwargs must not leak into payload.options, and must be logged.
+
+    LangExtract also forwards orchestrator kwargs like ``format_type``,
+    ``constraint``, or ``model_url`` that are not Ollama sampling options.
+    Those must not end up in the HTTP payload (they would confuse Ollama
+    or leak unrelated state). The provider logs them at DEBUG under event
+    ``ollama_provider_ignored_kwargs`` so operators see drift.
+    """
+    fake = _patch_infer_client(
+        monkeypatch,
+        post_outcomes=[_FakeResponse(body={"response": '{"extractions":[]}'})],
+    )
+    provider = _build_provider(fake_client=_FakeAsyncClient())
+
+    with capture_logs() as logs:
+        list(
+            provider.infer(
+                ["p1"],
+                temperature=0.5,
+                format_type="json",
+                constraint=None,
+                model_url="http://other:11434",
+            )
+        )
+
+    _, payload = fake.post_calls[0]
+    # Only the allowlisted sampling key landed in options.
+    assert payload["options"]["temperature"] == 0.5
+    assert "format_type" not in payload["options"]
+    assert "constraint" not in payload["options"]
+    assert "model_url" not in payload["options"]
+    # And the ignored keys were logged so operators can see drift.
+    event = next(
+        (e for e in logs if e.get("event") == "ollama_provider_ignored_kwargs"),
+        None,
+    )
+    assert event is not None, "ignored-kwargs must be logged for observability"
+    ignored_keys = set(event["keys"])
+    assert {"format_type", "constraint", "model_url"} <= ignored_keys
+    assert "temperature" not in ignored_keys
+
+
+def test_infer_allowlisted_kwarg_with_none_value_preserves_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An allowlisted kwarg whose value is ``None`` must not clobber the default.
+
+    LangExtract orchestrator dicts may surface ``temperature=None`` (or
+    ``seed=None``, …) when a caller wires a config field that is optional
+    and left unset. Before the fix, ``_merge_sampling_options`` unconditionally
+    copied the value over the default baseline, so the payload reached Ollama
+    with ``options.temperature == null``. That breaks the determinism contract
+    (issue #136) for ``temperature`` and risks a server-side 400 for keys
+    Ollama validates as numeric (e.g. ``seed``). The contract is: treat an
+    allowlisted key whose value is ``None`` as "not provided" — preserve the
+    module-level default, do not forward ``null``.
+    """
+    fake = _patch_infer_client(
+        monkeypatch,
+        post_outcomes=[_FakeResponse(body={"response": '{"extractions":[]}'})],
+    )
+    provider = _build_provider(fake_client=_FakeAsyncClient())
+
+    list(provider.infer(["p1"], temperature=None, seed=None))
+
+    _, payload = fake.post_calls[0]
+    # Default ``temperature=0`` preserved, ``seed`` not injected as ``None``.
+    assert payload["options"]["temperature"] == 0
+    assert "seed" not in payload["options"]
+
+
+def test_infer_kwargs_propagate_across_every_prompt_in_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Per-call kwargs must apply to every prompt in the batch.
+
+    ``infer`` iterates the batch inside a single ``asyncio.run`` scope; the
+    sampling options the caller passed must decorate every POST, not just
+    the first.
+    """
+    fake = _patch_infer_client(
+        monkeypatch,
+        post_outcomes=[
+            _FakeResponse(body={"response": '{"extractions":[]}'}),
+            _FakeResponse(body={"response": '{"extractions":[]}'}),
+        ],
+    )
+    provider = _build_provider(fake_client=_FakeAsyncClient())
+
+    list(provider.infer(["p1", "p2"], temperature=0.3, seed=7))
+
+    assert len(fake.post_calls) == 2
+    for _url, payload in fake.post_calls:
+        assert payload["options"]["temperature"] == 0.3
+        assert payload["options"]["seed"] == 7
+
+
 # The two constructor tests below pin the LangExtract plugin-instantiation
 # path. `langextract.factory.create_model` calls `provider_class(**kwargs)`
 # where `kwargs["model_id"]` is the model tag from `ModelConfig`. Any
@@ -1081,4 +1327,145 @@ def test_generate_does_not_hang_when_old_loop_stopped_but_not_closed(
     assert initial_client.aclose_calls == 1, (
         "outgoing client was not aclose()'d via the current-loop fallback "
         "when the old loop was stopped-but-not-closed"
+    )
+
+
+# ── Stale-client aclose observability regression (issue #335) ─────────
+#
+# Before the fix, ``_aclose_stale_client``'s current-loop fallback
+# swallowed ``aclose()`` failures at ``_logger.debug`` with only
+# ``error=str(exc)`` attached. Operators running at the default
+# ``WARNING`` level saw nothing when a real httpx internal error
+# surfaced during teardown — the failure was invisible. The
+# ``run_coroutine_threadsafe`` branch was even weaker: non-TimeoutError
+# exceptions from ``aclose()`` scheduled on the old loop propagated up
+# through ``_get_http_client`` instead of being captured as
+# best-effort. Issue #335 pins both paths at ``warning`` with
+# ``exc_info=True`` so the full traceback reaches operators while
+# keeping the best-effort "don't crash on teardown" semantics.
+
+
+class _RaisingAcloseFakeClient(_CountingFakeClient):
+    """Counting fake whose ``aclose()`` raises a scripted exception.
+
+    Subclass rather than a flag-on-the-base because the raising is the
+    point of this fake — the base fake in the issue-#234 block tracks
+    ``aclose_calls`` and returns happy. Mixing a raise into that class
+    would muddle its invariant ("counts how many times the provider
+    closed me") with this one ("surfaces a teardown failure to the
+    provider's aclose handler").
+    """
+
+    def __init__(
+        self,
+        *,
+        aclose_error: BaseException,
+        timeout: httpx.Timeout | None = None,
+    ) -> None:
+        super().__init__(timeout=timeout)
+        self._aclose_error = aclose_error
+
+    async def aclose(self) -> None:
+        self.aclose_calls += 1
+        self.is_closed = True
+        raise self._aclose_error
+
+
+def test_stale_client_aclose_failure_logged_at_warning_with_exc_info(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: issue #335 — when the current-loop fallback in
+    ``_aclose_stale_client`` catches a teardown error, it must log at
+    ``warning`` with ``exc_info=True`` so operators see the failure.
+
+    Before the fix, the fallback only logged at ``debug`` with
+    ``error=str(exc)`` — invisible under the default ``WARNING`` log
+    level and missing the traceback. The best-effort "don't crash on
+    teardown" behaviour is preserved: the fresh client on the current
+    loop remains valid and ``generate()`` still returns successfully.
+    """
+    settings = _build_settings()
+
+    # Build the initial (soon-to-be-stale) client directly so we can
+    # inject one that raises on aclose. We do NOT inject via the
+    # constructor's ``http_client`` kwarg because that flips the
+    # provider into the "caller owns loop affinity" branch of
+    # ``_get_http_client`` (``self._injected_http_client is not
+    # None``), which skips the rebuild path entirely. Instead, we
+    # monkey-patch ``httpx.AsyncClient`` factory so the provider's
+    # own constructor and rebuild allocations both go through us.
+    built_clients: list[_CountingFakeClient] = []
+
+    def _factory(**kwargs: Any) -> _CountingFakeClient:
+        # First construction = the eagerly-built client in __init__
+        # that we want to raise on aclose. Subsequent constructions =
+        # the fresh rebuild client that should succeed so generate()
+        # completes. Scripting per-call outcomes via a list avoids
+        # global state and keeps the factory side-effect local.
+        if not built_clients:
+            client: _CountingFakeClient = _RaisingAcloseFakeClient(
+                aclose_error=RuntimeError("Event loop is closed"),
+                timeout=kwargs.get("timeout"),
+            )
+        else:
+            client = _CountingFakeClient(timeout=kwargs.get("timeout"))
+        built_clients.append(client)
+        return client
+
+    monkeypatch.setattr(
+        "app.features.extraction.intelligence.ollama_gemma_provider.httpx.AsyncClient",
+        _factory,
+    )
+
+    provider = OllamaGemmaProvider(
+        settings=settings,
+        validator=_build_validator(settings),
+    )
+    assert len(built_clients) == 1
+    initial_client = built_clients[0]
+    assert isinstance(initial_client, _RaisingAcloseFakeClient)
+
+    # Stamp a pre-closed loop onto ``_http_client_loop`` so the
+    # rebuild path's branch selector picks the current-loop fallback
+    # (``not old_loop.is_running()`` AND ``old_loop.is_closed()``).
+    # Creating and immediately closing a loop yields the exact state.
+    stale_loop = asyncio.new_event_loop()
+    stale_loop.close()
+    assert stale_loop.is_closed()
+    provider._http_client_loop = stale_loop  # noqa: SLF001 — exercising the rebuild-path invariant
+
+    current_loop = asyncio.new_event_loop()
+    try:
+        with capture_logs() as logs:
+            result = current_loop.run_until_complete(
+                provider.generate("p1", _NAME_STRING_SCHEMA),
+            )
+    finally:
+        current_loop.close()
+
+    # Best-effort semantics preserved: the fresh client on the
+    # current loop still served the request.
+    assert result.data == {"name": "Alice"}
+    assert initial_client.aclose_calls == 1, (
+        "stale client's aclose() was not invoked on the current-loop "
+        "fallback branch — test setup did not hit the target branch"
+    )
+
+    # The fix: the suppressed exception is logged at warning with
+    # full traceback metadata. ``capture_logs()`` records
+    # ``exc_info=True`` verbatim on the event dict because the
+    # in-test processor chain does not rewrite it — asserting on
+    # the flag is the stable contract here.
+    aclose_warnings = [
+        e
+        for e in logs
+        if e.get("event") == "stale_client_aclose_failed" and e.get("log_level") == "warning"
+    ]
+    assert len(aclose_warnings) == 1, (
+        f"expected exactly one 'stale_client_aclose_failed' warning event; captured logs: {logs!r}"
+    )
+    event = aclose_warnings[0]
+    assert event.get("exc_info") is True, (
+        "warning must set ``exc_info=True`` so structlog renders the full "
+        f"traceback into the 'exception' field for operators; got: {event!r}"
     )
