@@ -571,7 +571,27 @@ class OllamaGemmaProvider(BaseLanguageModel):
         body = cast("dict[str, Any]", decoded)
         response_text = body.get("response")
         if not isinstance(response_text, str):
-            _logger.warning("intelligence_unavailable", cause="missing_response_field")
+            # Ollama (and proxies that front it) may answer a 200 with a JSON
+            # body that omits ``response`` and instead carries an explicit
+            # diagnostic under the ``error`` key — e.g.
+            # ``{"error": "model not loaded"}`` when the runner has not yet
+            # warmed the requested weights. Before surfacing the classified
+            # ``missing_response_field`` cause, lift that string onto the log
+            # line under ``ollama_error`` so operators debugging failures see
+            # the upstream's own explanation instead of a bare classification.
+            # The log field is elided (not emitted as ``None``) when the body
+            # either has no ``error`` key or carries a non-string value there;
+            # forwarding a non-string would defeat the diagnostic purpose and
+            # pollute the log schema. The ``error`` value is a server-owned
+            # string and never echoes prompt content, so there is no
+            # prompt-leak concern (see issue #333). See also the guidance in
+            # the CLAUDE.md "Forbidden Patterns" against silently swallowing
+            # error bodies.
+            log_kwargs: dict[str, Any] = {"cause": "missing_response_field"}
+            ollama_error = body.get("error")
+            if isinstance(ollama_error, str):
+                log_kwargs["ollama_error"] = ollama_error
+            _logger.warning("intelligence_unavailable", **log_kwargs)
             raise IntelligenceUnavailableError from None
         return response_text
 
