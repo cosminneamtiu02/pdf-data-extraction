@@ -82,6 +82,11 @@ def register_exception_handlers(app: FastAPI) -> None:
     ) -> JSONResponse:
         request_id = _get_request_id(request)
         errors = exc.errors()
+        # Issue #344: VALIDATION_FAILED carries all per-field failures in
+        # ``details``. ``params`` is intentionally empty — the prior
+        # "first-of-N" shape silently truncated multi-field failures and
+        # surprised API consumers who read ``params`` as the reason rather
+        # than an arbitrarily-picked subset. Consumers MUST parse ``details``.
         details = [
             {
                 "field": " -> ".join(str(loc) for loc in e.get("loc", [])),
@@ -89,14 +94,13 @@ def register_exception_handlers(app: FastAPI) -> None:
             }
             for e in errors
         ]
-        first = details[0] if details else {"field": "unknown", "reason": "unknown"}
         return JSONResponse(
             status_code=ValidationFailedError.http_status,
             headers={"X-Request-Id": request_id},
             content={
                 "error": {
                     "code": ValidationFailedError.code,
-                    "params": first,
+                    "params": {},
                     "details": details,
                     "request_id": request_id,
                 },

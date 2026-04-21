@@ -63,7 +63,6 @@ _SKIP_REASON_TESSERACT = (
 @pytest.mark.skipif(not _DOCLING_AVAILABLE, reason=_SKIP_REASON_DOCLING)
 @pytest.mark.skipif(not _NATIVE_FIXTURE.exists(), reason=_SKIP_REASON_FIXTURE)
 @pytest.mark.skipif(not _TESSERACT_AVAILABLE, reason=_SKIP_REASON_TESSERACT)
-@pytest.mark.asyncio
 async def test_real_docling_parses_native_two_page_fixture() -> None:
     from app.features.extraction.parsing.docling_config import DoclingConfig
     from app.features.extraction.parsing.docling_document_parser import (
@@ -82,7 +81,6 @@ async def test_real_docling_parses_native_two_page_fixture() -> None:
 @pytest.mark.skipif(not _DOCLING_AVAILABLE, reason=_SKIP_REASON_DOCLING)
 @pytest.mark.skipif(not _SCANNED_FIXTURE.exists(), reason=_SKIP_REASON_FIXTURE)
 @pytest.mark.skipif(not _TESSERACT_AVAILABLE, reason=_SKIP_REASON_TESSERACT)
-@pytest.mark.asyncio
 async def test_real_docling_ocrs_scanned_fixture() -> None:
     from app.features.extraction.parsing.docling_config import DoclingConfig
     from app.features.extraction.parsing.docling_document_parser import (
@@ -101,7 +99,6 @@ async def test_real_docling_ocrs_scanned_fixture() -> None:
 @pytest.mark.skipif(not _PYMUPDF_AVAILABLE, reason="pymupdf not installed")
 @pytest.mark.skipif(not _NATIVE_FIXTURE.exists(), reason=_SKIP_REASON_FIXTURE)
 @pytest.mark.skipif(not _TESSERACT_AVAILABLE, reason=_SKIP_REASON_TESSERACT)
-@pytest.mark.asyncio
 async def test_real_docling_bboxes_agree_with_pymupdf_on_native_fixture() -> None:
     """Empirically verify that Docling's bbox output lands inside PyMuPDF page rects.
 
@@ -143,7 +140,6 @@ async def test_real_docling_bboxes_agree_with_pymupdf_on_native_fixture() -> Non
 @pytest.mark.skipif(not _DOCLING_AVAILABLE, reason=_SKIP_REASON_DOCLING)
 @pytest.mark.skipif(not _NATIVE_FIXTURE.exists(), reason=_SKIP_REASON_FIXTURE)
 @pytest.mark.skipif(not _TESSERACT_AVAILABLE, reason=_SKIP_REASON_TESSERACT)
-@pytest.mark.asyncio
 async def test_real_docling_parse_does_not_starve_event_loop() -> None:
     import asyncio
 
@@ -179,7 +175,6 @@ async def test_real_docling_parse_does_not_starve_event_loop() -> None:
 @pytest.mark.skipif(not _DOCLING_AVAILABLE, reason=_SKIP_REASON_DOCLING)
 @pytest.mark.skipif(not _NATIVE_FIXTURE.exists(), reason=_SKIP_REASON_FIXTURE)
 @pytest.mark.skipif(not _TESSERACT_AVAILABLE, reason=_SKIP_REASON_TESSERACT)
-@pytest.mark.asyncio
 async def test_real_docling_repeat_parse_is_equivalent() -> None:
     from app.features.extraction.parsing.docling_config import DoclingConfig
     from app.features.extraction.parsing.docling_document_parser import (
