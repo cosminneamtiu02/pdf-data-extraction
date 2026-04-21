@@ -151,7 +151,6 @@ def test_pdf_too_many_pages_params_round_trip() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_parse_raises_pdf_invalid_when_preflight_rejects_bytes() -> None:
     def _rejecting_preflight(_pdf_bytes: bytes) -> int:
         raise PdfInvalidError
@@ -174,7 +173,6 @@ async def test_parse_raises_pdf_invalid_when_preflight_rejects_bytes() -> None:
     assert factory_calls == 0, "converter must not run when preflight rejects"
 
 
-@pytest.mark.asyncio
 async def test_parse_raises_pdf_password_protected_when_preflight_reports_encrypted() -> None:
     def _encrypted_preflight(_pdf_bytes: bytes) -> int:
         raise PdfPasswordProtectedError
@@ -202,7 +200,6 @@ async def test_parse_raises_pdf_password_protected_when_preflight_reports_encryp
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_parse_raises_pdf_too_many_pages_before_converter_runs() -> None:
     factory = _factory_returning(_valid_single_block_doc(201))
     parser = DoclingDocumentParser(
@@ -222,7 +219,6 @@ async def test_parse_raises_pdf_too_many_pages_before_converter_runs() -> None:
     )
 
 
-@pytest.mark.asyncio
 async def test_parse_allows_page_count_exactly_at_limit() -> None:
     parser = DoclingDocumentParser(
         converter_factory=_factory_returning(_valid_single_block_doc(200)),
@@ -236,7 +232,6 @@ async def test_parse_allows_page_count_exactly_at_limit() -> None:
     assert len(result.blocks) == 1
 
 
-@pytest.mark.asyncio
 async def test_parse_default_max_pdf_pages_is_200() -> None:
     parser = DoclingDocumentParser(
         converter_factory=_factory_returning(_valid_single_block_doc(201)),
@@ -250,7 +245,6 @@ async def test_parse_default_max_pdf_pages_is_200() -> None:
     assert excinfo.value.params.model_dump() == {"limit": 200, "actual": 201}
 
 
-@pytest.mark.asyncio
 async def test_parse_too_many_pages_raise_is_fast() -> None:
     """The page-limit raise must not pay any conversion cost.
 
@@ -291,7 +285,6 @@ async def test_parse_too_many_pages_raise_is_fast() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_parse_raises_pdf_no_text_extractable_when_document_has_zero_blocks() -> None:
     doc = _FakeDocument(_page_count=1, _items=())
     parser = DoclingDocumentParser(
@@ -308,7 +301,6 @@ async def test_parse_raises_pdf_no_text_extractable_when_document_has_zero_block
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_parse_logs_structured_event_for_too_many_pages() -> None:
     """Each error raise emits one structlog event with key=value fields."""
     parser = DoclingDocumentParser(
@@ -326,7 +318,6 @@ async def test_parse_logs_structured_event_for_too_many_pages() -> None:
     assert events[0]["actual"] == 201
 
 
-@pytest.mark.asyncio
 async def test_parse_logs_structured_event_for_no_text_extractable() -> None:
     parser = DoclingDocumentParser(
         converter_factory=_factory_returning(_FakeDocument(_page_count=1, _items=())),
@@ -351,7 +342,6 @@ async def test_parse_logs_structured_event_for_no_text_extractable() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_parse_preflight_does_not_block_concurrent_parses() -> None:
     """Two concurrent parses must overlap their preflight waits.
 
@@ -393,7 +383,6 @@ async def test_parse_preflight_does_not_block_concurrent_parses() -> None:
     )
 
 
-@pytest.mark.asyncio
 async def test_unknown_converter_exception_propagates_unchanged() -> None:
     """Parser must not wrap unknown errors as PdfInvalidError."""
 
