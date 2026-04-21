@@ -29,6 +29,7 @@ from app.api.access_log_middleware import AccessLogMiddleware
 from app.api.middleware import configure_middleware
 from app.api.request_id_middleware import RequestIdMiddleware
 from app.api.upload_size_limit_middleware import UploadSizeLimitMiddleware
+from app.core.config import Settings
 
 # Minimal CORS allowlists for the registration-order tests. These tests do
 # not care what the actual allowed methods/headers are — only the middleware
@@ -55,6 +56,7 @@ def test_configure_middleware_registers_expected_execution_order() -> None:
         max_upload_bytes=50 * 1024 * 1024,
         cors_methods=_TEST_CORS_METHODS,
         cors_headers=_TEST_CORS_HEADERS,
+        cors_allow_credentials=False,
     )
 
     registered_classes = [m.cls for m in app.user_middleware]
@@ -89,6 +91,7 @@ def test_upload_size_limit_is_innermost_so_it_runs_before_route_dispatch() -> No
         max_upload_bytes=1024,
         cors_methods=_TEST_CORS_METHODS,
         cors_headers=_TEST_CORS_HEADERS,
+        cors_allow_credentials=False,
     )
 
     classes = [m.cls for m in app.user_middleware]
@@ -125,6 +128,7 @@ def test_cors_is_outermost_so_preflight_bypasses_inner_middleware() -> None:
         max_upload_bytes=50 * 1024 * 1024,
         cors_methods=_TEST_CORS_METHODS,
         cors_headers=_TEST_CORS_HEADERS,
+        cors_allow_credentials=False,
     )
 
     assert app.user_middleware[0].cls is CORSMiddleware, (
@@ -150,6 +154,7 @@ def test_cors_methods_and_headers_are_narrowed_not_wildcarded() -> None:
         max_upload_bytes=50 * 1024 * 1024,
         cors_methods=["GET", "POST"],
         cors_headers=["Authorization", "Content-Type"],
+        cors_allow_credentials=False,
     )
 
     cors_mw = next(m for m in app.user_middleware if m.cls is CORSMiddleware)
@@ -183,6 +188,7 @@ def test_cors_preflight_rejects_disallowed_method() -> None:
         max_upload_bytes=1024,
         cors_methods=["GET", "POST"],
         cors_headers=["Content-Type"],
+        cors_allow_credentials=False,
     )
     client = TestClient(app)
 
@@ -222,6 +228,7 @@ def test_cors_preflight_allows_listed_method() -> None:
         max_upload_bytes=1024,
         cors_methods=["GET", "POST"],
         cors_headers=["Content-Type"],
+        cors_allow_credentials=False,
     )
     client = TestClient(app)
 
@@ -238,6 +245,77 @@ def test_cors_preflight_allows_listed_method() -> None:
         "Preflight for an allowed verb must echo the request Origin in "
         f"Access-Control-Allow-Origin. Got: {allow_origin!r}"
     )
+
+
+def test_cors_allow_credentials_defaults_to_false_from_settings() -> None:
+    """The CORSMiddleware receives ``allow_credentials`` from Settings (default False).
+
+    Issue #346: previously this flag was hardcoded to ``True`` in source, which
+    is extra attack surface on a service that has no cookie / session
+    authentication and also silently collides with ``cors_origins=['*']``
+    (CORS spec forbids credentials + wildcard origin). Driving it from
+    ``Settings.cors_allow_credentials`` (defaulting to ``False``) gives
+    operators a single knob and a safe default.
+    """
+    app = FastAPI()
+    settings_default = Settings()
+
+    configure_middleware(
+        app,
+        cors_origins=settings_default.cors_origins,
+        max_upload_bytes=settings_default.max_pdf_bytes,
+        cors_methods=settings_default.cors_methods,
+        cors_headers=settings_default.cors_headers,
+        cors_allow_credentials=settings_default.cors_allow_credentials,
+    )
+
+    cors_mw = next(m for m in app.user_middleware if m.cls is CORSMiddleware)
+    assert cors_mw.kwargs["allow_credentials"] is False, (
+        "Default posture: cors_allow_credentials=False propagates to the "
+        "CORSMiddleware kwargs. Hardcoded True was issue #346."
+    )
+
+
+def test_cors_allow_credentials_forwards_true_when_settings_opts_in() -> None:
+    """When an operator opts in via Settings, CORSMiddleware receives True.
+
+    Reads two Settings instances — one with ``cors_allow_credentials=True``
+    and one with the default ``False`` — and asserts the CORSMiddleware
+    config reflects each value. Locks in the settings-to-middleware wiring
+    so a future refactor that reintroduces a hardcoded literal fails CI.
+    """
+    settings_on = Settings(
+        cors_allow_credentials=True,
+        cors_origins=["https://example.com"],
+    )
+    settings_off = Settings(
+        cors_allow_credentials=False,
+        cors_origins=["https://example.com"],
+    )
+
+    app_on = FastAPI()
+    configure_middleware(
+        app_on,
+        cors_origins=settings_on.cors_origins,
+        max_upload_bytes=settings_on.max_pdf_bytes,
+        cors_methods=settings_on.cors_methods,
+        cors_headers=settings_on.cors_headers,
+        cors_allow_credentials=settings_on.cors_allow_credentials,
+    )
+    app_off = FastAPI()
+    configure_middleware(
+        app_off,
+        cors_origins=settings_off.cors_origins,
+        max_upload_bytes=settings_off.max_pdf_bytes,
+        cors_methods=settings_off.cors_methods,
+        cors_headers=settings_off.cors_headers,
+        cors_allow_credentials=settings_off.cors_allow_credentials,
+    )
+
+    cors_on = next(m for m in app_on.user_middleware if m.cls is CORSMiddleware)
+    cors_off = next(m for m in app_off.user_middleware if m.cls is CORSMiddleware)
+    assert cors_on.kwargs["allow_credentials"] is True
+    assert cors_off.kwargs["allow_credentials"] is False
 
 
 def test_request_id_runs_before_access_log_so_log_has_correlation_id() -> None:
@@ -258,6 +336,7 @@ def test_request_id_runs_before_access_log_so_log_has_correlation_id() -> None:
         max_upload_bytes=50 * 1024 * 1024,
         cors_methods=_TEST_CORS_METHODS,
         cors_headers=_TEST_CORS_HEADERS,
+        cors_allow_credentials=False,
     )
 
     classes = [m.cls for m in app.user_middleware]

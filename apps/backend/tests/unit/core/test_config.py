@@ -195,6 +195,46 @@ def test_settings_cors_origins_malformed_json_raises_clear_error() -> None:
         Settings(cors_origins="[not valid json")  # type: ignore[arg-type]
 
 
+# -- cors_allow_credentials (issue #346) ------------------------------------
+
+
+def test_settings_cors_allow_credentials_default_is_false() -> None:
+    """``cors_allow_credentials`` must default to ``False`` (safe posture).
+
+    The service runs without cookies or credentialed session state by default,
+    so ``allow_credentials=True`` is extra attack surface we should only opt
+    into explicitly. Issue #346.
+    """
+    s = Settings()
+    assert s.cors_allow_credentials is False
+
+
+def test_settings_cors_allow_credentials_accepts_true_override() -> None:
+    """Operators can opt in to credentialed CORS by setting the field to True."""
+    s = Settings(cors_allow_credentials=True, cors_origins=["https://example.com"])
+    assert s.cors_allow_credentials is True
+
+
+def test_settings_cors_allow_credentials_wildcard_origin_rejected() -> None:
+    """``allow_credentials=True`` combined with wildcard origin must fail validation.
+
+    The CORS spec forbids returning ``Access-Control-Allow-Credentials: true``
+    alongside ``Access-Control-Allow-Origin: *``; Starlette silently drops
+    credentials in that configuration, but the combination is a well-known
+    CVE pattern worth rejecting at config-load time with a clear error.
+    Issue #346.
+    """
+    with pytest.raises(ValidationError, match="cors_allow_credentials"):
+        Settings(cors_allow_credentials=True, cors_origins=["*"])
+
+
+def test_settings_cors_allow_credentials_wildcard_origin_allowed_when_false() -> None:
+    """Wildcard origin is allowed when credentials are off (the default posture)."""
+    s = Settings(cors_allow_credentials=False, cors_origins=["*"])
+    assert s.cors_allow_credentials is False
+    assert s.cors_origins == ["*"]
+
+
 def test_settings_cors_origins_empty_array_via_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
