@@ -429,6 +429,45 @@ async def test_generate_raises_intelligence_unavailable_when_body_json_is_string
     assert event["cause"] == "invalid_json_shape"
 
 
+async def test_generate_missing_response_field_surfaces_ollama_error_body() -> None:
+    """Regression guard for issue #333.
+
+    When Ollama (or an interposing proxy) returns a 200 whose body carries
+    ``{"error": "model not loaded"}`` and no ``response`` field, the
+    ``missing_response_field`` branch must include the error text in the
+    structured log under an ``ollama_error`` key. Before the fix, the
+    diagnostic was silently discarded — operators debugging failures saw
+    ``cause=missing_response_field`` with no hint that Ollama sent back an
+    explicit reason.
+    """
+    fake = _FakeAsyncClient(
+        post_outcomes=[_FakeResponse(body={"error": "model not loaded"})],
+    )
+    provider = _build_provider(fake_client=fake)
+
+    with capture_logs() as logs, pytest.raises(IntelligenceUnavailableError):
+        await provider.generate("hi", _NAME_STRING_SCHEMA)
+    event = next(e for e in logs if e.get("event") == "intelligence_unavailable")
+    assert event["cause"] == "missing_response_field"
+    assert event["ollama_error"] == "model not loaded"
+
+
+async def test_generate_missing_response_field_without_error_key_omits_ollama_error() -> None:
+    """When the body has neither ``response`` nor ``error``, the log line
+    must still emit ``cause=missing_response_field`` but MUST NOT carry a
+    stale or synthetic ``ollama_error`` value — the field is only present
+    when Ollama actually sent one.
+    """
+    fake = _FakeAsyncClient(post_outcomes=[_FakeResponse(body={"done": True})])
+    provider = _build_provider(fake_client=fake)
+
+    with capture_logs() as logs, pytest.raises(IntelligenceUnavailableError):
+        await provider.generate("hi", _NAME_STRING_SCHEMA)
+    event = next(e for e in logs if e.get("event") == "intelligence_unavailable")
+    assert event["cause"] == "missing_response_field"
+    assert "ollama_error" not in event
+
+
 async def test_generate_raises_intelligence_unavailable_when_body_is_not_json() -> None:
     # Ollama (or an interposing proxy) returned a body that response.json()
     # cannot parse. This must map to IntelligenceUnavailableError, not crash
