@@ -91,32 +91,59 @@ _API_COMPOSITION_ROOT_FILES: Final[frozenset[str]] = frozenset(
 )
 
 _CONTAINED_PACKAGES: Final[dict[str, frozenset[str]]] = {
+    # Entries are RELATIVE POSIX paths keyed as
+    # ``f"{root.name}/{py_file.relative_to(root).as_posix()}"`` — the exact
+    # same shape produced by `_containment_allowlist_key` below and emitted
+    # in offender strings by `_find_*_containment_offenders`. This means a
+    # real containment failure's offender string can be copy-pasted verbatim
+    # into this allowlist without re-keying.
+    #
+    # Basename-only keys (the previous shape) let a file at
+    # ``scripts/ollama_gemma_provider.py`` or
+    # ``app/features/extraction/intelligence/subdir/ollama_gemma_provider.py``
+    # inherit the real file's allowlist entry and evade containment (PR #464
+    # Copilot re-review finding). Path-based keys pin each allowlist entry to
+    # the single file that's authorised to reach the contained package.
     # Docling containment expanded from a single file to the set of
     # parsing/* files introduced by the issue #159 refactor.
     "docling": frozenset(
         {
-            "docling_document_parser.py",
-            "_real_docling_converter_adapter.py",
-            "_real_docling_document_adapter.py",
+            "app/features/extraction/parsing/docling_document_parser.py",
+            "app/features/extraction/parsing/_real_docling_converter_adapter.py",
+            "app/features/extraction/parsing/_real_docling_document_adapter.py",
         },
     ),
-    "pymupdf": frozenset({"pdf_annotator.py", "docling_document_parser.py"}),
-    "fitz": frozenset({"pdf_annotator.py", "docling_document_parser.py"}),
+    "pymupdf": frozenset(
+        {
+            "app/features/extraction/annotation/pdf_annotator.py",
+            "app/features/extraction/parsing/docling_document_parser.py",
+        },
+    ),
+    "fitz": frozenset(
+        {
+            "app/features/extraction/annotation/pdf_annotator.py",
+            "app/features/extraction/parsing/docling_document_parser.py",
+        },
+    ),
     "langextract": frozenset(
         {
-            "extraction_engine.py",
-            "_validating_langextract_adapter.py",
-            "ollama_gemma_provider.py",
+            "app/features/extraction/extraction/extraction_engine.py",
+            "app/features/extraction/extraction/_validating_langextract_adapter.py",
+            "app/features/extraction/intelligence/ollama_gemma_provider.py",
         },
     ),
-    # `benchmark.py` ships the local-latency benchmark CLI under `scripts/`
-    # and uses `httpx` as a plain HTTP client to talk to the running FastAPI
-    # service — NOT as an Ollama client. It is listed here because the
-    # containment scan covers both `_APP_ROOT` and `_SCRIPTS_ROOT` (issue #327);
-    # restricting the allowlist to the two Ollama-client files inside the
-    # feature would make `benchmark.py` a false-positive offender.
+    # `scripts/benchmark.py` ships the local-latency benchmark CLI and uses
+    # `httpx` as a plain HTTP client to talk to the running FastAPI service —
+    # NOT as an Ollama client. It is listed here because the containment scan
+    # covers both `_APP_ROOT` and `_SCRIPTS_ROOT` (issue #327); restricting
+    # the allowlist to the two Ollama-client files inside the feature would
+    # make `scripts/benchmark.py` a false-positive offender.
     "httpx": frozenset(
-        {"ollama_gemma_provider.py", "ollama_health_probe.py", "benchmark.py"},
+        {
+            "app/features/extraction/intelligence/ollama_gemma_provider.py",
+            "app/features/extraction/intelligence/ollama_health_probe.py",
+            "scripts/benchmark.py",
+        },
     ),
 }
 
@@ -575,6 +602,30 @@ def _iter_containment_py_files(roots: tuple[Path, ...]) -> Iterator[tuple[Path, 
             yield root, py_file
 
 
+def _containment_allowlist_key(root: Path, py_file: Path) -> str:
+    """Return the canonical allowlist key for a containment-scan py file.
+
+    Single source of truth for the string shape used to both
+
+    * key ``_CONTAINED_PACKAGES`` entries, and
+    * emit offender paths from ``_find_*_containment_offenders``.
+
+    Sharing one helper is load-bearing: the "allowlist key format mirrors
+    offender string format" invariant means a real failure's offender string
+    can be copy-pasted verbatim into the corresponding ``_CONTAINED_PACKAGES``
+    entry. A drift between the two shapes would silently force maintainers
+    to reconstruct the key, exactly the fragility the basename-keyed scheme
+    produced (PR #464 Copilot re-review finding).
+
+    The shape is ``f"{root.name}/{py_file.relative_to(root).as_posix()}"``:
+    the root's basename (e.g. ``app`` or ``scripts``) plus the file's
+    relative POSIX path from that root. Basename-only keys let a namesake
+    under a different root — or a subdirectory — inherit the real file's
+    allowlist entry and bypass containment.
+    """
+    return f"{root.name}/{py_file.relative_to(root).as_posix()}"
+
+
 def _find_dynamic_import_containment_offenders(
     roots: tuple[Path, ...],
     *,
@@ -592,14 +643,21 @@ def _find_dynamic_import_containment_offenders(
     The returned strings embed the root's basename (e.g. `app/foo.py` vs
     `scripts/foo.py`) so a real failure message tells the reader WHICH
     containment root the offender lives under, not just the filename.
+
+    Allowlist lookup keys on the FULL relative POSIX path from the root
+    (via ``_containment_allowlist_key``), not the basename. PR #464
+    Copilot re-review: a basename-keyed allowlist let a file at
+    ``scripts/ollama_gemma_provider.py`` inherit the real file's allowlist
+    entry and evade containment; relative-path keying pins each entry to
+    exactly one authorised file.
     """
     offenders: list[str] = []
     for root, py_file in _iter_containment_py_files(roots):
-        if py_file.name in allowed_files:
+        if _containment_allowlist_key(root, py_file) in allowed_files:
             continue
         targets = _collect_dynamic_import_targets(py_file.read_text(encoding="utf-8"))
         if any(_target_matches_package(target, package) for target in targets):
-            offenders.append(f"{root.name}/{py_file.relative_to(root).as_posix()}")
+            offenders.append(_containment_allowlist_key(root, py_file))
     return offenders
 
 
@@ -615,14 +673,18 @@ def _find_static_import_containment_offenders(
     rationale for the helper: the synthetic regression test and the real
     parametrized walk must share one predicate so a scoped-to-app regression
     fails the synthetic test directly.
+
+    Allowlist lookup keys on the FULL relative POSIX path from the root
+    (via ``_containment_allowlist_key``), not the basename. See the
+    companion docstring for the PR #464 Copilot re-review rationale.
     """
     offenders: list[str] = []
     for root, py_file in _iter_containment_py_files(roots):
-        if py_file.name in allowed_files:
+        if _containment_allowlist_key(root, py_file) in allowed_files:
             continue
         roots_imported = _collect_static_root_imports(py_file.read_text(encoding="utf-8"))
         if package in roots_imported:
-            offenders.append(f"{root.name}/{py_file.relative_to(root).as_posix()}")
+            offenders.append(_containment_allowlist_key(root, py_file))
     return offenders
 
 
@@ -1371,16 +1433,20 @@ def test_containment_scan_covers_scripts_directory(tmp_path: Path) -> None:
 
 
 def test_containment_scan_respects_allowlist_under_scripts_root(tmp_path: Path) -> None:
-    """Issue #327: an allowlisted basename under `scripts/` must not be flagged.
+    """Issue #327: an allowlisted file under `scripts/` must not be flagged.
 
     Companion to ``test_containment_scan_covers_scripts_directory`` — proves
     the `scripts/` extension does NOT break the allowlist semantics. Plants
     a file named `benchmark.py` under a synthetic `scripts/` root that
-    imports `httpx` (the real allowlist entry for `benchmark.py` mirrors
-    this), and asserts the containment helper does NOT flag it. Without
-    this test, a regression that scanned `scripts/` but ignored the
-    allowlist would pass the positive "flag the rogue" test silently
+    imports `httpx` (the real allowlist entry for `scripts/benchmark.py`
+    mirrors this), and asserts the containment helper does NOT flag it.
+    Without this test, a regression that scanned `scripts/` but ignored
+    the allowlist would pass the positive "flag the rogue" test silently
     while false-positiving on every legitimate use.
+
+    The allowlist is keyed on the FULL relative POSIX path
+    (``scripts/benchmark.py``), not the basename — see the PR #464
+    Copilot re-review rationale captured in ``_containment_allowlist_key``.
     """
     scripts_root = tmp_path / "scripts"
     scripts_root.mkdir(parents=True)
@@ -1393,7 +1459,7 @@ def test_containment_scan_respects_allowlist_under_scripts_root(tmp_path: Path) 
     offenders = _find_static_import_containment_offenders(
         (scripts_root,),
         package="httpx",
-        allowed_files=frozenset({"benchmark.py"}),
+        allowed_files=frozenset({"scripts/benchmark.py"}),
     )
 
     assert "scripts/benchmark.py" not in offenders, (
@@ -1401,6 +1467,152 @@ def test_containment_scan_respects_allowlist_under_scripts_root(tmp_path: Path) 
     )
     assert "scripts/rogue_benchmark_namesake.py" in offenders, (
         f"non-allowlisted sibling must still be flagged: {offenders!r}"
+    )
+
+
+def test_containment_scan_rejects_basename_namesake_in_wrong_root(tmp_path: Path) -> None:
+    """Issue #327 re-review: a basename namesake under the WRONG root must still be flagged.
+
+    Before this fix the containment scan keyed its allowlist on file
+    basename, so a file at ``scripts/ollama_gemma_provider.py`` inherited
+    the real file's allowlist entry (the production
+    ``app/features/extraction/intelligence/ollama_gemma_provider.py``)
+    and evaded containment despite living in an entirely different root.
+
+    Plants ``scripts/ollama_gemma_provider.py`` that dynamically imports
+    ``httpx`` and a clean
+    ``app/features/extraction/intelligence/ollama_gemma_provider.py``
+    under ``tmp_path``, then allowlists only the real file's relative path
+    and asserts the namesake under ``scripts/`` is flagged by the dynamic
+    scan. Red-fails under the basename-keyed scheme because both files
+    share ``py_file.name``. The static-branch counterpart is covered by
+    ``test_containment_scan_rejects_basename_namesake_in_subdir``.
+    """
+    app_root = tmp_path / "app"
+    scripts_root = tmp_path / "scripts"
+    intelligence_dir = app_root / "features" / "extraction" / "intelligence"
+    intelligence_dir.mkdir(parents=True)
+    scripts_root.mkdir(parents=True)
+    (intelligence_dir / "ollama_gemma_provider.py").write_text(
+        "import httpx\n",
+        encoding="utf-8",
+    )
+    (scripts_root / "ollama_gemma_provider.py").write_text(
+        'import importlib\nimportlib.import_module("httpx")\n',
+        encoding="utf-8",
+    )
+
+    allowed = frozenset(
+        {"app/features/extraction/intelligence/ollama_gemma_provider.py"},
+    )
+    roots = (app_root, scripts_root)
+
+    dynamic_offenders = _find_dynamic_import_containment_offenders(
+        roots,
+        package="httpx",
+        allowed_files=allowed,
+    )
+
+    assert "scripts/ollama_gemma_provider.py" in dynamic_offenders, (
+        "basename-bypass regression: a namesake under `scripts/` inherited the "
+        f"real file's allowlist entry; offenders={dynamic_offenders!r}"
+    )
+    assert (
+        "app/features/extraction/intelligence/ollama_gemma_provider.py" not in dynamic_offenders
+    ), (
+        "real allowlisted file wrongly flagged — allowlist key must match the "
+        f"full relative path: offenders={dynamic_offenders!r}"
+    )
+
+
+def test_containment_scan_rejects_basename_namesake_in_subdir(tmp_path: Path) -> None:
+    """Issue #327 re-review: a basename namesake in a SUBDIR under the SAME root must still be flagged.
+
+    Before this fix the containment scan keyed its allowlist on file
+    basename, so a file at
+    ``app/features/extraction/intelligence/sub/ollama_gemma_provider.py``
+    inherited the real file's allowlist entry and could run arbitrary
+    ``httpx`` calls without tripping the gate. Both files plant the same
+    static ``import httpx`` so a regression appears in the static-offenders
+    list; the dynamic counterpart is covered by
+    ``test_containment_scan_rejects_basename_namesake_in_wrong_root``.
+    """
+    app_root = tmp_path / "app"
+    intelligence_dir = app_root / "features" / "extraction" / "intelligence"
+    sub_dir = intelligence_dir / "sub"
+    sub_dir.mkdir(parents=True)
+    (intelligence_dir / "ollama_gemma_provider.py").write_text(
+        "import httpx\n",
+        encoding="utf-8",
+    )
+    (sub_dir / "ollama_gemma_provider.py").write_text(
+        "import httpx\n",
+        encoding="utf-8",
+    )
+
+    allowed = frozenset(
+        {"app/features/extraction/intelligence/ollama_gemma_provider.py"},
+    )
+    roots = (app_root,)
+
+    static_offenders = _find_static_import_containment_offenders(
+        roots,
+        package="httpx",
+        allowed_files=allowed,
+    )
+    dynamic_offenders = _find_dynamic_import_containment_offenders(
+        roots,
+        package="httpx",
+        allowed_files=allowed,
+    )
+
+    subdir_rel = "app/features/extraction/intelligence/sub/ollama_gemma_provider.py"
+    assert subdir_rel in static_offenders, (
+        "basename-bypass regression: namesake in a subdir inherited the real "
+        f"file's allowlist entry; static offenders={static_offenders!r}"
+    )
+    assert (
+        "app/features/extraction/intelligence/ollama_gemma_provider.py" not in static_offenders
+    ), (
+        "real allowlisted file wrongly flagged — allowlist key must match the "
+        f"full relative path: static offenders={static_offenders!r}"
+    )
+    # Sanity: neither file uses dynamic imports, so the dynamic walk must
+    # stay empty. Catches a regression that would over-flag by misreading
+    # static ``import httpx`` as a dynamic target.
+    assert not dynamic_offenders, (
+        f"dynamic walk must stay empty for static-only sources: {dynamic_offenders!r}"
+    )
+
+
+def test_containment_allowlist_key_format_mirrors_offender_string() -> None:
+    """Pin the invariant: the allowlist-key helper produces the SAME string shape as the offender list.
+
+    The containment helpers report offenders as
+    ``f"{root.name}/{py_file.relative_to(root).as_posix()}"``. The
+    allowlist key must use the identical shape so that a real failure's
+    offender string can be copy-pasted verbatim into the corresponding
+    ``_CONTAINED_PACKAGES`` entry without translation. A mismatch
+    (e.g. one side omitting ``root.name``) would force maintainers to
+    mentally reconstruct the key, which is exactly the fragility the
+    basename-keyed scheme produced.
+
+    Red-fails if ``_containment_allowlist_key`` does not exist yet, or if
+    its output diverges from the offender string the production helpers
+    would emit.
+    """
+    root = Path("/any/prefix/app")
+    py_file = root / "features" / "extraction" / "intelligence" / "ollama_gemma_provider.py"
+
+    key = _containment_allowlist_key(root, py_file)
+    offender = f"{root.name}/{py_file.relative_to(root).as_posix()}"
+
+    assert key == offender, (
+        "allowlist-key format must match offender-string format verbatim; "
+        f"got key={key!r} vs offender={offender!r}"
+    )
+    assert key == "app/features/extraction/intelligence/ollama_gemma_provider.py", (
+        f"unexpected key shape: {key!r}"
     )
 
 
