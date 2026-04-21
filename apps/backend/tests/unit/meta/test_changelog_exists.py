@@ -8,12 +8,12 @@ version they should pin.
 This test pins three minimum hygiene invariants:
 
 1. ``CHANGELOG.md`` exists at the repo root.
-2. It opens with the ``# Changelog`` header (Keep a Changelog 1.1.0 form).
+2. Its first non-empty line is ``# Changelog`` (Keep a Changelog 1.1.0 form).
 3. It contains an ``## [Unreleased]`` section so in-flight changes have a
    home without forcing a version bump.
 
 It deliberately does NOT assert the sub-category headings (``### Added`` etc.)
-or any version sections — those are editorial concerns that should evolve
+or any version sections -- those are editorial concerns that should evolve
 naturally as real releases get cut.
 """
 
@@ -21,8 +21,29 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 _REPO_ROOT = Path(__file__).resolve().parents[5]
 _CHANGELOG_PATH = _REPO_ROOT / "CHANGELOG.md"
+
+
+def _read_changelog_or_fail() -> str:
+    """Return CHANGELOG.md contents, or call ``pytest.fail`` if missing.
+
+    Centralises the file-existence precondition so the header and
+    ``[Unreleased]`` tests emit an actionable failure instead of a
+    ``FileNotFoundError`` traceback when ``CHANGELOG.md`` is absent.
+    The existence invariant itself is owned by
+    ``test_changelog_file_exists_at_repo_root``; this helper mirrors the
+    check so downstream tests remain independently readable.
+    """
+    if not _CHANGELOG_PATH.is_file():
+        pytest.fail(
+            f"Expected CHANGELOG.md at {_CHANGELOG_PATH}. "
+            "See issue #413: the repo must track release history in a Keep a "
+            "Changelog file, not only in the commit log."
+        )
+    return _CHANGELOG_PATH.read_text(encoding="utf-8")
 
 
 def test_changelog_file_exists_at_repo_root() -> None:
@@ -34,15 +55,20 @@ def test_changelog_file_exists_at_repo_root() -> None:
 
 
 def test_changelog_has_top_level_header() -> None:
-    content = _CHANGELOG_PATH.read_text(encoding="utf-8")
-    assert "# Changelog" in content, (
-        f"CHANGELOG.md at {_CHANGELOG_PATH} is missing the '# Changelog' "
-        "header. Follow the Keep a Changelog 1.1.0 format."
+    content = _read_changelog_or_fail()
+    first_non_empty = next(
+        (line.rstrip() for line in content.splitlines() if line.strip()),
+        "",
+    )
+    assert first_non_empty == "# Changelog", (
+        f"CHANGELOG.md at {_CHANGELOG_PATH} must open with '# Changelog' as "
+        f"its first non-empty line (got {first_non_empty!r}). Follow the "
+        "Keep a Changelog 1.1.0 format."
     )
 
 
 def test_changelog_has_unreleased_section() -> None:
-    content = _CHANGELOG_PATH.read_text(encoding="utf-8")
+    content = _read_changelog_or_fail()
     assert "## [Unreleased]" in content, (
         f"CHANGELOG.md at {_CHANGELOG_PATH} is missing the '## [Unreleased]' "
         "section. New changes must land under [Unreleased] until a version "
