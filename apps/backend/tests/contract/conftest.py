@@ -98,14 +98,19 @@ hypothesis_settings.register_profile(
 
 
 def _select_profile() -> str:
-    """Return the Hypothesis profile name to activate at collection time.
+    """Return the Hypothesis profile name chosen by env var, or the ``ci`` default.
+
+    This helper is a pure function of ``HYPOTHESIS_PROFILE``: it does
+    NOT inspect Hypothesis' live global state. See ``_should_load_default``
+    for the "is the built-in default still active?" guard that decides
+    whether the caller should honour the returned name.
 
     Resolution order:
     1. ``--hypothesis-profile=<name>`` on the pytest command line — NOT
        read here. The Hypothesis pytest plugin reads the flag itself
-       during ``pytest_configure``, which runs AFTER this conftest
-       import. If the flag was passed, the plugin will overwrite
-       whatever profile we loaded below, so CLI wins.
+       during ``pytest_configure``. See ``_should_load_default`` for
+       the guard that yields to the plugin's selection when the CLI
+       flag was passed.
     2. ``HYPOTHESIS_PROFILE`` environment variable. Used by local
        tooling and CI jobs that want a specific profile without
        threading a pytest flag through every invocation. The value is
@@ -135,12 +140,45 @@ def _select_profile() -> str:
     return env_choice
 
 
+def _default_profile_is_still_active() -> bool:
+    """True iff Hypothesis' built-in ``default`` profile is the currently active one.
+
+    Read by the module-level loader below as the "has the Hypothesis pytest
+    plugin already loaded a non-default profile?" probe. The plugin runs
+    ``load_profile`` in ``pytest_configure`` when
+    ``--hypothesis-profile=<name>`` is passed, and this sub-conftest may
+    import either before or after ``pytest_configure`` depending on
+    whether pytest treats it as an "initial" conftest (rootdir/testpaths
+    arg) or discovers it via collection walk. Checking the active
+    settings fingerprint decouples us from that ordering: if a non-default
+    profile is already active, the plugin has won and we must not
+    overwrite its choice.
+
+    The fingerprint uses only public Hypothesis API
+    (``settings()`` for the active instance, ``settings.get_profile("default")``
+    for the built-in default) rather than the private
+    ``settings._current_profile`` attribute — see the matching rationale
+    in ``tests/contract/test_hypothesis_profile_registered.py``.
+    """
+    active = hypothesis_settings()
+    default = hypothesis_settings.get_profile("default")
+    return (
+        active.max_examples == default.max_examples
+        and active.deadline == default.deadline
+        and active.derandomize == default.derandomize
+    )
+
+
 # Load a profile at import time so any future ``@schema.parametrize``
 # decorator inherits a bounded budget from the moment pytest collects
-# it. The Hypothesis pytest plugin overwrites this in
-# ``pytest_configure`` when ``--hypothesis-profile=<name>`` is passed —
-# that's the intended behaviour: CLI wins over our default.
-hypothesis_settings.load_profile(_select_profile())
+# it. An explicit ``HYPOTHESIS_PROFILE`` env var always wins (our
+# loader is the only code that reads it, so no race with the plugin).
+# Otherwise, only load the ``ci`` default if Hypothesis' built-in
+# ``default`` profile is still active — if the pytest plugin has
+# already loaded a non-default profile via ``--hypothesis-profile=<name>``,
+# we leave its selection alone so CLI wins.
+if os.environ.get(_HYPOTHESIS_PROFILE_ENV_VAR) or _default_profile_is_still_active():
+    hypothesis_settings.load_profile(_select_profile())
 
 
 # --- schemathesis extract_schema fixture (issue #352) -------------------------

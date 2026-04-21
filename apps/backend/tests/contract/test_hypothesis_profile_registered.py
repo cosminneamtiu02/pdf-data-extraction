@@ -126,18 +126,43 @@ def test_active_profile_is_one_of_the_registered_profiles() -> None:
     ``dev`` (bounded example count, generous deadline, deterministic
     seed) is undone the moment a future ``@schema.parametrize`` decorator
     lands.
+
+    Implementation note: we compare a *fingerprint* (tuple of
+    ``max_examples``/``deadline``/``derandomize``) of the active settings
+    object against the fingerprints of the registered profiles, using
+    only public Hypothesis APIs (``settings()`` for the active instance
+    and ``settings.get_profile(name)`` for each registered name).
+    Reading ``settings._current_profile`` directly would be shorter but
+    relies on a private module-level attribute that Hypothesis can
+    rename across versions — the contract suite would then start
+    failing for reasons unrelated to our profiles. The fingerprint
+    approach stays stable because the ``ci`` profile pins
+    ``max_examples=50`` (!= default 100), ``deadline=5000ms`` (!= default
+    200ms), and ``derandomize=True`` (!= default False), so a genuine
+    "default profile is still active" regression always shows up on at
+    least one fingerprint field.
     """
-    # `_current_profile` is the single source of truth for the active
-    # profile name (the `hypothesis.settings` module stores it as a
-    # module-level string after `load_profile` runs). Reading it
-    # directly rather than round-tripping through `settings()` is what
-    # makes this assertion load-bearing — any substitute check (like
-    # comparing `settings().max_examples` to the ci profile's value)
-    # would pass accidentally if the ci value happened to match the
-    # default.
-    active_profile_name = hypothesis_settings._current_profile  # noqa: SLF001
-    assert active_profile_name in _REQUIRED_PROFILES, (
-        f"Active Hypothesis profile is {active_profile_name!r}; expected one of "
-        f"{_REQUIRED_PROFILES!r}. The contract conftest.py must call "
-        f"`settings.load_profile(...)` with a registered name. Issue #353."
+    active_settings = hypothesis_settings()
+    default_settings = hypothesis_settings.get_profile("default")
+    fingerprint_fields = ("max_examples", "deadline", "derandomize")
+
+    def _fingerprint(profile: hypothesis_settings) -> tuple[object, ...]:
+        return tuple(getattr(profile, field_name) for field_name in fingerprint_fields)
+
+    active_fingerprint = _fingerprint(active_settings)
+    registered_fingerprints = {
+        name: _fingerprint(hypothesis_settings.get_profile(name)) for name in _REQUIRED_PROFILES
+    }
+
+    assert active_fingerprint != _fingerprint(default_settings), (
+        "Active Hypothesis settings still match the built-in default profile on "
+        f"{fingerprint_fields!r}; the contract conftest.py must call "
+        "`settings.load_profile(...)` with a non-default registered profile. Issue #353."
+    )
+
+    assert active_fingerprint in registered_fingerprints.values(), (
+        "Active Hypothesis settings do not match any registered contract-test profile on "
+        f"{fingerprint_fields!r}. Expected one of {registered_fingerprints!r}, got "
+        f"{active_fingerprint!r}. The contract conftest.py must call "
+        "`settings.load_profile(...)` with a registered name. Issue #353."
     )

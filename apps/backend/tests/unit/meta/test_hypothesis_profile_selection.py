@@ -85,3 +85,31 @@ def test_select_profile_rejects_unknown_env_var_with_helpful_message(
     assert "HYPOTHESIS_PROFILE" in message, (
         "error message must identify the env var so the caller knows where to look"
     )
+
+
+def test_default_profile_is_still_active_is_false_after_ci_load() -> None:
+    """After the contract conftest loads ``ci``, the default-active probe must say ``False``.
+
+    This is the guard that makes the CLI flag ``--hypothesis-profile=<name>``
+    win over this conftest's own default-loading. If the Hypothesis pytest
+    plugin ran first (e.g. because the contract conftest is imported via
+    collection walk rather than as an "initial" conftest), the plugin
+    will have loaded a non-default profile and the fingerprint match
+    must report False so the conftest skips its own ``load_profile``
+    call.
+
+    The contract conftest is imported unconditionally at the top of this
+    module (via ``_select_profile``'s module-level import inside the
+    other tests), which triggers a ``load_profile("ci")`` side effect.
+    By the time this test runs, ``ci`` is active, so the probe must
+    return False — otherwise the guard would be a no-op and we'd be
+    back to racing the plugin.
+    """
+    from tests.contract.conftest import _default_profile_is_still_active
+
+    assert _default_profile_is_still_active() is False, (
+        "_default_profile_is_still_active() returned True after the contract "
+        "conftest loaded its 'ci' profile. The fingerprint check is broken — "
+        "see apps/backend/tests/contract/conftest.py _default_profile_is_still_active. "
+        "Issue #353."
+    )
