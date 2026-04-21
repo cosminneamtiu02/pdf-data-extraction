@@ -40,7 +40,7 @@ def _create_test_app_with_handler() -> FastAPI:
 
     @test_app.get("/trigger-validation-error")
     async def trigger_validation_error() -> None:
-        raise ValidationFailedError(field="name", reason="too short")
+        raise ValidationFailedError
 
     @test_app.get("/trigger-unhandled")
     async def trigger_unhandled() -> None:
@@ -49,6 +49,13 @@ def _create_test_app_with_handler() -> FastAPI:
 
     @test_app.get("/trigger-validation")
     async def trigger_validation(required_param: int) -> dict[str, bool]:  # noqa: ARG001
+        return {"ok": True}
+
+    @test_app.get("/trigger-multi-validation")
+    async def trigger_multi_validation(
+        first_required: int,  # noqa: ARG001 — required param drives the validation failure
+        second_required: int,  # noqa: ARG001 — required param drives the validation failure
+    ) -> dict[str, bool]:
         return {"ok": True}
 
     # Add request_id middleware for the handler to read
@@ -78,14 +85,21 @@ def test_error_handler_serializes_domain_error(test_client: TestClient) -> None:
     assert "request_id" in body["error"]
 
 
-def test_error_handler_serializes_parameterised_domain_error(test_client: TestClient) -> None:
-    """A parameterised DomainError should serialize its params dict."""
+def test_error_handler_serializes_validation_failed_domain_error(test_client: TestClient) -> None:
+    """A directly-raised ``ValidationFailedError`` serializes as the parameterless envelope.
+
+    After issue #344, VALIDATION_FAILED carries no ``params`` — all
+    per-field detail lives in ``details``. A bare ``ValidationFailedError``
+    (raised by application code, not FastAPI's request-validation path)
+    therefore produces ``params == {}`` and ``details is None``.
+    """
     response = test_client.get("/trigger-validation-error")
 
     assert response.status_code == ValidationFailedError.http_status
     body = response.json()
     assert body["error"]["code"] == ValidationFailedError.code
-    assert body["error"]["params"] == {"field": "name", "reason": "too short"}
+    assert body["error"]["params"] == {}
+    assert body["error"]["details"] is None
 
 
 def test_error_handler_maps_validation_error(test_client: TestClient) -> None:
@@ -106,6 +120,50 @@ def test_error_handler_includes_all_validation_errors_in_details(test_client: Te
     assert len(body["error"]["details"]) > 0
     assert "field" in body["error"]["details"][0]
     assert "reason" in body["error"]["details"][0]
+
+
+def test_error_handler_validation_params_is_empty(test_client: TestClient) -> None:
+    """VALIDATION_FAILED must expose no ``params`` — per-field info lives in ``details``.
+
+    Issue #344 fix: the prior contract set ``params`` to the first detail
+    only, silently truncating multi-field failures. ``params`` is now
+    empty for VALIDATION_FAILED; operators consume ``details`` for the
+    full list.
+    """
+    response = test_client.get("/trigger-validation?required_param=not_an_int")
+
+    body = response.json()
+    assert body["error"]["params"] == {}
+
+
+def test_error_handler_surfaces_all_fields_when_multiple_fail(
+    test_client: TestClient,
+) -> None:
+    """When several fields fail validation, ``details`` must carry every one.
+
+    This pins the issue #344 fix: the prior handler collapsed multi-field
+    failures into a single-entry ``params`` dict, so an operator reading
+    the response saw only one of N violations. The replacement contract
+    puts all field failures in ``details`` (a list) and leaves ``params``
+    empty. Missing ``first_required`` AND ``second_required`` must yield
+    two distinct ``details`` entries with distinct ``field`` values.
+    """
+    response = test_client.get("/trigger-multi-validation")
+
+    assert response.status_code == ValidationFailedError.http_status
+    body = response.json()
+    assert body["error"]["code"] == ValidationFailedError.code
+    assert body["error"]["params"] == {}
+
+    details = body["error"]["details"]
+    assert details is not None
+    # Both required query params are missing — expect at least two entries
+    # with distinct field identifiers.
+    min_multi_field_failures = 2
+    assert len(details) >= min_multi_field_failures
+    fields = {entry["field"] for entry in details}
+    assert any("first_required" in f for f in fields)
+    assert any("second_required" in f for f in fields)
 
 
 def test_error_handler_maps_unhandled_to_internal_error(test_client: TestClient) -> None:
