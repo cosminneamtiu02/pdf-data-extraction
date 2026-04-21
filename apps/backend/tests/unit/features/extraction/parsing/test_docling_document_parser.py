@@ -18,10 +18,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import structlog
 
 from app.features.extraction.parsing import (
     _real_docling_converter_adapter as converter_adapter_mod,
+)
+from app.features.extraction.parsing import (
+    _real_docling_document_adapter as docling_adapter_mod,
 )
 from app.features.extraction.parsing import docling_document_parser as parser_mod
 from app.features.extraction.parsing._real_docling_converter_adapter import (
@@ -1329,7 +1331,38 @@ def test_iter_text_items_raises_when_texts_is_mapping() -> None:
     assert excinfo.value.params.model_dump() == {"dependency": "docling"}
 
 
-def test_iter_text_items_shape_drift_log_distinguishes_iterate_items_states() -> None:
+class _SpyStructlogLogger:
+    """Test double for ``docling_adapter_mod._log`` (Copilot-review #471).
+
+    Why we don't use ``structlog.testing.capture_logs()`` here: the adapter
+    module defines ``_log = structlog.get_logger(__name__)`` at import
+    time, and our ``configure_logging()`` registers
+    ``cache_logger_on_first_use=True``. Earlier tests in this file raise
+    the same shape-drift error and therefore call ``_log.error(...)``
+    outside any ``capture_logs()`` context, which can cause structlog to
+    cache a bound logger that later ``capture_logs()`` contexts won't
+    intercept — making log-assertion tests order-dependent. A direct
+    monkeypatched spy sidesteps structlog's global state entirely, the
+    same pattern ``test_extraction_service.py::_SpyLogger`` uses for the
+    extraction service's module-level logger.
+    """
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict[str, object]]] = []
+
+    def error(self, event: str, **kwargs: object) -> None:
+        self.events.append((event, kwargs))
+
+    def info(self, event: str, **kwargs: object) -> None:  # pragma: no cover
+        self.events.append((event, kwargs))
+
+    def warning(self, event: str, **kwargs: object) -> None:  # pragma: no cover
+        self.events.append((event, kwargs))
+
+
+def test_iter_text_items_shape_drift_log_distinguishes_iterate_items_states(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Issue #341 (Copilot follow-up): the `docling_shape_unrecognized` log
     must distinguish "attribute missing" from "attribute present but not
     callable". A non-callable `iterate_items` attribute is a plausible
@@ -1356,10 +1389,13 @@ def test_iter_text_items_shape_drift_log_distinguishes_iterate_items_states() ->
     )
     adapter = RealDoclingDocumentAdapter(raw_doc)
 
-    with structlog.testing.capture_logs() as captured, pytest.raises(PdfParserUnavailableError):
+    spy = _SpyStructlogLogger()
+    monkeypatch.setattr(docling_adapter_mod, "_log", spy)
+
+    with pytest.raises(PdfParserUnavailableError):
         list(adapter.iter_text_items())
 
-    drift_events = [e for e in captured if e["event"] == "docling_shape_unrecognized"]
+    drift_events = [kwargs for event, kwargs in spy.events if event == "docling_shape_unrecognized"]
     assert len(drift_events) == 1
     event = drift_events[0]
     assert event["has_iterate_items_attr"] is True
