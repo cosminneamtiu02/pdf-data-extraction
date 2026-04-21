@@ -823,11 +823,13 @@ def test_multi_block_end_before_start_falls_back_to_start_block_bbox() -> None:
     # Issue #339: if the offset index is corrupt or a caller misuses the
     # resolver such that end_block_id appears BEFORE start_block_id in the
     # index order (which `start_offset < end_offset` is supposed to prevent),
-    # `_collect_multi_block_bboxes` used to set `in_span=True` on the start
-    # block and then run off the end of the iterator, silently emitting bboxes
-    # for every block from start through the end of the document. The guard
-    # must catch the invariant violation and fall back to a single whole-block
-    # bbox for the start block rather than silently emit wrong geometry.
+    # the pre-fix `_collect_multi_block_bboxes` would encounter `end_block_id`
+    # first and break out of the loop immediately, silently returning an
+    # empty list — still wrong geometry, still no observability. The separate
+    # "leak trailing blocks through the document tail" behavior applied when
+    # `end_block_id` was missing from the index entirely, and is covered by
+    # the next test. The guard must catch both invariant violations and fall
+    # back to a single whole-block bbox for the start block.
     #
     # `RawExtraction.__post_init__` prevents the bug shape from being
     # constructed via the public constructor (it enforces start_offset <
@@ -844,7 +846,7 @@ def test_multi_block_end_before_start_falls_back_to_start_block_bbox() -> None:
     # The separate "leak trailing blocks through the end of the document"
     # behavior applied when `end_block_id` was missing from the index, which
     # is covered by the next test. The fixed implementation emits exactly one
-    # bbox here — the start block's whole-block bbox.
+    # bbox here — the start block's whole-block bbox — via the fallback path.
     b_end = _block(block_id="b_end", text="first", bbox=(0, 0, 50, 10))
     b_start = _block(block_id="b_start", text="second", bbox=(0, 20, 50, 30))
     b_middle = _block(block_id="b_middle", text="third", bbox=(0, 40, 50, 50))
@@ -866,12 +868,13 @@ def test_multi_block_end_before_start_falls_back_to_start_block_bbox() -> None:
             blocks_by_id=blocks_by_id,
         )
 
-    # Guard: exactly one bbox (the start block), NOT the three trailing
-    # entries the pre-fix implementation leaked.
+    # Guard: exactly one bbox (the start block) via the fallback, NOT the
+    # empty list the pre-fix implementation silently returned when
+    # end_block_id was encountered before start_block_id.
     assert len(refs) == 1, (
         f"Expected fallback to a single start-block bbox; got {len(refs)} bboxes. "
-        "Pre-fix behavior leaked trailing blocks because the end_block_id was "
-        "never seen after start_block_id."
+        "Pre-fix behavior returned an empty list because the unguarded `break` "
+        "tripped on end_block_id before start_block_id was ever reached."
     )
     assert (refs[0].x0, refs[0].y0, refs[0].x1, refs[0].y1) == (0.0, 20.0, 50.0, 30.0)
 
