@@ -2,7 +2,6 @@
 
 from typing import ClassVar
 
-from app.exceptions._generated.validation_failed_params import ValidationFailedParams
 from app.exceptions.base import DomainError
 
 
@@ -12,5 +11,5 @@ class ValidationFailedError(DomainError):
     code: ClassVar[str] = "VALIDATION_FAILED"
     http_status: ClassVar[int] = 422
 
-    def __init__(self, *, field: str, reason: str) -> None:
-        super().__init__(params=ValidationFailedParams(field=field, reason=reason))
+    def __init__(self) -> None:
+        super().__init__(params=None)
