@@ -6,7 +6,7 @@ to the venv interpreter. Every 30s that spawned a full cold Python
 interpreter (~500MB of imports for a dependency-heavy venv: Docling,
 LangExtract, PyMuPDF, torch CPU wheels) just to answer one HTTP request,
 and under `docker stop` it could race against shutdown — producing a
-mis-leading `unhealthy` flap right before the container exits.
+misleading `unhealthy` flap right before the container exits.
 
 The fix is to replace the `python -c` check with a non-Python probe
 (`curl -fsS http://localhost:8000/health`) in exec form. Exec form is
