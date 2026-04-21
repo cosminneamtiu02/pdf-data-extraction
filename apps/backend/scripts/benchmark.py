@@ -504,13 +504,19 @@ def _format_bench_error_source(loc: str, cli_overrides: dict[str, Any]) -> str:
     return f"BENCH_{loc.upper()}"
 
 
-def parse_args(argv: list[str]) -> BenchConfig:
+def parse_args(argv: list[str], *, err: TextIO | None = None) -> BenchConfig:
     """Parse CLI arguments and return a ``BenchConfig``.
 
     Defaults come from :class:`scripts._benchmark_settings.BenchmarkSettings`,
     so ``BENCH_*`` environment variables flow through pydantic-settings
     rather than ``os.environ`` (CLAUDE.md forbidden pattern; issue #237).
     Explicit CLI flags still win over env vars.
+
+    ``err`` defaults to ``sys.stderr`` when ``None``. Callers (notably
+    :func:`main`) inject an :class:`io.StringIO` so the pydantic-driven
+    ValidationError operator messages land on the same stream as every
+    other ``main`` error path instead of leaking onto the process-global
+    ``sys.stderr`` (issue #318).
 
     Implementation note: argv is parsed *first* with ``argparse.SUPPRESS`` as
     the default for every ``BENCH_*``-backed flag, so only flags the operator
@@ -528,6 +534,7 @@ def parse_args(argv: list[str]) -> BenchConfig:
     script preserves the exit-code contract of the pre-refactor
     ``_safe_int_env`` branch instead of crashing with a traceback.
     """
+    err_stream = sys.stderr if err is None else err
     parser = argparse.ArgumentParser(
         prog="benchmark",
         description=(
@@ -614,7 +621,7 @@ def parse_args(argv: list[str]) -> BenchConfig:
         for error in exc.errors():
             loc = ".".join(str(part) for part in error["loc"]) or "<root>"
             source = _format_bench_error_source(loc, cli_overrides)
-            sys.stderr.write(f"Error: {source}: {error['msg']}\n")
+            err_stream.write(f"Error: {source}: {error['msg']}\n")
         raise SystemExit(2) from None  # operator-facing message, not a domain error
 
     # Normalize service_pid=0 -> None. PID 0 is never a valid target process
@@ -646,13 +653,16 @@ def main(
     ``out`` and ``err`` default to ``sys.stdout`` / ``sys.stderr`` when ``None``.
     Integration tests inject ``io.StringIO`` instances so they can capture the
     report and error messages without mutating the process-global streams
-    (issue #326).
+    (issue #326). The ``err`` stream is also threaded into :func:`parse_args`
+    so pydantic-ValidationError operator messages from ``BenchmarkSettings``
+    land on the same injected buffer rather than leaking onto the process-
+    global ``sys.stderr`` (issue #318).
     """
     out_stream = sys.stdout if out is None else out
     err_stream = sys.stderr if err is None else err
 
     try:
-        config = parse_args(sys.argv[1:] if argv is None else argv)
+        config = parse_args(sys.argv[1:] if argv is None else argv, err=err_stream)
     except SystemExit as exc:
         # argparse calls sys.exit on --help or on error; propagate the code.
         return exc.code if isinstance(exc.code, int) else 1

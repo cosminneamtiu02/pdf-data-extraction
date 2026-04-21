@@ -9,6 +9,7 @@ warm-up discard, and pyright strict pass.
 
 from __future__ import annotations
 
+import io
 import subprocess
 import sys
 from pathlib import Path
@@ -24,6 +25,7 @@ from scripts.benchmark import (
     discard_warmup,
     discover_fixtures,
     format_report,
+    main,
     parse_args,
 )
 
@@ -394,6 +396,106 @@ def test_parse_args_service_pid_zero_normalizes_to_none(
 
     monkeypatch.delenv("BENCH_SERVICE_PID", raising=False)
     assert parse_args(["--service-pid", "0"]).service_pid is None
+
+
+# ---------------------------------------------------------------------------
+# main(out=, err=) stream-injection contract (issue #318)
+# ---------------------------------------------------------------------------
+
+
+def test_main_missing_fixtures_writes_error_to_injected_err_not_process_stderr(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """main(out=, err=) routes FileNotFoundError to injected err; no sys.stderr leakage.
+
+    End-to-end guard for issue #318: confirms that when ``main`` rejects a
+    missing-fixtures run, the error message lands in the caller-supplied
+    ``err`` buffer rather than on the process-global ``sys.stderr``. Uses
+    ``capsys`` as a tripwire — if any byte leaks to the real streams, the
+    assertion on ``captured.err`` / ``captured.out`` fails.
+    """
+    fixtures_dir = tmp_path / "empty"
+    fixtures_dir.mkdir()
+
+    fake_out = io.StringIO()
+    fake_err = io.StringIO()
+
+    code = main(
+        ["--fixtures-dir", str(fixtures_dir), "--iterations", "1"],
+        out=fake_out,
+        err=fake_err,
+    )
+
+    assert code != 0
+    err_text = fake_err.getvalue()
+    # All three expected fixture names should be named in the error message.
+    assert "native_invoice_10p.pdf" in err_text
+    assert "scanned_invoice_10p.pdf" in err_text
+    assert "table_heavy_5p.pdf" in err_text
+
+    # No leakage to process-global streams.
+    captured = capsys.readouterr()
+    assert "native_invoice_10p.pdf" not in captured.err
+    assert "scanned_invoice_10p.pdf" not in captured.err
+    assert "table_heavy_5p.pdf" not in captured.err
+    assert fake_out.getvalue() == ""
+
+
+def test_main_invalid_env_var_writes_error_to_injected_err_not_process_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """main(out=, err=) routes BenchmarkSettings ValidationError to injected err.
+
+    Regression guard for issue #318: the ``BenchmarkSettings(**cli_overrides)``
+    call inside ``parse_args`` must surface bad ``BENCH_*`` env values through
+    the same injected ``err`` stream that ``main`` uses for all other error
+    output. Before the fix, ``parse_args`` wrote directly to
+    ``sys.stderr.write(...)`` which bypassed the caller's stream and leaked
+    onto the process-global ``sys.stderr`` (racing with pytest capture and
+    defeating the purpose of the kwarg).
+    """
+    monkeypatch.setenv("BENCH_ITERATIONS", "banana")
+
+    fake_out = io.StringIO()
+    fake_err = io.StringIO()
+
+    code = main([], out=fake_out, err=fake_err)
+
+    assert code == 2
+    err_text = fake_err.getvalue()
+    assert "BENCH_ITERATIONS" in err_text or "iterations" in err_text.lower()
+
+    # No leakage to process-global stderr — the whole point of the err kwarg.
+    captured = capsys.readouterr()
+    assert "BENCH_ITERATIONS" not in captured.err
+    assert "iterations" not in captured.err.lower()
+    assert fake_out.getvalue() == ""
+
+
+def test_main_invalid_cli_flag_writes_error_to_injected_err_not_process_stderr(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """main(out=, err=) routes bad ``--iterations`` flag to injected err, not sys.stderr.
+
+    ``--iterations 0`` trips the pydantic ``Field(gt=0)`` invariant on
+    :class:`BenchmarkSettings`. As with the env-var variant, the operator
+    error message must be visible to the caller via the injected ``err``
+    buffer and must not leak to the process-global ``sys.stderr``.
+    """
+    fake_out = io.StringIO()
+    fake_err = io.StringIO()
+
+    code = main(["--iterations", "0"], out=fake_out, err=fake_err)
+
+    assert code == 2
+    err_text = fake_err.getvalue()
+    assert "--iterations" in err_text or "iterations" in err_text.lower()
+
+    captured = capsys.readouterr()
+    assert "iterations" not in captured.err.lower()
+    assert fake_out.getvalue() == ""
 
 
 # ---------------------------------------------------------------------------
