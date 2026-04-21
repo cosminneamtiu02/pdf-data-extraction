@@ -124,9 +124,17 @@ is constructed once at startup in `app/main.py`, drives middleware
 configuration (CORS origins, upload byte cap), and is available to any
 downstream handler via `Depends(get_settings)`.
 
-**Extraction request lifecycle.** `router.extract` enforces the byte-size
-guard while streaming the upload, then calls `ExtractionService.extract(...)`.
-`ExtractionService` runs the pipeline under a single `asyncio.timeout` budget
+**Extraction request lifecycle.** Byte-size enforcement on `POST /api/v1/extract`
+is a defense-in-depth pair, not a single gate. `UploadSizeLimitMiddleware` is
+the true streaming-time guard: it runs at the ASGI layer before route dispatch,
+inspects `Content-Length`, and rejects oversized (or chunked-without-length)
+requests before Starlette's multipart parser spools any bytes. By the time
+`router.extract` receives a FastAPI `UploadFile`, Starlette has already
+parsed and spooled the multipart upload, so the route-level
+`read_with_byte_limit` check is a backstop in case a proxy stripped
+`Content-Length` — it is not the mechanism that prevents multipart spooling.
+`router.extract` then calls `ExtractionService.extract(...)`, which runs the
+pipeline under a single `asyncio.timeout` budget
 (`Settings.extraction_timeout_seconds`) and a per-service semaphore cap
 (`Settings.max_concurrent_extractions`) so over-cap callers fail fast with
 `ExtractionOverloadedError` (503) instead of queueing. Timed-out background

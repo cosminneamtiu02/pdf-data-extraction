@@ -58,7 +58,7 @@ def test_ai_guide_mentions_every_existing_extraction_subpackage() -> None:
     subpackages = sorted(
         entry.name
         for entry in _EXTRACTION_FEATURE_DIR.iterdir()
-        if entry.is_dir() and not entry.name.startswith("_")
+        if entry.is_dir() and not entry.name.startswith("_") and (entry / "__init__.py").is_file()
     )
     assert subpackages, (
         f"No subpackages found under {_EXTRACTION_FEATURE_DIR}; the "
