@@ -26,7 +26,6 @@ from app.exceptions._generated.skill_validation_failed_error import SkillValidat
 from app.exceptions._generated.skill_validation_failed_params import SkillValidationFailedParams
 from app.exceptions._generated.structured_output_failed_error import StructuredOutputFailedError
 from app.exceptions._generated.validation_failed_error import ValidationFailedError
-from app.exceptions._generated.validation_failed_params import ValidationFailedParams
 
 __all__ = [
     "ExtractionBudgetExceededError",
@@ -53,5 +52,4 @@ __all__ = [
     "SkillValidationFailedParams",
     "StructuredOutputFailedError",
     "ValidationFailedError",
-    "ValidationFailedParams",
 ]
