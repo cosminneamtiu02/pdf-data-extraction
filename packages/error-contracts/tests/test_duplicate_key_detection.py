@@ -235,12 +235,18 @@ def test_load_and_validate_uses_duplicate_key_detecting_loader(
     from scripts import generate
     from scripts._duplicate_key_safe_loader import DuplicateKeyDetectingSafeLoader
 
-    captured_loaders: list[type[yaml.Loader]] = []
+    # Annotate as ``type[yaml.SafeLoader]``: ``DuplicateKeyDetectingSafeLoader``
+    # is a ``yaml.SafeLoader`` subclass, and ``yaml.SafeLoader`` is NOT a
+    # subclass of ``yaml.Loader`` (they are siblings sharing the Reader/
+    # Scanner/Parser/Composer mix-in chain but a disjoint Constructor
+    # hierarchy). Annotating the captured loaders as ``type[yaml.Loader]``
+    # would mis-describe the runtime value and break Pyright strict.
+    captured_loaders: list[type[yaml.SafeLoader]] = []
     real_yaml_load = generate.yaml.load
 
     def _capture_loader(
         stream: str,
-        Loader: type[yaml.Loader],  # noqa: N803 — mirrors PyYAML signature
+        Loader: type[yaml.SafeLoader],  # noqa: N803 — mirrors PyYAML signature
     ) -> object:
         # load_and_validate reads the file with Path.read_text(), so the
         # stream arg is always a str at this call site. The narrower type
