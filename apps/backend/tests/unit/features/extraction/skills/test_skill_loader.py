@@ -230,6 +230,8 @@ def test_load_unreadable_skill_file_raises_permission_error_not_validation_error
     call into a `SkillValidationFailedError`, hiding the real (I/O) root cause
     behind a misleading "skill validation failed" label (issue #348).
     """
+    if not hasattr(os, "geteuid"):
+        pytest.skip("POSIX-only test: Windows lacks `os.geteuid` and `chmod(0o000)` semantics")
     if os.geteuid() == 0:
         pytest.skip("root bypasses 0o000 file permissions; test requires non-root uid")
 
