@@ -79,9 +79,28 @@ def _path_targets() -> list[tuple[int, str]]:
         # literal filesystem paths.
         unanchored = pattern.removeprefix("/")
         prefix = _GLOB_METACHARS.split(unanchored, maxsplit=1)[0].rstrip("/")
+        # Leading-glob patterns like `**/pnpm-lock.yaml` or `*/foo/bar` split
+        # to an empty literal prefix. We cannot safely treat the empty string
+        # as a filesystem path (every directory "exists" trivially), so they
+        # fall through the prefix check. The dedicated
+        # `test_gitattributes_no_leading_glob_patterns` assertion below pins
+        # the invariant that no such patterns are in `.gitattributes` today —
+        # if someone adds one, that test will fail loudly and prompt a
+        # revision of this prefix-based strategy.
         if prefix:
             targets.append((lineno, prefix))
     return targets
+
+
+def _raw_patterns() -> list[tuple[int, str]]:
+    """Return `(line_no, pattern)` for every non-comment `.gitattributes` rule."""
+    patterns: list[tuple[int, str]] = []
+    for lineno, raw in enumerate(_GITATTRIBUTES.read_text(encoding="utf-8").splitlines(), start=1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        patterns.append((lineno, line.split(None, 1)[0]))
+    return patterns
 
 
 def test_gitattributes_paths_all_exist_or_are_generated() -> None:
@@ -90,10 +109,11 @@ def test_gitattributes_paths_all_exist_or_are_generated() -> None:
         candidate = _REPO_ROOT / prefix
         if candidate.exists():
             continue
-        # Walk up to find a generated-on-demand ancestor. This already
-        # covers the "specific file under a codegen directory" case,
-        # because `prefix.startswith(allowed + "/")` matches any file or
-        # deeper directory beneath an allowed prefix.
+        # Allow prefixes that exactly match, or are nested beneath, a
+        # generated-on-demand directory. This covers the "specific file
+        # under a codegen directory" case because
+        # `prefix.startswith(allowed + "/")` matches any file or deeper
+        # directory beneath an allowed prefix.
         if any(
             prefix == allowed or prefix.startswith(allowed + "/")
             for allowed in _GENERATED_ON_DEMAND
@@ -105,4 +125,38 @@ def test_gitattributes_paths_all_exist_or_are_generated() -> None:
         "the path does not exist). Remove the line, or, if the path will be "
         "generated on demand, add its prefix to _GENERATED_ON_DEMAND in this "
         "test. Offenders:\n" + "\n".join(missing)
+    )
+
+
+def test_gitattributes_no_leading_glob_patterns() -> None:
+    """Pin the invariant that no `.gitattributes` pattern starts with a glob.
+
+    `_path_targets()` extracts the literal prefix before the first glob
+    metacharacter and skips patterns whose prefix is empty (leading-glob
+    patterns like `**/pnpm-lock.yaml` or `*/foo/bar`). Such patterns have
+    no literal path component the existence check can validate, so they
+    would slip past the primary assertion unnoticed.
+
+    If this test fails because a legitimate leading-glob pattern was
+    added, replace the prefix-based validation in `_path_targets()` with
+    a strategy that resolves the pattern against the real file tree
+    (e.g. `Path.rglob` or `pathspec.PathSpec.match_tree`) so stale
+    leading-glob rules cannot hide behind the current check.
+    """
+    offenders: list[str] = []
+    for lineno, pattern in _raw_patterns():
+        # Extension-only rules (`*.png binary`) are content-type rules,
+        # not path rules, and are legitimately outside this test's scope.
+        if pattern.startswith("*") and "/" not in pattern:
+            continue
+        unanchored = pattern.removeprefix("/")
+        literal_prefix = _GLOB_METACHARS.split(unanchored, maxsplit=1)[0].rstrip("/")
+        if not literal_prefix:
+            offenders.append(f".gitattributes:{lineno} leading-glob pattern {pattern!r}")
+    assert not offenders, (
+        "Found `.gitattributes` pattern(s) that begin with a glob "
+        "metacharacter and carry a path component. The prefix-existence "
+        "check in `_path_targets()` silently ignores them. Either remove "
+        "the pattern or extend `_path_targets()` to validate leading-glob "
+        "patterns against the real file tree. Offenders:\n" + "\n".join(offenders)
     )
