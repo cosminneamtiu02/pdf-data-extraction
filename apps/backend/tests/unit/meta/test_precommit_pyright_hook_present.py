@@ -69,9 +69,17 @@ def _precommit_pyright_hook() -> dict[str, object]:
     for repo in repos:
         if not isinstance(repo, dict):
             continue
-        hooks = repo.get("hooks", [])
-        if not isinstance(hooks, list):
+        if "hooks" not in repo:
             continue
+        hooks = repo["hooks"]
+        if not isinstance(hooks, list):
+            repo_id = repo.get("repo", "<unknown repo>")
+            msg = (
+                f"{_PRECOMMIT_PATH} repo entry {repo_id!r} has 'hooks'="
+                f"{type(hooks).__name__!r} (expected list); pre-commit config "
+                f"schema may have changed."
+            )
+            raise AssertionError(msg)  # noqa: TRY004
         for hook in hooks:
             if not isinstance(hook, dict):
                 continue
