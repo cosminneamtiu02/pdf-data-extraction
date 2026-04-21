@@ -6,6 +6,10 @@ chain (direct substring → whitespace-normalized → NFKC-normalized) and retur
 a CharRange whose indices ALWAYS refer to the original block_text.
 """
 
+import pytest
+from structlog.testing import capture_logs
+
+from app.features.extraction.coordinates import sub_block_matcher as sub_block_matcher_module
 from app.features.extraction.coordinates.char_range import CharRange
 from app.features.extraction.coordinates.sub_block_matcher import SubBlockMatcher
 
@@ -289,3 +293,70 @@ def test_combining_acute_matches_precomposed_e_acute_via_nfkc_step() -> None:
     assert result is not None
     assert result.start == 0
     assert result.end == 5  # covers "Cafe\u0301" (5 code units in original)
+
+
+def test_sub_block_matcher_logs_normalizer_degenerate_when_nfkc_collapses_to_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression for #389: the defensive branch at `normalized_value == ""` must log
+    `reason='normalizer_degenerate'` so the caller's `matcher_failed` log is not
+    miscategorized.
+
+    No known single Unicode character in today's NFKC tables collapses a
+    non-empty value to an empty normalized form under either step 2's
+    whitespace-collapse or step 3's composed NFKC+whitespace-collapse. The
+    guard at line 71-72 of `sub_block_matcher.py` is defensive for future
+    normalizer changes and edge cases. To exercise it through the public
+    `locate()` API we monkeypatch the module-level normalizer functions with a
+    stub that returns an empty normalized value for a non-empty input. That
+    routes the real `_locate_with_normalizer` through the guard and verifies
+    the log event.
+    """
+
+    def _degenerate_normalizer(_text: str) -> tuple[str, list[int]]:
+        return ("", [])
+
+    # Force BOTH step 2 and step 3 normalizers to produce empty so the direct
+    # match (step 1) fails for a non-substring value and both fallback steps
+    # hit the guard.
+    monkeypatch.setattr(
+        sub_block_matcher_module,
+        "_collapse_whitespace_with_map",
+        _degenerate_normalizer,
+    )
+    monkeypatch.setattr(
+        sub_block_matcher_module,
+        "_nfkc_then_collapse_whitespace_with_map",
+        _degenerate_normalizer,
+    )
+
+    matcher = SubBlockMatcher()
+    with capture_logs() as cap_logs:
+        result = matcher.locate("some block text", "value-not-in-block")
+
+    assert result is None
+    degenerate_events = [
+        entry for entry in cap_logs if entry.get("event") == "normalizer_degenerate"
+    ]
+    assert len(degenerate_events) >= 1
+    first = degenerate_events[0]
+    assert first["reason"] == "normalizer_degenerate"
+    assert first["log_level"] == "info"
+
+
+def test_sub_block_matcher_does_not_log_normalizer_degenerate_for_regular_miss() -> None:
+    """Regression guard for #389: a genuine matcher miss (both normalizers produce
+    non-empty normalized forms but no substring hit) must NOT emit the
+    `normalizer_degenerate` event. Only the caller's downstream
+    `matcher_failed` path should fire in that case.
+    """
+    matcher = SubBlockMatcher()
+
+    with capture_logs() as cap_logs:
+        result = matcher.locate("The cat sat on the mat", "$1,847.50")
+
+    assert result is None
+    degenerate_events = [
+        entry for entry in cap_logs if entry.get("event") == "normalizer_degenerate"
+    ]
+    assert degenerate_events == []

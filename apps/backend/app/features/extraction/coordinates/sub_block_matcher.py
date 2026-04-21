@@ -3,9 +3,13 @@
 import unicodedata
 from collections.abc import Callable
 
+import structlog
+
 from app.features.extraction.coordinates.char_range import CharRange
 
 _Normalizer = Callable[[str], tuple[str, list[int]]]
+
+_logger = structlog.get_logger(__name__)
 
 
 class SubBlockMatcher:
@@ -69,6 +73,17 @@ class SubBlockMatcher:
         normalized_value, _ = normalizer(value)
 
         if normalized_value == "":
+            # Issue #389: a non-empty caller value whose normalized form is
+            # empty is not a matcher miss — it is a degenerate normalizer
+            # input. Log the cause here where it is known so the caller's
+            # generic `matcher_failed` log does not miscategorize it.
+            _logger.info(
+                "normalizer_degenerate",
+                reason="normalizer_degenerate",
+                normalizer=normalizer.__name__,
+                value_length=len(value),
+                block_text_length=len(block_text),
+            )
             return None
 
         idx = normalized_block.find(normalized_value)
