@@ -49,23 +49,29 @@ repos:
       - id: hadolint
         args: ["--config", ".hadolint.yaml"]
 
-  # pyright is pinned to match apps/backend/uv.lock (guarded by
-  # apps/backend/tests/unit/meta/test_precommit_pyright_hook_present.py).
-  # Scoped to the pre-push stage because a strict type check across app/
-  # scripts/ tests/ is too slow for every commit — same reasoning as the
-  # pytest-unit hook below. The hook runs from the repo root and passes
-  # staged Python files as args; pyright walks up from each file to
-  # discover the per-subproject config (apps/backend/pyproject.toml or
-  # packages/error-contracts/pyproject.toml), so both subprojects covered
-  # by `task check:types` stay covered here as well.
-  - repo: https://github.com/RobertCraigie/pyright-python
-    rev: v1.1.408
-    hooks:
-      - id: pyright
-        stages: [pre-push]
-
   - repo: local
     hooks:
+      # Pre-push: pyright strict across both subprojects, mirroring
+      # `task check:types`. Runs through `uv run` so each subproject's
+      # venv (apps/backend/.venv, packages/error-contracts/.venv) is on
+      # PYTHONPATH — otherwise pyright resolves imports against an empty
+      # root environment and fails with reportMissingImports for every
+      # third-party import in the monorepo (issue #453, which replaced
+      # the earlier `RobertCraigie/pyright-python` entry). Scoped to the
+      # pre-push stage because a strict type check across app/ scripts/
+      # tests/ is too slow for every commit — same reasoning as the
+      # pytest-unit hook below. Version pinning is inherited from each
+      # subproject's uv.lock (via `uv run`); there is no separate
+      # pre-commit `rev:` to drift. A guardrail in
+      # apps/backend/tests/unit/meta/test_precommit_pyright_hook_present.py
+      # pins this shape.
+      - id: pyright
+        name: Pyright strict (backend + error-contracts)
+        entry: bash -c "cd apps/backend && uv run pyright app/ scripts/ tests/ && cd ../../packages/error-contracts && uv run pyright"
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+
       # Pre-push: run unit tests before code leaves the machine
       - id: pytest-unit
         name: Backend unit tests

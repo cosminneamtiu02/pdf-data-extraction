@@ -1,54 +1,56 @@
-"""Guardrail: `.pre-commit-config.yaml` must include a pyright hook pinned
-to the same version as the one resolved in `apps/backend/uv.lock`.
+"""Guardrail: `.pre-commit-config.yaml` must include a pre-push pyright hook
+that invokes pyright through `uv run` (so the pinned version is sourced from
+each subproject's `uv.lock`, NOT a separate pre-commit `rev:` that can drift).
 
 Why:
 
-- Issue #360: the repo historically had ruff drift guard but no pyright
+- Issue #360: the repo historically had a ruff drift guard but no pyright
   guard. Pyright was absent from pre-commit altogether, so CI could fail
   for type errors that `task check:types` catches but no pre-commit stage
-  surfaces. Adding a pyright hook closes the gap.
-- The hook rev must track `uv.lock`'s `pyright` package version (which is
-  the source of truth for this repo — same convention as the ruff parity
-  test in `test_precommit_ruff_pin_matches_lockfile.py`).
+  surfaces. Adding a pyright pre-push hook closes the gap.
+- Issue #453: the original `RobertCraigie/pyright-python` hook ran pyright
+  from the repo root with no venv context and failed with
+  `reportMissingImports` for every third-party import — the monorepo's
+  dependencies live under `apps/backend/.venv` and
+  `packages/error-contracts/.venv`, and the external-repo hook has no way
+  to select them. The fix swaps it for a `repo: local` hook that invokes
+  `uv run pyright` per subproject, mirroring `task check:types`. `uv run`
+  automatically selects the correct venv, so the pyright version is
+  inherited from each subproject's `uv.lock` — there is no separate
+  pre-commit `rev:` to drift.
 
 When this test fails, pick one of:
 
-- The `.pre-commit-config.yaml` has no `RobertCraigie/pyright-python`
-  entry — add one with `rev: vX.Y.Z` matching `uv.lock`.
-- The rev drifted from `uv.lock` — bump the pre-commit `rev:` to match,
-  OR bump pyright in `apps/backend/pyproject.toml` and re-run `uv lock`.
-
-Editing the pre-commit `rev:` alone will NOT change `apps/backend/uv.lock`.
+- The `.pre-commit-config.yaml` has no hook with `id: pyright` at the
+  pre-push stage — add a `repo: local` entry that runs `uv run pyright`
+  against at least the backend subproject.
+- The entry stopped going through `uv run`, which would let pyright
+  resolve outside the pinned lockfile version. Restore `uv run pyright`
+  in the entry.
 """
 
 from __future__ import annotations
 
-import tomllib
 from pathlib import Path
 
 import yaml
 
 _REPO_ROOT = Path(__file__).resolve().parents[5]
 _PRECOMMIT_PATH = _REPO_ROOT / ".pre-commit-config.yaml"
-_UV_LOCK_PATH = _REPO_ROOT / "apps" / "backend" / "uv.lock"
 
-_PYRIGHT_PRECOMMIT_REPO_SUBSTRING = "RobertCraigie/pyright-python"
 _PYRIGHT_HOOK_ID = "pyright"
-_PYRIGHT_PACKAGE_NAME = "pyright"
+_PRE_PUSH_STAGE = "pre-push"
+_UV_RUN_PYRIGHT = "uv run pyright"
 
 
-def _precommit_pyright_entry() -> dict[str, object]:
-    """Return the pre-commit repo dict that hosts the pyright hook.
+def _precommit_pyright_hook() -> dict[str, object]:
+    """Return the pre-commit hook dict with id=pyright from any repo entry.
 
     AssertionError (not TypeError) is the intended failure shape: this is a
     pytest guardrail helper, and pytest's test-runner messaging is keyed on
     AssertionError for test-assertion-style reporting. The ``noqa: TRY004``
-    suppressions in this file are scoped to ``raise AssertionError`` sites
-    that directly follow ``isinstance(...)`` checks, because those are the
-    cases ruff flags for TRY004. Other ``raise AssertionError`` lines in
-    these helpers (missing ``rev``/``version`` values, repo-not-found, etc.)
-    follow None/value checks and do NOT trigger TRY004, so applying the
-    suppression universally would surface as RUF100 (unused-noqa).
+    suppressions are scoped to ``raise AssertionError`` sites that directly
+    follow ``isinstance(...)`` checks.
     """
     data = yaml.safe_load(_PRECOMMIT_PATH.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
@@ -67,98 +69,46 @@ def _precommit_pyright_entry() -> dict[str, object]:
     for repo in repos:
         if not isinstance(repo, dict):
             continue
-        repo_url = repo.get("repo")
-        if repo_url is None:
+        hooks = repo.get("hooks", [])
+        if not isinstance(hooks, list):
             continue
-        if not isinstance(repo_url, str):
-            msg = (
-                f"pre-commit repo entry in {_PRECOMMIT_PATH} has non-string 'repo' "
-                f"(got {type(repo_url).__name__!r} in {repo!r}); pre-commit config "
-                f"schema may have changed."
-            )
-            raise AssertionError(msg)  # noqa: TRY004
-        if _PYRIGHT_PRECOMMIT_REPO_SUBSTRING in repo_url:
-            return repo
+        for hook in hooks:
+            if not isinstance(hook, dict):
+                continue
+            if hook.get("id") == _PYRIGHT_HOOK_ID:
+                return hook
     msg = (
-        f"{_PYRIGHT_PRECOMMIT_REPO_SUBSTRING} repo not found in {_PRECOMMIT_PATH}; "
-        f"add a pre-commit entry for pyright-python (issue #360)."
+        f"No hook with id={_PYRIGHT_HOOK_ID!r} found in {_PRECOMMIT_PATH}; "
+        f"add a `repo: local` entry that runs `{_UV_RUN_PYRIGHT}` for the "
+        f"backend subproject (issues #360, #453)."
     )
     raise AssertionError(msg)
 
 
-def _precommit_pyright_rev() -> str:
-    repo = _precommit_pyright_entry()
-    rev = repo.get("rev")
-    if rev is None:
-        msg = (
-            f"pyright-python entry in {_PRECOMMIT_PATH} is missing 'rev' "
-            f"(got {repo!r}); pre-commit config schema may have changed."
-        )
-        raise AssertionError(msg)
-    return str(rev).removeprefix("v")
-
-
-def _precommit_pyright_hook_ids() -> list[str]:
-    repo = _precommit_pyright_entry()
-    hooks = repo.get("hooks", [])
-    if not isinstance(hooks, list):
-        msg = (
-            f"pyright-python entry in {_PRECOMMIT_PATH} has non-list 'hooks' "
-            f"(got {type(hooks).__name__!r}); pre-commit config schema may have changed."
-        )
-        raise AssertionError(msg)  # noqa: TRY004
-    ids: list[str] = []
-    for hook in hooks:
-        if not isinstance(hook, dict):
-            continue
-        hook_id = hook.get("id")
-        if isinstance(hook_id, str):
-            ids.append(hook_id)
-    return ids
-
-
-def _uv_lock_pyright_version() -> str:
-    data = tomllib.loads(_UV_LOCK_PATH.read_text(encoding="utf-8"))
-    packages = data.get("package", [])
-    if not isinstance(packages, list):
-        msg = (
-            f"{_UV_LOCK_PATH} top-level 'package' is {type(packages).__name__!r} "
-            f"(expected list); uv.lock schema may have changed."
-        )
-        raise AssertionError(msg)  # noqa: TRY004
-    for package in packages:
-        if not isinstance(package, dict):
-            continue
-        if package.get("name") != _PYRIGHT_PACKAGE_NAME:
-            continue
-        version = package.get("version")
-        if version is None:
-            msg = (
-                f"pyright package entry in {_UV_LOCK_PATH} is missing 'version' "
-                f"(got {package!r}); uv.lock schema may have changed."
-            )
-            raise AssertionError(msg)
-        return str(version)
-    msg = f"pyright not found in {_UV_LOCK_PATH}"
-    raise AssertionError(msg)
-
-
-def test_precommit_has_pyright_hook() -> None:
-    ids = _precommit_pyright_hook_ids()
+def test_precommit_has_pyright_hook_at_pre_push() -> None:
+    hook = _precommit_pyright_hook()
+    stages = hook.get("stages")
+    stages_list = stages if isinstance(stages, list) else []
     missing_msg = (
-        f"pyright-python entry in {_PRECOMMIT_PATH} does not register hook "
-        f"{_PYRIGHT_HOOK_ID!r} (got hooks={ids!r}). Add "
-        f"`- id: {_PYRIGHT_HOOK_ID}` under the pyright-python repo entry."
+        f"pyright hook in {_PRECOMMIT_PATH} must run at stage {_PRE_PUSH_STAGE!r} "
+        f"(got stages={stages!r}). Issue #360."
     )
-    assert _PYRIGHT_HOOK_ID in ids, missing_msg
+    assert _PRE_PUSH_STAGE in stages_list, missing_msg
 
 
-def test_precommit_pyright_rev_matches_uv_lock_version() -> None:
-    rev = _precommit_pyright_rev()
-    locked = _uv_lock_pyright_version()
+def test_precommit_pyright_entry_goes_through_uv_run() -> None:
+    hook = _precommit_pyright_hook()
+    entry = hook.get("entry")
+    if not isinstance(entry, str):
+        msg = (
+            f"pyright hook in {_PRECOMMIT_PATH} is missing a string 'entry' "
+            f"(got {entry!r}); cannot verify it routes through {_UV_RUN_PYRIGHT!r}."
+        )
+        raise AssertionError(msg)  # noqa: TRY004
     drift_msg = (
-        f"pyright version drift: .pre-commit-config.yaml rev='v{rev}' "
-        f"but uv.lock version={locked!r}. Bump the pyright-python rev "
-        f"in .pre-commit-config.yaml to 'v{locked}'."
+        f"pyright hook in {_PRECOMMIT_PATH} must invoke pyright through "
+        f"`{_UV_RUN_PYRIGHT}` so the pinned version comes from each "
+        f"subproject's uv.lock (not a separate pre-commit rev). "
+        f"Got entry={entry!r}. Issue #453."
     )
-    assert rev == locked, drift_msg
+    assert _UV_RUN_PYRIGHT in entry, drift_msg
