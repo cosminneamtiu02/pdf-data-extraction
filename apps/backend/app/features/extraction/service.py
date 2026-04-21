@@ -65,6 +65,8 @@ if TYPE_CHECKING:
     from app.features.extraction.parsing.document_parser import DocumentParser
     from app.features.extraction.skills.skill_manifest import SkillManifest
 
+_logger = structlog.get_logger(__name__)
+
 
 _logger = structlog.get_logger(__name__)
 
@@ -257,6 +259,29 @@ class ExtractionService:
                     skill_version=skill.version,
                     fields={f.name: f for f in extracted_fields},
                     metadata=metadata,
+                )
+                # Issue #336: emit a single end-to-end breadcrumb for the happy
+                # path. Every downstream component (SpanResolver,
+                # StructuredOutputValidator, OllamaGemmaProvider) already emits
+                # structured log events on interesting transitions; without this
+                # event the orchestrator is the one place operators cannot query
+                # "did this request succeed, for which skill, and how long did
+                # it take". Emitted AFTER the response is assembled so the
+                # logged ``skill_version`` is the resolved int from the manifest
+                # (not the caller's possibly-"latest" sentinel) and the
+                # per-status counts reflect the fields actually returned.
+                extracted_count = sum(
+                    1 for f in extracted_fields if f.status == FieldStatus.extracted
+                )
+                failed_count = sum(1 for f in extracted_fields if f.status == FieldStatus.failed)
+                _logger.info(
+                    "extraction_completed",
+                    skill_name=skill_name,
+                    skill_version=skill.version,
+                    page_count=parsed_doc.page_count,
+                    duration_ms=elapsed_ms,
+                    extracted=extracted_count,
+                    failed=failed_count,
                 )
                 return ExtractionResult(
                     response=response,
