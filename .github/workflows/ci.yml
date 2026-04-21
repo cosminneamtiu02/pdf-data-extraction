@@ -115,6 +115,20 @@ jobs:
   error-contracts:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Job-level concurrency group (issue #410). The workflow-level group
+    # (`${{ github.workflow }}-${{ github.ref }}`) still cancels the entire
+    # prior workflow run when a second push arrives on the same ref,
+    # including both backend-checks and error-contracts. This job-level
+    # group does not change that stacked-push behavior; it only ensures
+    # error-contracts runs do not overlap with each other in any case where
+    # they are not already superseded by the workflow-level cancellation
+    # policy (e.g. a separate workflow introducing a similarly named
+    # group). The `${{ github.workflow }}` prefix namespaces the group so
+    # it cannot collide with groups defined in other workflows — global
+    # `concurrency.group` names are repository-wide, not per-workflow.
+    concurrency:
+      group: ${{ github.workflow }}-ci-error-contracts-${{ github.ref }}
+      cancel-in-progress: true
     defaults:
       run:
         working-directory: packages/error-contracts
@@ -139,15 +153,10 @@ jobs:
         run: uv run --with pytest --with pyyaml pytest tests/ -v
 
       - name: Regenerate error contracts
-        run: |
-          uv run --with pyyaml python -c "
-          from pathlib import Path
-          from scripts.generate import generate_python, generate_typescript, generate_required_keys
-          p = Path('errors.yaml')
-          generate_python(p, Path('../../apps/backend/app/exceptions/_generated'))
-          generate_typescript(p, Path('src/generated.ts'))
-          generate_required_keys(p, Path('src/required-keys.json'))
-          "
+        # Shared entry point with `task errors:generate` (Taskfile.yml).
+        # Both callers invoke the same script so local and CI generation
+        # cannot drift. See issue #365.
+        run: uv run --with pyyaml python -m scripts.generate_all
 
       - name: Verify generated files are up to date
         working-directory: .

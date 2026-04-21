@@ -22,6 +22,7 @@ from app.exceptions import (
     SkillNotFoundError,
     StructuredOutputFailedError,
 )
+from app.features.extraction import service as service_module
 from app.features.extraction.coordinates.offset_index import OffsetIndex
 from app.features.extraction.coordinates.offset_index_entry import OffsetIndexEntry
 from app.features.extraction.extraction.raw_extraction import RawExtraction
@@ -1055,3 +1056,164 @@ async def test_ollama_internal_timeout_is_not_remapped_to_extraction_budget_erro
     assert not isinstance(excinfo.value, ExtractionBudgetExceededError)
     assert excinfo.value.params is not None
     assert excinfo.value.params.model_dump() == {"budget_seconds": 30.0}
+
+
+# ---------------------------------------------------------------------------
+# Issue #416: cancellation vs. timeout log distinguishability.
+#
+# ``asyncio.timeout`` cancels cooperative awaits by injecting
+# ``asyncio.CancelledError`` and then converting it to ``TimeoutError`` at
+# the context-manager boundary when the deadline has expired. But if an
+# OUTER cancellation (caller cancelled the task, client disconnected) fires
+# inside the pipeline, the same ``CancelledError`` can propagate past the
+# ``except TimeoutError`` branch unlabelled — operators triaging a 5xx spike
+# have no way to tell "caller cancelled" from "we ran out of budget" from
+# the structured logs. These tests pin two distinct, greppable events:
+# ``extraction_cancelled`` for caller cancellation, ``extraction_timeout``
+# for pipeline-budget expiry.
+# ---------------------------------------------------------------------------
+
+
+class _SpyLogger:
+    """Test double for ``service_module._logger`` (Copilot-review #439).
+
+    Why we don't use ``structlog.testing.capture_logs()`` here: the service
+    module defines ``_logger = structlog.get_logger(__name__)`` at import
+    time, and our ``configure_logging()`` registers
+    ``cache_logger_on_first_use=True``. Whichever test first touches the
+    service's ``_logger`` outside a ``capture_logs()`` context can cause
+    structlog to cache a bound logger that subsequent ``capture_logs()``
+    contexts won't see — making log-assertion tests order-dependent. A
+    direct monkeypatched spy sidesteps structlog's global state entirely,
+    the same pattern used in
+    ``tests/unit/features/extraction/skills/test_skill_loader.py``.
+    """
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict[str, object]]] = []
+
+    def info(self, event: str, **kwargs: object) -> None:
+        self.events.append((event, kwargs))
+
+    def warning(self, event: str, **kwargs: object) -> None:  # pragma: no cover
+        self.events.append((event, kwargs))
+
+    def error(self, event: str, **kwargs: object) -> None:  # pragma: no cover
+        self.events.append((event, kwargs))
+
+
+class _CancellingEngine:
+    """Engine that raises ``asyncio.CancelledError`` mid-extraction.
+
+    Models the shape of a caller-driven cancellation (task cancel, client
+    disconnect) observed from inside the pipeline after the semaphore is
+    acquired but before the work completes. The service's ``CancelledError``
+    branch must fire unconditionally on this path — whether or not the
+    outer ``asyncio.timeout`` has anything to do with it.
+    """
+
+    async def extract(
+        self,
+        _text: str,
+        _skill: Any,
+        _provider: Any,
+    ) -> list[RawExtraction]:
+        raise asyncio.CancelledError
+
+
+async def test_cancelled_error_emits_extraction_cancelled_event_and_reraises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #416: CancelledError path logs ``extraction_cancelled`` and re-raises.
+
+    The extraction service must never swallow ``asyncio.CancelledError`` —
+    cooperative cancellation relies on it propagating out so the caller's
+    task can terminate cleanly. The fix is observability-only: we log a
+    distinct event so operators can tell a caller-cancellation breadcrumb
+    apart from a pipeline-budget timeout in structured logs.
+    """
+    spy = _SpyLogger()
+    monkeypatch.setattr(service_module, "_logger", spy)
+    service = _build_service(engine=_CancellingEngine())
+
+    with pytest.raises(asyncio.CancelledError):
+        await service.extract(_PDF_BYTES, "invoice", "1", OutputMode.JSON_ONLY)
+
+    cancelled_events = [kwargs for event, kwargs in spy.events if event == "extraction_cancelled"]
+    assert len(cancelled_events) == 1, (
+        f"Expected exactly one extraction_cancelled event; got {spy.events!r}"
+    )
+    # Pin the structured context fields the PR relies on for operability.
+    # These keys drive on-call triage dashboards; silent renames/drops
+    # would degrade the fix without failing any other test (#439 review).
+    cancelled_event = cancelled_events[0]
+    assert cancelled_event["skill_name"] == "invoice"
+    assert cancelled_event["skill_version"] == "1"
+    assert isinstance(cancelled_event["duration_ms"], int)
+    # Must NOT masquerade as the timeout event.
+    timeout_events = [kwargs for event, kwargs in spy.events if event == "extraction_timeout"]
+    assert timeout_events == []
+
+
+async def test_timeout_emits_extraction_timeout_event_with_budget_seconds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #416: pipeline-budget timeout logs ``extraction_timeout`` with context.
+
+    A ``extraction_timeout`` event must be emitted alongside the
+    ``ExtractionBudgetExceededError`` raise so operators can distinguish
+    a pipeline-budget timeout from a caller-cancellation in structured logs.
+    The event carries the configured budget so triage can tell at a glance
+    how long the pipeline ran before hitting the cap.
+    """
+    spy = _SpyLogger()
+    monkeypatch.setattr(service_module, "_logger", spy)
+    engine = _FakeEngine(sleep_seconds=0.2)
+    settings = _build_settings(extraction_timeout_seconds=0.05)
+    service = _build_service(engine=engine, settings=settings)
+
+    with pytest.raises(ExtractionBudgetExceededError):
+        await service.extract(_PDF_BYTES, "invoice", "1", OutputMode.JSON_ONLY)
+
+    timeout_events = [kwargs for event, kwargs in spy.events if event == "extraction_timeout"]
+    assert len(timeout_events) == 1, (
+        f"Expected exactly one extraction_timeout event; got {spy.events!r}"
+    )
+    # Pin the structured context fields the PR relies on for operability.
+    # These keys drive on-call triage dashboards; silent renames/drops
+    # would degrade the fix without failing any other test (#439 review).
+    timeout_event = timeout_events[0]
+    assert timeout_event["skill_name"] == "invoice"
+    assert timeout_event["skill_version"] == "1"
+    assert timeout_event["budget_seconds"] == 0.05
+    assert isinstance(timeout_event["duration_ms"], int)
+    # Must NOT masquerade as the cancellation event.
+    cancelled_events = [kwargs for event, kwargs in spy.events if event == "extraction_cancelled"]
+    assert cancelled_events == []
+
+
+async def test_inner_timeout_error_does_not_emit_extraction_timeout_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #416: the ``extraction_timeout`` event fires only for budget expiry.
+
+    A downstream component may raise a built-in ``TimeoutError`` for reasons
+    unrelated to the pipeline budget (e.g. a socket-layer timeout inside
+    Docling). That case re-raises the inner error as-is — without remapping
+    to ``ExtractionBudgetExceededError`` — so the ``extraction_timeout``
+    event, which is specifically the pipeline-budget breadcrumb, must not
+    fire either. Keeping the two concerns paired avoids a misleading
+    "budget exceeded" log line when the real failing component is elsewhere.
+    """
+    spy = _SpyLogger()
+    monkeypatch.setattr(service_module, "_logger", spy)
+    settings = _build_settings(extraction_timeout_seconds=60.0)
+    service = _build_service(parser=_InnerTimeoutParser(), settings=settings)
+
+    with pytest.raises(TimeoutError):
+        await service.extract(_PDF_BYTES, "invoice", "1", OutputMode.JSON_ONLY)
+
+    timeout_events = [kwargs for event, kwargs in spy.events if event == "extraction_timeout"]
+    assert timeout_events == []
+    cancelled_events = [kwargs for event, kwargs in spy.events if event == "extraction_cancelled"]
+    assert cancelled_events == []
