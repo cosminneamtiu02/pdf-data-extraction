@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import inspect
 import json
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
@@ -386,7 +387,7 @@ async def test_extract_works_with_skill_from_schema_using_mappingproxy(
 
 
 def test_declared_field_names_pins_yaml_declaration_order_through_loader(
-    tmp_path: Any,
+    tmp_path: Path,
 ) -> None:
     """Pin the ORDER of `declared_field_names` through the full YAML->Skill path.
 
@@ -407,8 +408,6 @@ def test_declared_field_names_pins_yaml_declaration_order_through_loader(
     "accidentally alphabetize" and "accidentally insertion-sort by
     hashing" regressions fail loud at parse time.
     """
-    from pathlib import Path
-
     from app.features.extraction.skills.skill import Skill
     from app.features.extraction.skills.skill_yaml_schema import SkillYamlSchema
 
@@ -467,22 +466,22 @@ def test_declared_field_names_pins_yaml_declaration_order_through_loader(
     schema = SkillYamlSchema.load_from_file(path)
     skill = Skill.from_schema(schema)
 
+    result = declared_field_names(skill)
+
     # The invariant: a list comparison so the failure diff shows the
     # exact position of any reorder regression.
-    assert declared_field_names(skill) == expected_order
-    assert list(declared_field_names(skill)) == list(expected_order)
+    assert result == expected_order
+    assert list(result) == list(expected_order)
 
 
 def test_declared_field_names_is_tuple_not_set_so_order_is_observable(
-    tmp_path: Any,
+    tmp_path: Path,
 ) -> None:
     """Companion guard for #390: the return type must be ``tuple``, not
     ``set``/``frozenset`` — a set return would structurally discard order
     and silently hide a future reorder regression from the pinning test.
     Return type is the contract, not an implementation detail.
     """
-    from pathlib import Path
-
     from app.features.extraction.skills.skill import Skill
     from app.features.extraction.skills.skill_yaml_schema import SkillYamlSchema
 
