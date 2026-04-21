@@ -266,9 +266,10 @@ def test_hallucinated_offsets_outside_any_block_returns_grounded_false() -> None
     # Issue #338: a value whose offsets do not land in any parsed block cannot
     # honestly claim `source="document"` — the model said it was grounded, but
     # the resolver proved the claim wrong. Route through the same
-    # `source="inferred"` branch the `not raw.grounded` case uses, mirroring
-    # the #279 fix that removed the `status=failed`/`source=document`
-    # contradiction for failed-resolution rows.
+    # `source="inferred"` branch the `not raw.grounded` case uses, following
+    # the same consistency/contract motivation discussed in #279 without
+    # asserting that broader failed-resolution behavior has already changed
+    # in the resolver.
     resolver = SpanResolver()
     block = _block(block_id="b0", text="hello", bbox=(0, 0, 50, 10))
     doc = _doc(block)

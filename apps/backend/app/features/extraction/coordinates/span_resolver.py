@@ -139,8 +139,8 @@ class SpanResolver:
             # grounding, but the resolver proved the claim wrong. Route
             # through the same `source="inferred"` shape as the `not
             # raw.grounded` branch above so the emit is not a provenance
-            # lie (parallel to the #279 fix that removed the identical
-            # contradiction on `status=failed` rows).
+            # lie, avoiding the same status/source contradiction discussed
+            # in #279.
             return ExtractedField(
                 name=raw.field_name,
                 value=raw.value,
