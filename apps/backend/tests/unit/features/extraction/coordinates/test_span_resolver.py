@@ -748,6 +748,62 @@ def test_multi_block_span_skips_zero_width_empty_blocks() -> None:
     assert refs[1].y0 == 20.0
 
 
+def test_multi_block_dedups_repeated_block_ids_in_offset_index() -> None:
+    # Issue #288: `_collect_multi_block_bboxes` used to iterate the index
+    # entries and append a `BoundingBoxRef` for each one without a dedup
+    # guard. An OffsetIndex is allowed to contain multiple entries with the
+    # same `block_id` as long as their `[start, end)` ranges don't overlap —
+    # which happens in practice for multi-page table cells whose content gets
+    # indexed across discontiguous chunks. The pre-fix implementation emitted
+    # one duplicate `BoundingBoxRef` per repeated entry, polluting the
+    # grounded response with identical bboxes.
+    #
+    # Drive `_collect_multi_block_bboxes` directly: the OffsetIndex invariant
+    # check is at the index level (non-overlapping, ordered), not at the
+    # per-block level, so this shape is reachable through legal construction.
+    from app.features.extraction.coordinates.span_resolver import (
+        _collect_multi_block_bboxes,
+    )
+
+    # b_shared appears twice in the index (chunks interleaved with b_other
+    # and trailed by b_end) but corresponds to the same physical TextBlock.
+    # The resolver must emit exactly one bbox for b_shared even though two
+    # entries reference it.
+    b_shared = _block(block_id="b_shared", text="alpha", bbox=(0, 0, 50, 10))
+    b_other = _block(block_id="b_other", text="beta", bbox=(0, 20, 50, 30))
+    b_end = _block(block_id="b_end", text="gamma", bbox=(0, 40, 50, 50))
+    doc = _doc(b_shared, b_other, b_end)
+    index = _index(
+        (0, 5, "b_shared"),
+        (7, 11, "b_other"),
+        (13, 18, "b_shared"),
+        (20, 25, "b_end"),
+    )
+    blocks_by_id = {b.block_id: b for b in doc.blocks}
+
+    refs = _collect_multi_block_bboxes(
+        start_block_id="b_shared",
+        end_block_id="b_end",
+        offset_index=index,
+        blocks_by_id=blocks_by_id,
+    )
+
+    # Dedup guard: the list must contain one ref per unique (page, bbox)
+    # tuple, not one ref per index entry. Set-equality on the fingerprint
+    # proves there are no duplicate rectangles flowing into the response.
+    fingerprints = [(r.page, r.x0, r.y0, r.x1, r.y1) for r in refs]
+    assert len(fingerprints) == len(set(fingerprints)), (
+        f"Expected deduped bbox_refs; got duplicates: {fingerprints}"
+    )
+    # And specifically: exactly three bboxes (b_shared + b_other + b_end),
+    # not four (b_shared + b_other + b_shared + b_end).
+    assert len(refs) == 3
+    # The deduped set of block ids must cover exactly the three unique
+    # blocks touched by the span.
+    seen_bboxes = {(r.x0, r.y0, r.x1, r.y1) for r in refs}
+    assert seen_bboxes == {(0.0, 0.0, 50.0, 10.0), (0.0, 20.0, 50.0, 30.0), (0.0, 40.0, 50.0, 50.0)}
+
+
 def test_happy_path_emits_no_span_resolver_logs() -> None:
     resolver = SpanResolver()
     block = _block(block_id="b0", text="Total: $1,847.50 due", bbox=(0, 0, 200, 20))
