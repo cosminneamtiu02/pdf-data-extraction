@@ -10,6 +10,13 @@ into a cache dir; subsequent calls produce isolated trees via `os.link`
 (hardlinks) from the cache, which is a cheap syscall rather than a byte-copy
 walk. This suite pins that invariant so a future refactor cannot regress it.
 
+Each test here intentionally resets `_app_tree_cache` to `None` (via
+`monkeypatch.setattr`, which pytest auto-undoes on teardown so the session
+cache for sibling tests is unaffected) so it can observe cold-start behavior
+from a known-clean slate — i.e. assert on the initial cache-populating copy
+and the hardlink-driven second call, not on whatever state a prior test
+happened to leave behind.
+
 The second test (hardlink-safe injection) is the companion invariant: the
 cache must not be mutated when a per-test tree's file is rewritten by
 `inject_import_line`, or tests would cross-pollute and U9 (clean slate)

@@ -283,8 +283,9 @@ def inject_import_line(target: Path, line: str) -> None:
     rebuilt = "".join(head) + line + "\n" + "".join(original_lines[body_start:])
     # Write rebuilt content to a sibling temp file in the same directory so
     # `Path.replace` (which delegates to `os.replace`) is an intra-filesystem
-    # atomic rename. Using the same parent dir is required: across filesystems
-    # `os.replace` falls back to a non-atomic copy+unlink.
+    # atomic rename. Using the same parent dir is required because cross-
+    # filesystem `os.replace`/rename typically fails (for example with EXDEV)
+    # rather than falling back to a non-atomic copy+unlink.
     tmp_fd, tmp_name = tempfile.mkstemp(
         prefix=f".{target.name}.inject-",
         dir=str(target.parent),
