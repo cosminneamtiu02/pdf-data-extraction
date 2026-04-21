@@ -127,6 +127,15 @@ fail_under = 80
 pythonVersion = "3.13"
 typeCheckingMode = "strict"
 include = ["app", "scripts", "tests"]
+# Pin the venv explicitly so pyright-python (pre-commit hook) resolves imports
+# from site-packages without relying on its brittle auto-detection. Without
+# this, the pre-push pyright hook fails on newly-added test files that import
+# pytest/yaml because pyright-python runs without VIRTUAL_ENV set and its
+# heuristic for locating .venv relative to the config file is unreliable.
+# Both `venvPath` and `venv` are required per pyright docs: venvPath is the
+# directory containing the venv, venv is the subdirectory name within it.
+venvPath = "."
+venv = ".venv"
 
 # Tests are intentionally annotation-relaxed (see [tool.ruff.lint.per-file-ignores]
 # "tests/**/*.py" entry that disables the ANN rule set). Pyright strict mode
