@@ -56,6 +56,7 @@ import concurrent.futures
 import json
 from typing import TYPE_CHECKING, Any
 
+import structlog
 from langextract.core.base_model import BaseLanguageModel
 from langextract.core.types import ScoredOutput
 
@@ -68,6 +69,9 @@ if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
 
     from app.features.extraction.intelligence.intelligence_provider import IntelligenceProvider
+
+
+_logger = structlog.get_logger(__name__)
 
 
 class _ValidatingLangExtractAdapter(BaseLanguageModel):  # pyright: ignore[reportUnusedClass]
@@ -132,7 +136,7 @@ class _ValidatingLangExtractAdapter(BaseLanguageModel):  # pyright: ignore[repor
             )
             try:
                 result = future.result(timeout=self._timeout_seconds)
-            except concurrent.futures.TimeoutError:
+            except concurrent.futures.TimeoutError as exc:
                 # In CPython 3.11+, `concurrent.futures.TimeoutError is
                 # TimeoutError is asyncio.TimeoutError`. A bare `except`
                 # on the class would also catch an inner `TimeoutError`
@@ -155,6 +159,20 @@ class _ValidatingLangExtractAdapter(BaseLanguageModel):  # pyright: ignore[repor
                     # caring about its result. Without this bound, a hung
                     # Ollama would pin this worker thread forever (issue #152).
                     future.cancel()
+                    # Emit a breadcrumb BEFORE raising so operators can see
+                    # that LangExtract's inference loop — not a downstream
+                    # 504 in middleware — was the actual hang. Every other
+                    # timeout/failure path in the pipeline (`OllamaGemmaProvider`,
+                    # `SpanResolver`, `StructuredOutputValidator`) already emits
+                    # a structlog event; this one was silent (issue #334).
+                    # Naming mirrors `ollama_gemma_provider.py`'s
+                    # `intelligence_timeout` event for discoverability.
+                    _logger.warning(
+                        "langextract_adapter_timeout",
+                        budget_seconds=self._timeout_seconds,
+                        prompts_in_batch=len(batch_prompts),
+                        original_exc_type=type(exc).__name__,
+                    )
                     raise IntelligenceTimeoutError(
                         budget_seconds=self._timeout_seconds,
                     ) from None
