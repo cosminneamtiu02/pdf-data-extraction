@@ -1167,7 +1167,7 @@ def test_collect_dynamic_import_targets_records_aliased_find_spec_docling_issue_
     scenario the audit flagged fails loudly with a direct reference back
     to issue #401.
     """
-    source = 'from importlib.util import find_spec as fs\nfs("docling")\n'
+    source = 'from importlib.util import find_spec as fs; fs("docling")\n'
     targets = _collect_dynamic_import_targets(source)
     assert "docling" in targets, (
         f"issue #401 regression: aliased `fs('docling')` not detected; targets={targets!r}"
