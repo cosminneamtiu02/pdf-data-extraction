@@ -131,7 +131,7 @@ _OLLAMA_SAMPLING_OPTION_KEYS: frozenset[str] = frozenset(
 # issue #136 for any deployment that does not override it. This helper builds
 # the per-instance baseline once in ``__init__``; ``_merge_sampling_options``
 # layers caller overrides on top (see below).
-def _default_sampling_options(settings: Settings) -> dict[str, Any]:
+def _build_default_sampling_options(settings: Settings) -> dict[str, Any]:
     return {"temperature": settings.ollama_temperature}
 
 
@@ -264,7 +264,7 @@ class OllamaGemmaProvider(BaseLanguageModel):
         # the hot path — the dict is copied at the point of use in
         # ``_build_payload`` / ``_merge_sampling_options`` so in-place mutation
         # cannot leak across requests.
-        self._default_sampling_options: dict[str, Any] = _default_sampling_options(
+        self._default_sampling_options: dict[str, Any] = _build_default_sampling_options(
             effective_settings,
         )
         # `http_client` is eagerly created (matching the long-standing contract
