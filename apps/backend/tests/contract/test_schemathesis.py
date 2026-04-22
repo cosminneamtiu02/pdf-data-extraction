@@ -110,8 +110,9 @@ def test_schema_is_module_level_constant_not_fixture() -> None:
 
     Pins the hoist in place: if a future refactor reverts ``SCHEMA`` back to a
     module-scoped sync fixture calling ``from_asgi`` inside pytest's
-    session-loop scope, this assertion fails at collection time — before the
-    rest of the contract suite tries to use the (now-missing) constant.
+    session-loop scope, this assertion fails when this guard test runs —
+    before later contract tests in this module try to use the (now-missing)
+    constant.
     """
     import sys
 
