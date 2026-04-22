@@ -1,29 +1,23 @@
-"""Shared fixtures and Hypothesis profile for the contract-test suite.
+"""Hypothesis profile registration for the contract-test suite (issue #353).
 
-Combines two concerns for the contract tree (kept together so there is
-only one ``conftest.py`` at this level):
+Schemathesis builds on Hypothesis, so every ``@schema.parametrize`` +
+stateful strategy introduced in this contract suite inherits whatever
+Hypothesis profile is active at collection time. Today the suite is
+hand-rolled (each ``test_extract_*`` is one-shot and ``validate_response``
+is called directly), so zero Hypothesis examples actually run — but the
+moment a future PR adds ``@schema.parametrize``, the decorator silently
+inherits Hypothesis defaults (``max_examples=100``, ``deadline=200ms``)
+which would flake on CI and blow ``task test:contract``'s 300 s timeout.
+Registering named profiles here pins a known, bounded, deterministic
+budget.
 
-1. Issue #352 — session-scoped ``extract_schema`` fixture that builds
-   the schemathesis ``BaseSchema`` against a throwaway FastAPI app
-   exactly once per pytest session (not once per test, and not at
-   module import time — the pre-#352 behavior leaked a
-   ``tempfile.mkdtemp`` skills directory on every invocation, including
-   bare ``--collect-only`` runs). The loader is a ``@contextmanager``
-   named ``_build_extract_schema_session`` so the fixture is a thin
-   three-line wrapper and the cleanup contract is directly exercisable
-   from ``tests/unit/meta/test_contract_schema_fixture_cleanup.py``.
-
-2. Issue #353 — Hypothesis profile registration. Schemathesis builds
-   on Hypothesis, so every ``@schema.parametrize`` + stateful strategy
-   introduced in this contract suite inherits whatever Hypothesis
-   profile is active at collection time. Today the suite is hand-rolled
-   (each ``test_extract_*`` is one-shot and ``validate_response`` is
-   called directly), so zero Hypothesis examples actually run — but
-   the moment a future PR adds ``@schema.parametrize``, the decorator
-   silently inherits Hypothesis defaults (``max_examples=100``,
-   ``deadline=200ms``) which would flake on CI and blow
-   ``task test:contract``'s 300 s timeout. Registering named profiles
-   here pins a known, bounded, deterministic budget.
+Note on the ``SCHEMA`` constant: ``tests/contract/test_schemathesis.py``
+now owns its schemathesis ``BaseSchema`` as a module-level constant
+(see issue #287 — hoist). That replaced the previous session-scoped
+``extract_schema`` fixture (issue #352), which is why this conftest no
+longer registers one. The module-level ``tempfile.TemporaryDirectory``
+in the test module finalizes at interpreter shutdown, preserving the
+leak-free invariant that #352 introduced without a session fixture.
 
 Hypothesis profiles
 -------------------
@@ -74,22 +68,9 @@ Schemathesis) and avoids surprising anyone reading unit-test output.
 from __future__ import annotations
 
 import os
-import tempfile
-from contextlib import contextmanager
-from pathlib import Path
-from typing import TYPE_CHECKING
 
 import pytest
-import schemathesis
 from hypothesis import settings as hypothesis_settings
-
-from app.main import create_app
-from tests.contract._helpers import settings as _settings
-from tests.contract._helpers import write_valid_skill as _write_valid_skill
-
-if TYPE_CHECKING:
-    from collections.abc import Iterator
-
 
 # --- Hypothesis profile registration (issue #353) -----------------------------
 
@@ -237,61 +218,3 @@ def pytest_configure(config: pytest.Config) -> None:
         # Honor the CLI flag by leaving that selection intact.
         return
     hypothesis_settings.load_profile(_select_profile())
-
-
-# --- schemathesis extract_schema fixture (issue #352) -------------------------
-
-
-@contextmanager
-def _build_extract_schema_session() -> Iterator[tuple[schemathesis.BaseSchema, Path]]:
-    """Build the schemathesis schema against a throwaway app, with guaranteed cleanup.
-
-    Yields ``(schema, skills_dir)`` so callers (the session fixture *and*
-    the meta-test) can both use the schema and inspect the skills
-    directory that backs it.
-
-    Uses ``tempfile.TemporaryDirectory`` rather than pytest's
-    ``tmp_path_factory`` to get deterministic ``__exit__`` cleanup.
-    ``tmp_path_factory`` retains the last three session roots by
-    default, which is fine for test debuggability but would make the
-    "tempdir is gone after the yield" contract non-load-bearing — the
-    directory would still be on disk until pytest rotated it out.
-    Explicit ``TemporaryDirectory()`` removes the directory
-    unconditionally the moment the ``with`` block exits, so the
-    cleanup assertion in the meta-test is a real probe.
-
-    The schema is built against a dedicated ``create_app(Settings(...))``
-    rather than the process-wide ``app``: if the ambient environment
-    has ``APP_ENV=production``, ``create_app`` disables
-    ``/openapi.json`` and ``from_asgi`` would 404. Pinning
-    ``app_env="development"`` via ``_settings`` (see
-    ``tests/contract/_helpers.py``) makes the fixture robust to
-    ambient env vars.
-    """
-    with tempfile.TemporaryDirectory(prefix="pdfx_contract_extract_schema_") as tmpdir:
-        skills_dir = Path(tmpdir)
-        # `create_app` validates skill YAMLs at startup, so a minimal
-        # valid `invoice@1` must exist before `from_asgi` spins the app.
-        _write_valid_skill(skills_dir)
-        schema_app = create_app(_settings(skills_dir))
-        # `openapi.from_asgi` uses `starlette_testclient.TestClient`
-        # synchronously under the hood; running this inside an
-        # `async def` test would deadlock against the outer
-        # pytest-asyncio loop. Session-scope + sync loader is the
-        # supported pattern.
-        schema = schemathesis.openapi.from_asgi("/openapi.json", schema_app)
-        yield schema, skills_dir
-
-
-@pytest.fixture(scope="session")
-def extract_schema() -> Iterator[schemathesis.BaseSchema]:
-    """Session-scoped schemathesis schema for ``POST /api/v1/extract``.
-
-    Loaded exactly once per session and shared across every contract
-    test that needs ``validate_response``. The OpenAPI contract for
-    ``/api/v1/extract`` is identical across the per-test ``Settings``
-    variations the test apps use (declared response shapes don't
-    depend on runtime config), so one session-scoped schema is correct.
-    """
-    with _build_extract_schema_session() as (schema, _skills_dir):
-        yield schema
