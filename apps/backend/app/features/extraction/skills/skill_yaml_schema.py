@@ -105,13 +105,38 @@ class SkillYamlSchema(BaseModel):
             problems.append(
                 "output_schema must declare at least one entry in 'properties' "
                 "for object-typed schemas; a zero-field schema cannot produce "
-                "an extraction result",
+                "an extraction result. Note: adding 'additionalProperties' "
+                "(e.g. 'additionalProperties: {type: string}' or "
+                "'additionalProperties: true') does NOT satisfy this rule — "
+                "the extraction engine derives field names strictly from "
+                "top-level 'properties' (see declared_field_names), so an "
+                "'additionalProperties'-only schema yields zero declared "
+                "fields at runtime and every extraction returns empty. "
+                "Declare concrete entries under 'properties' instead "
+                "(issue #388).",
             )
-            # Examples against a zero-field schema carry no useful signal:
-            # a Draft 7 object schema with no declared `properties` (and no
-            # `additionalProperties: false`) accepts arbitrary properties, so
-            # non-empty example outputs would silently pass — a false negative.
-            # Raise now so the author sees the structural defect directly.
+            # Examples against a zero-field schema carry no useful signal,
+            # but for two distinct reasons depending on the shape:
+            #
+            # 1. Permissive zero-field schemas (`additionalProperties` set to a
+            #    subschema or `true`, or omitted entirely on Draft 7): the
+            #    schema accepts arbitrary properties, so non-empty example
+            #    outputs silently pass meta-validation — a false-negative signal
+            #    that hides the structural defect. `declared_field_names`
+            #    nevertheless reads only top-level `properties`, yielding zero
+            #    declared fields at request time and the 'all-failed' 502 in
+            #    issue #388.
+            # 2. `additionalProperties: false` with zero `properties`: the
+            #    schema accepts only `{}`, so non-empty example outputs *would*
+            #    fail meta-validation and surface errors. We still raise here
+            #    rather than fall through to example validation, because the
+            #    schema is structurally incapable of producing any extraction
+            #    field — zero declared fields at runtime, same 502. The
+            #    structural rejection is the more useful diagnostic than a
+            #    downstream example-mismatch error.
+            #
+            # Either way, raise now so the author sees the structural defect
+            # directly.
             raise SkillValidationFailedError(file="", reason="\n".join(problems))
 
         validator = Draft7Validator(self.output_schema)
@@ -250,7 +275,7 @@ def _is_empty_object_schema(schema: dict[str, Any]) -> bool:
     """Return True when `schema` permits object output but declares zero properties.
 
     Covers the Draft 7 variants that meta-validation accepts but that cannot
-    produce any extraction field (issue #114):
+    produce any extraction field (issues #114 and #388):
 
     - `{}` — wholly empty schema. Draft 7 treats this as unconstrained;
       this project treats an omitted `type` as object-shaped output for
@@ -261,6 +286,19 @@ def _is_empty_object_schema(schema: dict[str, Any]) -> bool:
     - `{"type": ["object", "null"]}` (or any list/tuple `type` containing
       `"object"`) — the schema still permits object-shaped output and so is
       subject to the same at-least-one-property rule.
+    - `{"type": "object", "additionalProperties": {...}}` — type declared,
+      `properties` absent/empty, `additionalProperties` is a subschema or
+      `true`. Draft 7 accepts this (structurally valid), but the extraction
+      engine's `declared_field_names` reads only top-level `properties`, so
+      every extraction returns zero fields and the request surfaces as the
+      confusing deferred 'all-failed' 502 (issue #388). Flagged here so the
+      author sees the defect at load time, not at request time.
+    - `{"type": "object", "additionalProperties": False}` — the schema
+      literally accepts only `{}` and declares no properties. Already flagged
+      by the "empty properties" branch; the explicit `False` does not rescue
+      the schema because no field can ever be produced. The rule is uniform:
+      no top-level `properties` declared means zero declared fields for the
+      extraction engine regardless of the `additionalProperties` setting.
 
     Schemas whose `type` does not permit `object` (e.g. `{"type": "string"}`,
     `{"type": ["string", "null"]}`) are outside the scope of this invariant —
