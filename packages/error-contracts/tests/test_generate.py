@@ -1,5 +1,6 @@
 """Tests for the error contracts code generator."""
 
+import ast
 import json
 from pathlib import Path
 
@@ -575,6 +576,12 @@ def test_generated_python_files_mention_regenerate_command(
     ``task errors:generate`` so a contributor reading the file sees the
     regeneration command without having to check the TypeScript output or
     the root Taskfile (issue #373).
+
+    The check is pinned against the module docstring specifically (the
+    first statement in the file, via ``ast.get_docstring``) rather than
+    a whole-file substring search. A whole-file check would silently pass
+    if the hint regressed out of the docstring but appeared later in a
+    class docstring, comment, or string literal (PR #517 review).
     """
     from scripts.generate import generate_python
 
@@ -593,8 +600,13 @@ def test_generated_python_files_mention_regenerate_command(
         "_registry.py",
     ):
         content = (output_dir / py_file).read_text()
-        assert "task errors:generate" in content, (
-            f"{py_file} docstring must mention `task errors:generate` "
+        module_docstring = ast.get_docstring(ast.parse(content))
+        assert module_docstring is not None, (
+            f"{py_file} must have a module docstring as its first statement "
+            f"(issue #373). Got file content:\n{content[:300]}"
+        )
+        assert "task errors:generate" in module_docstring, (
+            f"{py_file} module docstring must mention `task errors:generate` "
             f"so contributors find the regeneration command in-file "
-            f"(issue #373). Got:\n{content[:300]}"
+            f"(issue #373). Got docstring:\n{module_docstring}"
         )
