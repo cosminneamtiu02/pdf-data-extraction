@@ -3,9 +3,13 @@
 import unicodedata
 from collections.abc import Callable
 
+import structlog
+
 from app.features.extraction.coordinates.char_range import CharRange
 
 _Normalizer = Callable[[str], tuple[str, list[int]]]
+
+_logger = structlog.get_logger(__name__)
 
 
 class SubBlockMatcher:
@@ -31,8 +35,13 @@ class SubBlockMatcher:
     original `block_text`, never the normalized form. Returns `None` if all
     three steps fail.
 
-    The matcher is a pure function: no mutation, no shared state. Empty `value`
-    returns the vacuous `CharRange(0, 0)`.
+    The matcher holds no shared state and does not mutate its inputs. The
+    only side effect is a structured ``info`` log emitted via the
+    module-level ``_logger`` when the caller's non-empty ``value``
+    normalizes to an empty string (``sub_block_matcher_normalizer_degenerate``) —
+    a defensive diagnostic so the caller's generic ``matcher_failed`` log
+    is not miscategorized (issue #389). Empty ``value`` returns the
+    vacuous ``CharRange(0, 0)``.
     """
 
     def locate(self, block_text: str, value: str) -> CharRange | None:
@@ -65,12 +74,28 @@ class SubBlockMatcher:
         value: str,
         normalizer: "_Normalizer",
     ) -> CharRange | None:
-        normalized_block, block_map = normalizer(block_text)
+        # Issue #389: normalize the value FIRST and early-return if it
+        # collapses to empty. The block-side normalization can be expensive
+        # (NFKC mapping walks the whole string), so a degenerate value must
+        # not trigger that work — it is a degenerate normalizer input, not a
+        # matcher miss, and we log the cause here where it is known so the
+        # caller's generic `matcher_failed` log does not miscategorize it.
+        # (Copilot-review #487 thread A.)
         normalized_value, _ = normalizer(value)
-
         if normalized_value == "":
+            # Event name carries the cause; no redundant ``reason`` kwarg
+            # (Copilot follow-up on PR #487 — ``reason`` is reserved for
+            # cross-event discriminators like ``span_resolver_matcher_failed``
+            # where the same event covers multiple failure modes).
+            _logger.info(
+                "sub_block_matcher_normalizer_degenerate",
+                normalizer=normalizer.__name__,
+                value_length=len(value),
+                block_text_length=len(block_text),
+            )
             return None
 
+        normalized_block, block_map = normalizer(block_text)
         idx = normalized_block.find(normalized_value)
         if idx == -1:
             return None
