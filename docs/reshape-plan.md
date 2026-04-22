@@ -1,6 +1,6 @@
 # Reshape Plan
 
-> **Status: Historical** — this document captures the plan from the template-reshape phase
+> **Document status: Historical** — this document captures the plan from the template-reshape phase
 > of the project. It is preserved for context and traceability but is not
 > current operational guidance. For current architecture, see
 > [docs/architecture.md](./architecture.md).
@@ -167,7 +167,7 @@ Angular 21, standalone components. One feature (example page), one shared compon
 | `docs/database-model.md` | **Delete, rewrite** | Claims SQLAlchemy in use |
 | `docs/development.md` | **Delete, rewrite** | Angular-centric, references deleted `.ai/` |
 | `docs/domain-model.md` | **Delete, rewrite** | References ExampleModule |
-| `docs/new-project-setup.md` | **Delete, rewrite** | References `.ai/`, wrong tooling |
+| `docs/new-project-setup.md` | **Superseded: kept as live documentation, cited by automerge.md and CLAUDE.md.** (Original recommendation was "Delete, rewrite" for referencing `.ai/` and wrong tooling; that recommendation was not taken — the file was retained and revised in place instead.) |
 | `docs/project-structure.md` | **Delete, rewrite** | Lists `.ai/` that doesn't exist |
 | `CONTRIBUTING.md` | **Delete, rewrite** | References `.ai/` |
 | `README.md` | **Delete, rewrite** | Angular-centric |
