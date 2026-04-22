@@ -370,13 +370,19 @@ def test_bare_32_digit_numeric_identifier_is_still_redacted() -> None:
     assert _REDACTED_NUMBER in out["exception"]
 
 
-def test_request_id_equals_hex_survives_redaction() -> None:
-    """``request_id=<hex>`` context preserves the id through redaction."""
-    request_id = "12345678901234567890123456789012"
+def test_exception_key_preserves_32char_hex_request_id_with_hyphenated_prefix() -> None:
+    """The ``request-id=`` (hyphen) prefix also preserves 32-char hex ids.
+
+    The allowlist pattern accepts both ``request_id=`` (underscore) and
+    ``request-id=`` (hyphen) forms, but the main parametrized test above
+    only exercises the underscore form. Pin the hyphenated variant so it
+    can't regress when the regex is adjusted (PR #509 review).
+    """
+    request_id = "abcdef0123456789abcdef0123456789"
     traceback = (
         "Traceback (most recent call last):\n"
         '  File "<string>", line 1, in <module>\n'
-        f"ValueError: failed for request_id={request_id}"
+        f"ValueError: failed for request-id={request_id}"
     )
     out = _call(_filter(), event="unhandled_exception", exception=traceback)
     assert request_id in out["exception"]
