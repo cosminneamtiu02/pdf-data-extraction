@@ -283,6 +283,18 @@ class Settings(BaseSettings):
     ollama_probe_ttl_seconds: Annotated[float, Field(ge=0)] = 10.0
     ollama_probe_timeout_seconds: Annotated[float, Field(gt=0)] = 5.0
 
+    # Sampling temperature forwarded to Ollama's ``/api/generate`` ``options``
+    # baseline. ``0.0`` preserves the original deterministic-sampling contract
+    # from issue #136 — ``StructuredOutputValidator`` retries repeat from a
+    # stable baseline rather than drifting between attempts. Skill authors who
+    # want creative-mode behavior (e.g. non-determinism for inferred
+    # descriptions) raise this knob without editing source; the
+    # LangExtract-forwarded sampling allowlist (issue #385) still overrides
+    # per-call. Upper bound ``2.0`` matches Ollama's advertised range — values
+    # above that are rejected by Ollama with a 400, so we fail fast at config
+    # load instead. Issue #384.
+    ollama_temperature: Annotated[float, Field(ge=0.0, le=2.0)] = 0.0
+
     # Extraction pipeline (PDFX-E006-F002)
     extraction_timeout_seconds: Annotated[float, Field(gt=0)] = 180.0
 
