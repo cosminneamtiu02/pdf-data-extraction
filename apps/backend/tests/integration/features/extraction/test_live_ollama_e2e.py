@@ -169,7 +169,14 @@ def _ollama_reachable_fixture() -> None:
     as a function parameter, so the request is visible as a decorator on
     the test function (not in its signature).
     """
-    probe_settings: Settings = Settings()  # type: ignore[reportCallIssue]  # pydantic-settings loads fields from env
+    # Pin ``app_env='development'`` explicitly (issue #405): the test body
+    # below constructs its own ``Settings(app_env='development', ...)`` to
+    # keep extraction running in development mode regardless of host env.
+    # If this probe fixture fell through to ambient ``APP_ENV`` (e.g. a
+    # CI host with ``APP_ENV=production`` leaked into the shell), the
+    # probe would silently diverge from the tested call. Pinning here
+    # matches the test body and makes the live-Ollama e2e reproducible.
+    probe_settings: Settings = Settings(app_env="development")  # type: ignore[reportCallIssue]  # pydantic-settings loads remaining fields from env
     ollama_ready, ollama_skip_reason = _ollama_reachable(probe_settings)
     if not ollama_ready:
         pytest.skip(ollama_skip_reason)
