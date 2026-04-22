@@ -956,6 +956,17 @@ def test_multi_block_end_block_missing_from_index_falls_back_to_start_block_bbox
     # Issue #339, variant: end_block_id never appears in the index at all
     # (e.g. because the OffsetIndex was truncated). Same invariant — emit
     # one bbox for the start block, not everything from start onwards.
+    #
+    # PR #459 Copilot-review follow-up: the pre-scan computes
+    # `last_end_idx == -1` for this shape, which is positive proof no future
+    # `end_block_id` exists. The guard must short-circuit at the moment we
+    # reach `start_block_id` rather than running to the end of the iterator
+    # and appending bboxes for trailing blocks we would then discard. This
+    # is pinned two ways: (a) `collected_bbox_count == 0` in the log event,
+    # proving no refs were accumulated before the short-circuit fired, and
+    # (b) a `b_trail` block positioned AFTER `b_start` in the index — the
+    # pre-review implementation would have appended its bbox to `refs`
+    # before the post-loop fallback threw them away.
     from app.features.extraction.coordinates.span_resolver import (
         _collect_multi_block_bboxes,
     )
@@ -963,6 +974,11 @@ def test_multi_block_end_block_missing_from_index_falls_back_to_start_block_bbox
     b_start = _block(block_id="b_start", text="first", bbox=(1.0, 2.0, 3.0, 4.0))
     b_trail = _block(block_id="b_trail", text="second", bbox=(0, 20, 50, 30))
     doc = _doc(b_start, b_trail)
+    # `b_trail` sits AFTER `b_start` in the index; the pre-short-circuit loop
+    # would have iterated through it and appended its bbox to `refs` before
+    # the post-loop fallback discarded them, yielding
+    # `collected_bbox_count=1` in the log — misleading noise attributable to
+    # discarded work. The assertion below pins the fix.
     index = _index((0, 5, "b_start"), (7, 13, "b_trail"))
     blocks_by_id = {b.block_id: b for b in doc.blocks}
 
@@ -987,6 +1003,12 @@ def test_multi_block_end_block_missing_from_index_falls_back_to_start_block_bbox
     # so the two violation modes are separately diagnosable in production logs
     # (PR #459 Copilot-review follow-up).
     assert invariant_events[0]["reason"] == "end_block_not_seen_after_start"
+    # Short-circuit pin: the pre-scan proved `last_end_idx == -1`, so when
+    # we reached `start_block_id` we knew definitively no future `end_block_id`
+    # existed. The fallback fires BEFORE the loop accumulates any bboxes, so
+    # `collected_bbox_count` is 0 — not 1 (the trailing `b_trail` bbox the
+    # pre-review implementation would have appended and then discarded).
+    assert invariant_events[0]["collected_bbox_count"] == 0
 
 
 def test_multi_block_start_block_missing_from_index_logs_distinct_reason() -> None:

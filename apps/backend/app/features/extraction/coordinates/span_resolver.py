@@ -282,13 +282,14 @@ def _collect_multi_block_bboxes(
     #     after) is NOT flagged — `last_end_idx` tracks the LAST occurrence,
     #     not the first, so the presence of a later chunk keeps us on the
     #     happy path.
-    #   - `end_block_not_seen_after_start` — detected post-hoc after the loop
-    #     finishes without ever reaching `end_block_id`. In practice this
-    #     fires only when `end_block_id` is absent from the index entirely
-    #     (but `start_block_id` *was* seen); the end-before-start-only shape
-    #     is caught synchronously by the first branch above. The post-hoc
-    #     check remains as a belt-and-braces guarantee that a fallback fires
-    #     for any residual shape.
+    #   - `end_block_not_seen_after_start` — detected synchronously at
+    #     `start_block_id` when the pre-scan proves `end_block_id` is absent
+    #     from the index entirely (`last_end_idx == -1`). Short-circuits on
+    #     the same principle as `end_block_seen_before_start_block`: once we
+    #     know no future `end_block_id` can exist, continuing the loop only
+    #     accumulates refs the post-loop fallback will discard — wasted work
+    #     and a misleading `collected_bbox_count` in the log event. (PR #459
+    #     Copilot review follow-up.)
     #   - `start_block_not_seen` — detected post-hoc when the loop finished
     #     without `in_span` ever flipping to `True`, i.e. `start_block_id`
     #     itself is absent from the index. The public caller
@@ -316,13 +317,25 @@ def _collect_multi_block_bboxes(
     in_span = False
     for i, entry in enumerate(offset_index.entries):
         if entry.block_id == start_block_id and not in_span:
-            # Short-circuit only when we have *positive* evidence that
-            # `end_block_id` appeared strictly before this `start_block_id`
-            # with no later occurrence (last_end_idx >= 0 and < i). If
-            # `last_end_idx == -1` the end block is absent from the index
-            # entirely — a different violation shape that the post-hoc check
-            # below catches with its own `reason` code.
-            if 0 <= last_end_idx < i:
+            # Two synchronous short-circuits fire at span entry, both driven
+            # by the pre-scanned `last_end_idx`. Each case has positive proof
+            # that no future `end_block_id` can reach the loop, so continuing
+            # would only accumulate refs the post-loop fallback will discard.
+            if last_end_idx == -1:
+                # `end_block_id` is absent from the index entirely (PR #459
+                # Copilot review follow-up). Short-circuit keeps
+                # `collected_bbox_count=0` from reflecting discarded work.
+                _logger.warning(
+                    "span_resolver_multi_block_invariant_violated",
+                    start_block_id=start_block_id,
+                    end_block_id=end_block_id,
+                    reason="end_block_not_seen_after_start",
+                    collected_bbox_count=len(refs),
+                )
+                return [_whole_block_bbox(blocks_by_id[start_block_id])]
+            if last_end_idx < i:
+                # `end_block_id` appeared strictly before this
+                # `start_block_id` with no later occurrence.
                 _logger.warning(
                     "span_resolver_multi_block_invariant_violated",
                     start_block_id=start_block_id,
@@ -338,17 +351,18 @@ def _collect_multi_block_bboxes(
         if in_span and entry.block_id == end_block_id:
             return refs
 
-    # If `in_span` never flipped to True, `start_block_id` itself is absent
-    # from the index — a different corruption shape from "start seen, end not
-    # seen after." Emit a distinct reason code so production log consumers
-    # can tell the two apart; labelling this as `end_block_not_seen_after_start`
-    # would misattribute the failure to the end block.
-    reason = "end_block_not_seen_after_start" if in_span else "start_block_not_seen"
+    # Post-loop fallback: `start_block_id` never appeared in the index, so
+    # `in_span` stayed False throughout. The two `end_block_id`-related
+    # violation shapes are caught synchronously at span entry above and
+    # never reach this point. Emit a distinct reason so a production log
+    # consumer can tell "start missing" from "end missing after a valid
+    # start" — labelling this as `end_block_not_seen_after_start` would
+    # misattribute the failure to the end block.
     _logger.warning(
         "span_resolver_multi_block_invariant_violated",
         start_block_id=start_block_id,
         end_block_id=end_block_id,
-        reason=reason,
+        reason="start_block_not_seen",
         collected_bbox_count=len(refs),
     )
     return [_whole_block_bbox(blocks_by_id[start_block_id])]
