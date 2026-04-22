@@ -17,10 +17,10 @@ from a known-clean slate — i.e. assert on the initial cache-populating copy
 and the hardlink-driven second call, not on whatever state a prior test
 happened to leave behind.
 
-The second test (hardlink-safe injection) is the companion invariant: the
-cache must not be mutated when a per-test tree's file is rewritten by
-`inject_import_line`, or tests would cross-pollute and U9 (clean slate)
-could pass for the wrong reason.
+`test_inject_import_line_does_not_mutate_the_shared_cache` is the companion
+invariant: the cache must not be mutated when a per-test tree's file is
+rewritten by `inject_import_line`, or tests would cross-pollute and U9
+(clean slate) could pass for the wrong reason.
 """
 
 from __future__ import annotations
