@@ -335,18 +335,21 @@ def test_settings_log_level_error_lists_valid_options() -> None:
 
 
 def test_settings_app_env_rejects_typo_casing() -> None:
-    """``APP_ENV=Production`` (wrong case) must fail validation.
+    """``Settings(app_env="Production")`` (wrong case) must fail validation.
 
     Pydantic's ``Literal`` matching is case-sensitive, so a capitalised
-    spelling fails fast instead of silently landing in a non-production
-    branch with ``/docs`` exposed.
+    spelling fails fast at construction instead of silently landing in a
+    non-production branch with ``/docs`` exposed. The constructor kwarg
+    and the ``APP_ENV`` env var share the same ``Literal`` type, so
+    validating via kwarg is equivalent — and keeps the test hermetic (no
+    env mutation, no ``monkeypatch``).
     """
     with pytest.raises(ValidationError, match="app_env"):
         Settings(app_env="Production")  # type: ignore[arg-type]
 
 
 def test_settings_app_env_rejects_unknown_value() -> None:
-    """``APP_ENV=prod`` (unknown value) must fail validation."""
+    """``Settings(app_env="prod")`` (unknown value) must fail validation."""
     with pytest.raises(ValidationError, match="app_env"):
         Settings(app_env="prod")  # type: ignore[arg-type]
 
