@@ -91,8 +91,17 @@ class StreamAwareArgumentParser(argparse.ArgumentParser):
         the parent does (e.g. when the target file does not implement
         ``write``). The routing rule:
 
-        * ``file is sys.stderr`` — route to ``err_stream`` when injected,
-          else write to ``sys.stderr`` directly.
+        * ``file is None`` — stdlib parity: ``argparse.ArgumentParser.
+          _print_message`` does ``file = file or _sys.stderr``, so a
+          ``None`` argument means "send to stderr". Route to
+          ``err_stream`` when injected, else to ``sys.stderr``. This is
+          the documented stdlib contract for subclasses; routing
+          ``None`` anywhere else (e.g. to stdout) would silently
+          misroute error messages for any caller that reuses the
+          argparse subclass hook.
+        * ``file is sys.stderr`` — same as ``None``: route to
+          ``err_stream`` when injected, else write to ``sys.stderr``
+          directly.
         * ``file is sys.stdout`` — route to ``out_stream`` when injected,
           else write to ``sys.stdout`` directly.
         * anything else (unlikely, but the stdlib allows it) — pass
@@ -103,9 +112,9 @@ class StreamAwareArgumentParser(argparse.ArgumentParser):
             return
 
         target: IO[str] | TextIO
-        if file is sys.stderr:
+        if file is None or file is sys.stderr:
             target = self._err_stream if self._err_stream is not None else sys.stderr
-        elif file is sys.stdout or file is None:
+        elif file is sys.stdout:
             target = self._out_stream if self._out_stream is not None else sys.stdout
         else:
             target = file

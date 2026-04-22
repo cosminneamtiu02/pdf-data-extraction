@@ -528,11 +528,11 @@ def test_main_argparse_type_error_writes_error_to_injected_err_not_process_stder
 
     Regression guard for issue #318 (PR #474 round-3 feedback): ``--iterations
     banana`` fails inside argparse's own ``type=int`` callable *before*
-    pydantic validation runs. Argparse writes its "invalid int value" message
-    directly to ``sys.stderr`` via ``self._print_message``, bypassing our
-    injected ``err`` kwarg unless the ``parser.parse_args`` call runs inside
-    ``contextlib.redirect_stderr(err_stream)``. This test pins that contract
-    so the argparse leak cannot silently regress.
+    pydantic validation runs. Argparse emits its "invalid int value" message
+    through the parser's message-printing path, so our stream-aware parser
+    must route that output to the injected ``err`` stream rather than letting
+    it leak to process-global stderr. This test pins that contract so the
+    argparse leak cannot silently regress.
     """
     fake_out = io.StringIO()
     fake_err = io.StringIO()

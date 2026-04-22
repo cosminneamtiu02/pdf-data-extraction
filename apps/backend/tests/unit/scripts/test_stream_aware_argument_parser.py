@@ -153,3 +153,53 @@ def test_stream_aware_parser_defaults_to_process_streams_when_no_override(
 
     captured = capsys.readouterr()
     assert "--iterations" in captured.out
+
+
+def test_stream_aware_parser_print_message_with_file_none_routes_to_err() -> None:
+    """``_print_message(msg, file=None)`` mirrors stdlib and routes to err.
+
+    Stdlib ``ArgumentParser._print_message`` treats a ``None`` / falsy
+    ``file`` argument as shorthand for ``sys.stderr`` (``file = file or
+    _sys.stderr``). A subclass override must preserve that invariant so
+    any caller reusing argparse's documented subclass contract — for
+    example a third-party formatter or a future argparse method that
+    forwards ``file=None`` — lands on the err path, not the out path.
+    Misrouting ``None`` to ``out`` would silently send error messages to
+    stdout. Regression guard for PR #474 round-5 review feedback.
+    """
+    err_stream = io.StringIO()
+    out_stream = io.StringIO()
+    parser = StreamAwareArgumentParser(
+        prog="demo",
+        out_stream=out_stream,
+        err_stream=err_stream,
+    )
+
+    # ``_print_message`` is the documented argparse subclass hook (stdlib
+    # callers invoke it directly with a ``file`` kwarg); we exercise it
+    # to pin stdlib-parity for the ``file=None`` branch.
+    parser._print_message("boom\n", file=None)  # noqa: SLF001
+
+    assert err_stream.getvalue() == "boom\n"
+    assert out_stream.getvalue() == ""
+
+
+def test_stream_aware_parser_print_message_with_file_none_no_err_override_writes_to_sys_stderr(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``_print_message(msg, file=None)`` with no err_stream override writes to sys.stderr.
+
+    Stdlib parity: when no ``err_stream`` is injected, ``file=None`` must
+    fall back to ``sys.stderr`` (the stdlib behavior), not to
+    ``sys.stdout``. Pairs with the injected-stream variant to pin the
+    full parity contract.
+    """
+    parser = StreamAwareArgumentParser(prog="demo")
+
+    # ``_print_message`` is the documented argparse subclass hook; see
+    # the sibling ``*_routes_to_err`` test for rationale.
+    parser._print_message("boom\n", file=None)  # noqa: SLF001
+
+    captured = capsys.readouterr()
+    assert captured.err == "boom\n"
+    assert captured.out == ""
