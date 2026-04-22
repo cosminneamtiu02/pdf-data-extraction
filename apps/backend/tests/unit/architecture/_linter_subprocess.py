@@ -10,10 +10,13 @@ session cache of the real `app/` tree. The first call does one real
 `shutil.copytree`; subsequent calls build isolated per-test trees via
 `os.link` hardlinks, which is a cheap inode-level syscall rather than a
 byte-copy walk of ~113 `.py` files, with a portable byte-copy fallback for
-filesystems that do not support hardlinks. `inject_import_line` uses
-`os.replace` to atomically swap the file contents, which both keeps the
-rewrite atomic from concurrent readers and implicitly breaks any shared
-hardlink so per-test injections never leak back into the shared cache.
+filesystems that do not support hardlinks. The hardlink-support probe
+itself is memoized by destination `st_dev` (Copilot review on PR #479):
+the `cache.rglob("*")` walk and the `os.link` probe run at most once per
+filesystem pair across the session. `inject_import_line` uses `os.replace`
+to atomically swap the file contents, which both keeps the rewrite atomic
+from concurrent readers and implicitly breaks any shared hardlink so
+per-test injections never leak back into the shared cache.
 """
 
 from __future__ import annotations
@@ -56,6 +59,37 @@ REAL_CONTRACTS_PATH: Final[Path] = BACKEND_DIR / "architecture" / "import-linter
 # public API is a plain function call; keeping that shape avoids touching
 # callers). See issue #350.
 _app_tree_cache: Path | None = None
+
+# Session cache for `_hardlinks_supported`. The hardlink-support result is a
+# property of the (cache filesystem, destination filesystem) pair; as long as
+# both sides stay on the same device we never need to re-probe. Keying by
+# `st_dev` handles the theoretical case of `tmp_path` landing on a different
+# filesystem than a prior call (e.g. a test that explicitly relocates its
+# temp dir), at which point we re-probe and cache that result too. Without
+# this cache, `copy_app_tree` would run `cache.rglob("*")` + an `os.link`
+# probe on every invocation (~8x per unit run), partially offsetting the
+# hardlink speedup the rest of the PR delivers. Copilot review on PR #479.
+_hardlink_support_by_dev: dict[tuple[int, int], bool] = {}
+# Memoized "one file to probe with" inside the cache tree. Computed once
+# on the first `_hardlinks_supported` call after the cache is populated,
+# reused forever after. The cache tree is immutable under the session
+# contract — `copy_app_tree` builds *destinations* from it, never writes
+# back — so a stale `_probe_src` is impossible unless the cache itself is
+# cleared, and a cleared cache also clears this via `_reset_hardlink_cache`.
+_probe_src: Path | None = None
+
+
+def _reset_hardlink_cache() -> None:
+    """Drop the memoized hardlink-support decision and probe-source file.
+
+    Call this whenever `_app_tree_cache` is invalidated. Tests that reset the
+    tree cache via `monkeypatch.setattr(..., '_app_tree_cache', None)` are
+    expected to also reset the hardlink caches; the two companion tests in
+    `test_copy_app_tree_cached.py` monkeypatch both names symmetrically.
+    """
+    global _probe_src  # noqa: PLW0603 — companion cache, see issue #350
+    _hardlink_support_by_dev.clear()
+    _probe_src = None
 
 
 def resolve_lint_imports_binary() -> Path:
@@ -121,6 +155,12 @@ def _ensure_app_tree_cache() -> Path:
     if _app_tree_cache is not None and _app_tree_cache.exists():
         return _app_tree_cache
 
+    # Rebuilding the tree cache invalidates the hardlink caches: the probe
+    # file path (tied to the old cache tree) no longer exists, and even the
+    # `st_dev` pair could shift if `tempfile.mkdtemp` lands on a different
+    # filesystem than before. Reset both so the next `copy_app_tree` re-probes
+    # cleanly rather than linking against a stale or vanished inode.
+    _reset_hardlink_cache()
     cache_parent = Path(tempfile.mkdtemp(prefix="_contract_enforcement_app_cache_"))
     atexit.register(shutil.rmtree, cache_parent, ignore_errors=True)
     cache_dest = cache_parent / "app"
@@ -163,15 +203,35 @@ def _hardlinks_supported(cache: Path, probe_dir: Path) -> bool:
     later `os.link` still fails) raises the original `shutil.Error`
     untouched — the suite aborts loudly, which is the intended behavior
     for a setup fault in CI.
+
+    The decision is memoized per `(cache_dev, probe_dev)` pair: subsequent
+    calls with the same filesystem pair skip both the `cache.rglob("*")`
+    walk and the `os.link` probe entirely, returning the cached boolean.
+    See the module-level `_hardlink_support_by_dev` / `_probe_src` docs
+    and Copilot review on PR #479.
     """
+    global _probe_src  # noqa: PLW0603 — companion cache, see issue #350
+    # Fast path: this (cache_dev, probe_dev) pair has already been probed.
+    # `st_dev` is the kernel's device id, stable across `os.stat` calls on
+    # the same filesystem, so a cache keyed on it is correct even when
+    # callers pass different concrete `probe_dir` paths.
+    cache_dev = cache.stat().st_dev
+    probe_dev = probe_dir.stat().st_dev
+    cache_key = (cache_dev, probe_dev)
+    cached = _hardlink_support_by_dev.get(cache_key)
+    if cached is not None:
+        return cached
     # Find one regular file in the cache. Any file works; we just need a
-    # real inode to try linking. The cache always has at least one.
-    probe_src: Path | None = None
-    for candidate in cache.rglob("*"):
-        if candidate.is_file():
-            probe_src = candidate
-            break
-    if probe_src is None:
+    # real inode to try linking. The cache always has at least one. The
+    # chosen path is memoized so subsequent probes (different destination
+    # filesystem, e.g. a test that relocates `tmp_path`) skip the rglob.
+    if _probe_src is None or not _probe_src.is_file():
+        for candidate in cache.rglob("*"):
+            if candidate.is_file():
+                _probe_src = candidate
+                break
+    if _probe_src is None:
+        _hardlink_support_by_dev[cache_key] = False
         return False
     # Use an unambiguously unique filename so we never collide with an
     # existing file in `probe_dir`. `tempfile.mktemp` would race, but we
@@ -179,13 +239,15 @@ def _hardlinks_supported(cache: Path, probe_dir: Path) -> bool:
     # `id()` combo is sufficient because `probe_dir` is caller-scoped.
     probe_dst = probe_dir / f".hardlink-probe-{os.getpid()}-{id(cache)}"
     try:
-        os.link(probe_src, probe_dst)
+        os.link(_probe_src, probe_dst)
     except OSError as exc:
         if exc.errno in _HARDLINK_UNSUPPORTED_ERRNOS:
+            _hardlink_support_by_dev[cache_key] = False
             return False
         raise
     else:
         probe_dst.unlink()
+        _hardlink_support_by_dev[cache_key] = True
         return True
 
 

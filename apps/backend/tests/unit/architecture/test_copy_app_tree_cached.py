@@ -52,6 +52,16 @@ def test_copy_app_tree_copies_real_source_at_most_once_across_calls(
     # The module-level cache may have been primed by an earlier test in this
     # session; reset it so we observe the cold-start copy from a clean slate.
     monkeypatch.setattr(_linter_subprocess, "_app_tree_cache", None, raising=False)
+    # Reset the companion hardlink caches so the probe runs cold too; otherwise
+    # a prior test in the session could leave a `_probe_src` pointing into a
+    # now-vanished cache tree. Cleared attributes are auto-restored on teardown.
+    monkeypatch.setattr(_linter_subprocess, "_probe_src", None, raising=False)
+    monkeypatch.setattr(
+        _linter_subprocess,
+        "_hardlink_support_by_dev",
+        {},
+        raising=False,
+    )
 
     real_copytree = shutil.copytree
     real_app_tree_resolved = REAL_APP_TREE.resolve()
@@ -78,6 +88,51 @@ def test_copy_app_tree_copies_real_source_at_most_once_across_calls(
     )
 
 
+def test_copy_app_tree_probes_hardlink_support_at_most_once_per_filesystem(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hardlink-support probe must be memoized: at most one `os.link` probe per fs pair.
+
+    Copilot review on PR #479 flagged that `copy_app_tree` called
+    `_hardlinks_supported` on every invocation, which does a `cache.rglob("*")`
+    walk + an `os.link` probe each time. The fix memoizes the result by
+    destination filesystem (`st_dev`) so subsequent calls in the same
+    session take the fast path. This test pins that invariant by counting
+    `os.link` calls that originate from the probe (identified by the
+    `.hardlink-probe-` filename prefix) across two `copy_app_tree` calls
+    landing on the same filesystem (pytest `tmp_path` always does).
+    """
+    monkeypatch.setattr(_linter_subprocess, "_app_tree_cache", None, raising=False)
+    monkeypatch.setattr(_linter_subprocess, "_probe_src", None, raising=False)
+    monkeypatch.setattr(
+        _linter_subprocess,
+        "_hardlink_support_by_dev",
+        {},
+        raising=False,
+    )
+
+    real_link = _linter_subprocess.os.link
+    probe_link_count = 0
+
+    def counting_link(src: object, dst: object, *args: object, **kwargs: object) -> object:
+        nonlocal probe_link_count
+        if ".hardlink-probe-" in Path(str(dst)).name:
+            probe_link_count += 1
+        return real_link(src, dst, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(_linter_subprocess.os, "link", counting_link)
+
+    copy_app_tree(tmp_path / "first")
+    copy_app_tree(tmp_path / "second")
+
+    assert probe_link_count <= 1, (
+        f"`_hardlinks_supported` probed `os.link` {probe_link_count} times "
+        "across two `copy_app_tree` calls on the same filesystem; the "
+        "memoization should keep this at 1. See Copilot review on PR #479."
+    )
+
+
 def test_inject_import_line_does_not_mutate_the_shared_cache(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -90,6 +145,16 @@ def test_inject_import_line_does_not_mutate_the_shared_cache(
     U7/U8/U9 would all read a polluted baseline.
     """
     monkeypatch.setattr(_linter_subprocess, "_app_tree_cache", None, raising=False)
+    # Reset the companion hardlink caches so the probe runs cold too; otherwise
+    # a prior test in the session could leave a `_probe_src` pointing into a
+    # now-vanished cache tree. Cleared attributes are auto-restored on teardown.
+    monkeypatch.setattr(_linter_subprocess, "_probe_src", None, raising=False)
+    monkeypatch.setattr(
+        _linter_subprocess,
+        "_hardlink_support_by_dev",
+        {},
+        raising=False,
+    )
 
     victim_rel = "features/extraction/intelligence/intelligence_provider.py"
     first_dest = copy_app_tree(tmp_path / "first")
