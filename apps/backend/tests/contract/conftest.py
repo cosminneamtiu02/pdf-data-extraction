@@ -101,14 +101,14 @@ def _select_profile() -> str:
     """Return the Hypothesis profile name chosen by env var, or the ``ci`` default.
 
     This helper is a pure function of ``HYPOTHESIS_PROFILE``: it does
-    NOT inspect Hypothesis' live global state. See ``_should_load_default``
+    NOT inspect Hypothesis' live global state. See ``_default_profile_is_still_active``
     for the "is the built-in default still active?" guard that decides
     whether the caller should honour the returned name.
 
     Resolution order:
     1. ``--hypothesis-profile=<name>`` on the pytest command line — NOT
        read here. The Hypothesis pytest plugin reads the flag itself
-       during ``pytest_configure``. See ``_should_load_default`` for
+       during ``pytest_configure``. See ``_default_profile_is_still_active`` for
        the guard that yields to the plugin's selection when the CLI
        flag was passed.
     2. ``HYPOTHESIS_PROFILE`` environment variable. Used by local
@@ -171,13 +171,15 @@ def _default_profile_is_still_active() -> bool:
 
 # Load a profile at import time so any future ``@schema.parametrize``
 # decorator inherits a bounded budget from the moment pytest collects
-# it. An explicit ``HYPOTHESIS_PROFILE`` env var always wins (our
-# loader is the only code that reads it, so no race with the plugin).
-# Otherwise, only load the ``ci`` default if Hypothesis' built-in
-# ``default`` profile is still active — if the pytest plugin has
-# already loaded a non-default profile via ``--hypothesis-profile=<name>``,
-# we leave its selection alone so CLI wins.
-if os.environ.get(_HYPOTHESIS_PROFILE_ENV_VAR) or _default_profile_is_still_active():
+# it. Only do so while Hypothesis' built-in ``default`` profile is
+# still active: then ``_select_profile()`` can honor an explicit
+# ``HYPOTHESIS_PROFILE`` env var or choose our normal ``ci`` fallback.
+# But if the pytest plugin has already loaded a non-default profile
+# via ``--hypothesis-profile=<name>``, we leave that selection alone
+# so the CLI flag keeps precedence over both our default AND the env
+# var (matching the documented resolution order at the top of this
+# file: CLI > env > default).
+if _default_profile_is_still_active():
     hypothesis_settings.load_profile(_select_profile())
 
 

@@ -28,7 +28,20 @@ other unit tests — Hypothesis isn't exercised by the unit suite.
 
 from __future__ import annotations
 
+import os
+
 import pytest
+
+# Hermetic unit-test contract: clear ``HYPOTHESIS_PROFILE`` *before* the
+# first ``tests.contract.conftest`` import. That conftest reads the env
+# var and calls ``hypothesis_settings.load_profile`` at module-import
+# time, which raises ``ValueError`` if the developer's shell has
+# ``HYPOTHESIS_PROFILE`` set to an unregistered value (e.g. a typo like
+# ``cii``). Per-test ``monkeypatch`` fixtures apply in the test body,
+# AFTER conftest import, so they cannot protect against this failure
+# mode. Popping at module scope keeps these unit tests reproducible
+# across developer shells and CI runners.
+os.environ.pop("HYPOTHESIS_PROFILE", None)
 
 
 def test_select_profile_returns_ci_default_when_env_var_unset(
