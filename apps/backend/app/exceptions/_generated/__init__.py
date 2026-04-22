@@ -1,4 +1,7 @@
-"""Generated error classes. Do not edit."""
+"""Generated error classes. Do not edit.
+
+Run ``task errors:generate`` to regenerate after editing errors.yaml.
+"""
 
 from app.exceptions._generated.extraction_budget_exceeded_error import ExtractionBudgetExceededError
 from app.exceptions._generated.extraction_budget_exceeded_params import (

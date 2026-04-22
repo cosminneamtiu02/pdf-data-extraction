@@ -1,5 +1,6 @@
 """Tests for the error contracts code generator."""
 
+import ast
 import json
 from pathlib import Path
 
@@ -539,3 +540,73 @@ def test_generate_required_keys_is_deterministic_across_param_key_order(
     )
 
     assert json_forward.read_bytes() == json_swapped.read_bytes()
+
+
+# Provenance-in-docstring regression test for issue #373.
+#
+# The TypeScript generator output begins with:
+#   `// THIS FILE IS GENERATED FROM errors.yaml`
+#   `// DO NOT EDIT BY HAND. Run `task errors:generate` to regenerate.`
+# while the Python module docstrings only said
+#   `"""Generated from errors.yaml. Do not edit."""`
+# Contributors reading a generated Python file had no in-file pointer to
+# the regenerate command, forcing them to hunt for it. These tests pin
+# the regenerate-command mention in every Python artifact type the
+# generator emits (per-error class, params class, __init__.py, _registry.py)
+# so the provenance cannot silently regress.
+_PROVENANCE_YAML = """
+version: 1
+errors:
+  NOT_FOUND:
+    http_status: 404
+    description: Resource not found
+    params: {}
+  WIDGET_NOT_FOUND:
+    http_status: 404
+    description: Widget not found
+    params:
+      widget_id: string
+"""
+
+
+def test_generated_python_files_mention_regenerate_command(
+    tmp_path: Path, output_dir: Path
+):
+    """Every generated Python artifact's module docstring must reference
+    ``task errors:generate`` so a contributor reading the file sees the
+    regeneration command without having to check the TypeScript output or
+    the root Taskfile (issue #373).
+
+    The check is pinned against the module docstring specifically (the
+    first statement in the file, via ``ast.get_docstring``) rather than
+    a whole-file substring search. A whole-file check would silently pass
+    if the hint regressed out of the docstring but appeared later in a
+    class docstring, comment, or string literal (PR #517 review).
+    """
+    from scripts.generate import generate_python
+
+    errors_path = tmp_path / "errors.yaml"
+    errors_path.write_text(_PROVENANCE_YAML)
+
+    generate_python(errors_path, output_dir)
+
+    # Every emitted file type: per-error class, params class, aggregate
+    # __init__.py, and _registry.py.
+    for py_file in (
+        "not_found_error.py",
+        "widget_not_found_error.py",
+        "widget_not_found_params.py",
+        "__init__.py",
+        "_registry.py",
+    ):
+        content = (output_dir / py_file).read_text()
+        module_docstring = ast.get_docstring(ast.parse(content))
+        assert module_docstring is not None, (
+            f"{py_file} must have a module docstring as its first statement "
+            f"(issue #373). Got file content:\n{content[:300]}"
+        )
+        assert "task errors:generate" in module_docstring, (
+            f"{py_file} module docstring must mention `task errors:generate` "
+            f"so contributors find the regeneration command in-file "
+            f"(issue #373). Got docstring:\n{module_docstring}"
+        )
