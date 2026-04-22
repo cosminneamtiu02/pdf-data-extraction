@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 import structlog
 from fastapi import FastAPI
 
+from app.api.deps import get_ollama_health_probe_for_app
 from app.api.errors import register_exception_handlers
 from app.api.health_router import router as health_router
 from app.api.middleware import configure_middleware
@@ -13,9 +14,6 @@ from app.api.probe_cache import ProbeCache
 from app.core.config import Settings
 from app.core.logging import configure_logging
 from app.exceptions import SkillValidationFailedError
-from app.features.extraction.intelligence.ollama_gemma_provider import (
-    build_tags_url,
-)
 from app.features.extraction.intelligence.ollama_health_probe import (
     OllamaHealthProbe,
 )
@@ -29,21 +27,81 @@ from app.features.extraction.skills import (
 _logger = structlog.get_logger(__name__)
 
 
+def _install_provider_and_probe(app: FastAPI) -> OllamaHealthProbe:
+    """Install the intelligence provider and health probe on ``app.state``.
+
+    If a probe has already been pre-seeded on ``app.state`` (test seam —
+    e.g., a ``FakeProbe`` for integration tests), skip real-provider
+    construction entirely. The eager-provider wiring only exists to share
+    the provider's ``httpx.AsyncClient`` with the real probe; when the
+    probe is faked, the sharing need is moot and constructing the real
+    provider would waste inference resources and defeat the seam.
+
+    Returns the probe that ends up on ``app.state.ollama_health_probe``.
+    The provider, when built, is stored on ``app.state.intelligence_provider``
+    for downstream reuse — there is no need to return it here (keeping the
+    return type probe-only lets the type system express the real gating
+    behavior instead of forcing a ``type: ignore`` on the probe-only path).
+
+    Construction is delegated to
+    ``app.api.deps.get_ollama_health_probe_for_app`` (which transitively
+    runs through ``get_intelligence_provider_for_app`` and
+    ``get_structured_output_validator_for_app``) so the lifespan and
+    request-time DI graphs share exactly one wiring path. Before this
+    delegation (Copilot review on PR #488), the lifespan built a separate
+    ``StructuredOutputValidator`` inline that never landed on
+    ``app.state.structured_output_validator`` — a subsequent request then
+    resolved a *second* validator via the deps factory, so the provider
+    held validator A while the request graph saw validator B. Routing
+    both paths through the ``_for_app`` helpers keeps one validator and
+    one provider per app.
+    """
+    existing_probe: OllamaHealthProbe | None = getattr(app.state, "ollama_health_probe", None)
+    if existing_probe is not None:
+        # Pre-seeded probe short-circuits the whole flow: do not build a
+        # real provider (unless one was ALSO pre-seeded, in which case it
+        # stays on app.state). Keeping this gate in the lifespan (rather
+        # than the deps-level ``get_ollama_health_probe_for_app``) means
+        # the deps path still lazily builds the real provider if a caller
+        # resolves ``get_intelligence_provider`` directly without the probe
+        # short-circuit — which is the expected request-time behavior.
+        return existing_probe
+
+    # Shared factory handles lazy construction + caching of
+    # provider/validator/probe on ``app.state`` under the same re-entrant
+    # lock the request-time deps use.
+    return get_ollama_health_probe_for_app(app)
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncGenerator[None]:
-    # --- Startup: build probe + cache eagerly, prime with initial result ---
+    # --- Startup: build provider + probe + cache eagerly, prime with initial result ---
     # Respect a pre-existing probe on app.state (test seam: integration tests
     # pre-populate it with a FakeProbe for deterministic probe behaviour
     # without relying on host network state).  In production app.state has no
     # probe at this point, so the real one is always constructed here.
+    #
+    # Client sharing (issue #392): the intelligence provider is built
+    # eagerly here — previously it was constructed lazily on first
+    # extraction request — so the probe can reuse the provider's
+    # ``httpx.AsyncClient`` instead of opening a second one bound to the
+    # same Ollama base URL. Under 1 Hz Kubernetes-style readiness polling
+    # this halves connection pools, DNS lookups, and TLS handshakes
+    # against Ollama. Ownership stays with the provider: shutdown's
+    # ``intelligence_provider`` close-loop entry tears down the shared
+    # client, while the probe's ``aclose()`` is a no-op because it did
+    # not construct the client. Eager construction also means the cached
+    # ``intelligence_provider`` on ``app.state`` matches exactly what
+    # the ``/ready`` probe is pinging — no risk of the two drifting.
     settings: Settings = app.state.settings
 
-    probe: OllamaHealthProbe = getattr(app.state, "ollama_health_probe", None) or OllamaHealthProbe(  # type: ignore[assignment]  # test seam allows FakeProbe
-        tags_url=build_tags_url(settings.ollama_base_url),
-        expected_model=settings.ollama_model,
-        timeout_seconds=settings.ollama_probe_timeout_seconds,
-    )
-    app.state.ollama_health_probe = probe
+    # Gate real-provider construction on the probe's absence (issue #392
+    # follow-up, PR #488 review). If a test has pre-seeded a probe
+    # (e.g. ``FakeProbe``), building the real ``OllamaGemmaProvider`` here
+    # defeats the test seam and eagerly holds inference resources the
+    # test will never use. See ``_install_provider_and_probe`` for the
+    # gating logic.
+    probe = _install_provider_and_probe(app)
 
     cache: ProbeCache = getattr(app.state, "probe_cache", None) or ProbeCache(
         probe=probe,
