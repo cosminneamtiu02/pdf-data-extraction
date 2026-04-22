@@ -117,10 +117,13 @@ def test_deploy_checkout_steps_disable_credential_persistence() -> None:
     Mirrors the ``ci.yml`` invariant enforced by
     :func:`test_ci_checkout_steps_disable_credential_persistence` — the
     checkout action's default persists the ephemeral ``GITHUB_TOKEN`` into
-    the job's git config for the lifetime of the job. The deploy job's only
-    current step is a ``docker build`` that neither pushes nor calls an
-    authenticated GH API, so leaving the token live is unnecessary attack
-    surface if a future ``run:`` step is compromised. Continuation of the
+    the job's git config for the lifetime of the job. No step in deploy.yml
+    today performs a push or calls an authenticated GitHub API — including
+    the ``Push to registry`` placeholder, which only emits a ``::notice::``
+    until #121 wires up the real push — so credential persistence is
+    unnecessary attack surface if any ``run:`` step is ever compromised.
+    Kept off so that future additions inherit the hardened default rather
+    than silently inheriting a live ``GITHUB_TOKEN``. Continuation of the
     supply-chain hardening done in #190 / #212. Issue #355.
     """
     workflow = _load_deploy_workflow()
