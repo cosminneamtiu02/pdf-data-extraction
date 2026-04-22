@@ -201,6 +201,9 @@ def test_clean_scratch_tree_passes_all_contracts(tmp_path: Path) -> None:
         f"lint-imports unexpectedly broke on an unmodified scratch tree.\n"
         f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     )
-    assert "0 broken" in result.stdout.lower() or "broken" not in result.stdout.lower(), (
-        f"unexpected 'broken' mention in clean-run output:\n{result.stdout}"
+    assert "0 broken" in result.stdout.lower(), (
+        f"expected lint-imports to report '0 broken' on a clean scratch tree; "
+        f"the previous 'or \"broken\" not in ...' clause was permissive enough to "
+        f"pass on degenerate output that never mentions 'broken' at all (issue #399)\n"
+        f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     )
