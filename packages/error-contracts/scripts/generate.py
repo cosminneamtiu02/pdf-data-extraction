@@ -240,7 +240,9 @@ def generate_python(errors_path: Path, output_dir: Path) -> list[Path]:
                 for name, ptype in sorted_param_items
             )
             params_file.write_text(
-                f'"""Generated from errors.yaml. Do not edit."""\n\n'
+                f'"""Generated from errors.yaml. Do not edit.\n\n'
+                f"Run ``task errors:generate`` to regenerate after editing errors.yaml.\n"
+                f'"""\n\n'
                 f"from pydantic import BaseModel\n\n\n"
                 f"class {params_class_name}(BaseModel):\n"
                 f'    """Parameters for {code} error."""\n\n'
@@ -279,7 +281,9 @@ def generate_python(errors_path: Path, output_dir: Path) -> list[Path]:
                 f"app.exceptions._generated.{params_file_stem}", params_class_name
             )
             error_content = (
-                f'"""Generated from errors.yaml. Do not edit."""\n\n'
+                f'"""Generated from errors.yaml. Do not edit.\n\n'
+                f"Run ``task errors:generate`` to regenerate after editing errors.yaml.\n"
+                f'"""\n\n'
                 f"from typing import ClassVar\n\n"
                 f"{params_import_line}\n"
                 f"from app.exceptions.base import DomainError\n\n\n"
@@ -291,7 +295,9 @@ def generate_python(errors_path: Path, output_dir: Path) -> list[Path]:
             )
         else:
             error_content = (
-                f'"""Generated from errors.yaml. Do not edit."""\n\n'
+                f'"""Generated from errors.yaml. Do not edit.\n\n'
+                f"Run ``task errors:generate`` to regenerate after editing errors.yaml.\n"
+                f'"""\n\n'
                 f"from typing import ClassVar\n\n"
                 f"from app.exceptions.base import DomainError\n\n\n"
                 f"class {error_class_name}(DomainError):\n"
@@ -315,7 +321,9 @@ def generate_python(errors_path: Path, output_dir: Path) -> list[Path]:
     sorted_imports = sorted(init_imports, key=lambda entry: entry[1])
     init_file = output_dir / "__init__.py"
     init_content = (
-        '"""Generated error classes. Do not edit."""\n\n'
+        '"""Generated error classes. Do not edit.\n\n'
+        "Run ``task errors:generate`` to regenerate after editing errors.yaml.\n"
+        '"""\n\n'
         + "\n".join(_py_import_line(module, name) for module, name in sorted_imports)
         + "\n\n__all__ = [\n"
         + "\n".join(f'    "{name}",' for _module, name in sorted_imports)
@@ -346,7 +354,9 @@ def generate_python(errors_path: Path, output_dir: Path) -> list[Path]:
     # affects the user-visible dict-key order.
     sorted_registry_entries = sorted(registry_entries)
     registry_content = (
-        '"""Generated error registry. Do not edit."""\n\n'
+        '"""Generated error registry. Do not edit.\n\n'
+        "Run ``task errors:generate`` to regenerate after editing errors.yaml.\n"
+        '"""\n\n'
         "from __future__ import annotations\n\n"
         "from typing import TYPE_CHECKING\n\n"
         "if TYPE_CHECKING:\n"

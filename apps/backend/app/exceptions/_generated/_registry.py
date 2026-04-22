@@ -1,4 +1,7 @@
-"""Generated error registry. Do not edit."""
+"""Generated error registry. Do not edit.
+
+Run ``task errors:generate`` to regenerate after editing errors.yaml.
+"""
 
 from __future__ import annotations
 

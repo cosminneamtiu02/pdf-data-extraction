@@ -1,4 +1,7 @@
-"""Generated from errors.yaml. Do not edit."""
+"""Generated from errors.yaml. Do not edit.
+
+Run ``task errors:generate`` to regenerate after editing errors.yaml.
+"""
 
 from pydantic import BaseModel
 
