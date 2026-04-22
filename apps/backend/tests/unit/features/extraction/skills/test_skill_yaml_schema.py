@@ -573,6 +573,94 @@ def test_is_empty_object_schema_classifies_draft7_type_variants(
     assert _is_empty_object_schema(schema) is expected
 
 
+def test_is_empty_object_schema_catches_additional_properties_only_schema() -> None:
+    """`additionalProperties`-only schemas are empty from the engine's perspective.
+
+    `{"type": "object", "additionalProperties": {"type": "string"}}` validates
+    structurally at Draft 7 meta-validation and also accepts arbitrary keys at
+    request time. BUT the extraction engine derives field names strictly from
+    top-level `properties` (see `declared_field_names`), so this schema yields
+    zero declared fields and every extraction returns empty — which the
+    engine then surfaces as a confusing deferred 502 `all-failed` response
+    (issue #388, same silent-failure shape as issue #114). Fail fast at load
+    time in the same branch as the missing-`properties` case.
+    """
+    from app.features.extraction.skills.skill_yaml_schema import (
+        _is_empty_object_schema,
+    )
+
+    assert (
+        _is_empty_object_schema({"type": "object", "additionalProperties": {"type": "string"}})
+        is True
+    )
+    # Also trips when properties is present but empty AND additionalProperties
+    # is permissive — same zero-declared-fields outcome.
+    assert (
+        _is_empty_object_schema(
+            {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": {"type": "number"},
+            }
+        )
+        is True
+    )
+    # The `additionalProperties: True` shorthand (explicit "allow anything")
+    # is also empty when no properties are declared.
+    assert _is_empty_object_schema({"type": "object", "additionalProperties": True}) is True
+
+
+def test_is_empty_object_schema_flags_additional_properties_false_as_empty() -> None:
+    """`additionalProperties: False` + zero properties is still flagged as empty.
+
+    When the author pins `additionalProperties: False` AND declares no
+    properties, the schema literally accepts only `{}` — it cannot produce
+    any extraction field under any circumstance. This was already flagged
+    as empty before #388 (it is covered by the "no properties" branch), and
+    it must stay flagged after #388. This test locks that invariant so the
+    additionalProperties-aware branch does not accidentally flip the sign
+    for the `False` case.
+    """
+    from app.features.extraction.skills.skill_yaml_schema import (
+        _is_empty_object_schema,
+    )
+
+    assert _is_empty_object_schema({"type": "object", "additionalProperties": False}) is True
+    assert (
+        _is_empty_object_schema({"type": "object", "properties": {}, "additionalProperties": False})
+        is True
+    )
+
+
+def test_skill_yaml_schema_rejects_additional_properties_only_output_schema_with_clear_error(
+    write_skill_yaml: SkillYamlFactory,
+) -> None:
+    """Load-time rejection must name `additionalProperties` in its reason.
+
+    The fix for issue #388 not only flags the schema but also updates the
+    loader's human-readable reason so the skill author immediately sees that
+    the root cause is the `additionalProperties`-only shape — not a cryptic
+    deferred 502 at request time. The reason must mention
+    `additionalProperties` by name so it is trivially greppable and
+    actionable in the boot log.
+    """
+    path = write_skill_yaml(
+        output_schema={
+            "type": "object",
+            "additionalProperties": {"type": "string"},
+        },
+        examples=[{"input": "x", "output": {}}],
+    )
+
+    with pytest.raises(SkillValidationFailedError) as exc_info:
+        SkillYamlSchema.load_from_file(path)
+
+    reason = _reason(exc_info.value)
+    assert "output_schema" in reason
+    assert "properties" in reason
+    assert "additionalProperties" in reason
+
+
 @pytest.mark.parametrize(
     ("schema", "expected"),
     [
