@@ -1,0 +1,5 @@
+# GitHub Issue Template config.
+# blank_issues_enabled: false removes the "Open a blank issue" link at the bottom
+# of the template chooser, forcing all new issues through the structured templates
+# in this directory.
+blank_issues_enabled: false
