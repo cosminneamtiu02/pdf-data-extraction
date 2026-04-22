@@ -237,14 +237,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     """
     resolved_settings = settings or Settings()  # type: ignore[reportCallIssue]  # pydantic-settings loads fields from env
 
+    # Compute the production flag once and reuse it for every prod-only
+    # branch (JSON logging + hidden ``/docs`` / ``/redoc`` / ``/openapi.json``).
+    # Issue #370 narrowed ``Settings.app_env`` to a ``Literal``, so a typoed
+    # ``APP_ENV`` now fails at ``Settings()`` construction above rather than
+    # silently evaluating ``is_prod`` to ``False`` and exposing the docs UI
+    # in a live deploy.
+    is_prod = resolved_settings.app_env == "production"
+
     configure_logging(
         log_level=resolved_settings.log_level,
-        json_output=resolved_settings.app_env == "production",
+        json_output=is_prod,
         redacted_keys=resolved_settings.log_redacted_keys,
         max_value_length=resolved_settings.log_max_value_length,
     )
 
-    is_prod = resolved_settings.app_env == "production"
     application = FastAPI(
         title="PDF Data Extraction API",
         description="Self-hosted PDF data extraction microservice",
