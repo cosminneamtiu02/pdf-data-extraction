@@ -56,11 +56,14 @@ class OllamaHealthProbe:
     ) -> None:
         self._tags_url = tags_url
         self._expected_model = expected_model
-        self._timeout_seconds = timeout_seconds
+        # Precompute once (Copilot-review #488): ``check()`` runs on every
+        # readiness poll (typically 1 Hz under k8s), so reuse the same
+        # ``httpx.Timeout`` instance in both the owned-client constructor
+        # and the per-request override path rather than re-allocating per
+        # call. Mirrors the pattern in ``OllamaGemmaProvider._timeout``.
+        self._timeout = httpx.Timeout(timeout_seconds)
         if http_client is None:
-            self._http_client = httpx.AsyncClient(
-                timeout=httpx.Timeout(timeout_seconds),
-            )
+            self._http_client = httpx.AsyncClient(timeout=self._timeout)
             self._owns_client = True
         else:
             self._http_client = http_client
@@ -84,7 +87,7 @@ class OllamaHealthProbe:
             # regardless of who owns the client (issue #392 follow-up).
             response = await self._http_client.get(
                 self._tags_url,
-                timeout=httpx.Timeout(self._timeout_seconds),
+                timeout=self._timeout,
             )
             response.raise_for_status()
         except httpx.HTTPError:

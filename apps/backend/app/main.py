@@ -39,7 +39,7 @@ _logger = structlog.get_logger(__name__)
 def _install_provider_and_probe(
     app: FastAPI,
     settings: Settings,
-) -> tuple[OllamaGemmaProvider, OllamaHealthProbe]:
+) -> OllamaHealthProbe:
     """Install the intelligence provider and health probe on ``app.state``.
 
     If a probe has already been pre-seeded on ``app.state`` (test seam —
@@ -48,17 +48,27 @@ def _install_provider_and_probe(
     the provider's ``httpx.AsyncClient`` with the real probe; when the
     probe is faked, the sharing need is moot and constructing the real
     provider would waste inference resources and defeat the seam.
+
+    Returns the probe that ends up on ``app.state.ollama_health_probe``.
+    The provider, when built, is stored on ``app.state.intelligence_provider``
+    for downstream reuse — there is no need to return it here (keeping the
+    return type probe-only lets the type system express the real gating
+    behavior instead of forcing a ``type: ignore`` on the probe-only path).
     """
     existing_probe: OllamaHealthProbe | None = getattr(app.state, "ollama_health_probe", None)
+    if existing_probe is not None:
+        # Pre-seeded probe short-circuits the whole flow: do not build a
+        # real provider (unless one was ALSO pre-seeded, in which case it
+        # stays on app.state). Copilot-review on #488: keeping the
+        # ``provider`` None-case outside the subsequent branch avoids the
+        # pyright ``type: ignore`` that previously masked the None-possible
+        # assignment.
+        return existing_probe
+
     existing_provider: OllamaGemmaProvider | None = getattr(
         app.state, "intelligence_provider", None
     )
-
-    if existing_provider is None and existing_probe is None:
-        # ``type: ignore[assignment]`` because the test-seam branch may
-        # pre-populate ``app.state.intelligence_provider`` with a
-        # Protocol-conforming stub that is not an ``OllamaGemmaProvider``
-        # subclass.
+    if existing_provider is None:
         provider: OllamaGemmaProvider = OllamaGemmaProvider(
             settings=settings,
             validator=StructuredOutputValidator(
@@ -68,21 +78,16 @@ def _install_provider_and_probe(
         )
         app.state.intelligence_provider = provider
     else:
-        provider = existing_provider  # type: ignore[assignment]  # test seam allows Protocol-conforming stub
-        if existing_provider is not None:
-            app.state.intelligence_provider = existing_provider
+        provider = existing_provider
 
-    if existing_probe is None:
-        probe: OllamaHealthProbe = OllamaHealthProbe(
-            tags_url=build_tags_url(settings.ollama_base_url),
-            expected_model=settings.ollama_model,
-            timeout_seconds=settings.ollama_probe_timeout_seconds,
-            http_client=provider.http_client,
-        )
-    else:
-        probe = existing_probe
+    probe = OllamaHealthProbe(
+        tags_url=build_tags_url(settings.ollama_base_url),
+        expected_model=settings.ollama_model,
+        timeout_seconds=settings.ollama_probe_timeout_seconds,
+        http_client=provider.http_client,
+    )
     app.state.ollama_health_probe = probe
-    return provider, probe
+    return probe
 
 
 @asynccontextmanager
@@ -113,7 +118,7 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None]:
     # defeats the test seam and eagerly holds inference resources the
     # test will never use. See ``_install_provider_and_probe`` for the
     # gating logic.
-    _, probe = _install_provider_and_probe(app, settings)
+    probe = _install_provider_and_probe(app, settings)
 
     cache: ProbeCache = getattr(app.state, "probe_cache", None) or ProbeCache(
         probe=probe,
