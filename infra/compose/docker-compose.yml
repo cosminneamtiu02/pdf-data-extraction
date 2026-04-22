@@ -27,26 +27,35 @@ services:
     # state: a working baked image plus a broken host `.py` file will
     # crash uvicorn on boot, yet `docker compose up` reports the
     # container as `running` because Docker has no signal telling it
-    # the process is dead. The probe below uses the same urllib
-    # technique as the Dockerfile HEALTHCHECK (issue #363) so no curl
-    # binary is required inside the slim image, and it hits `/health`
-    # rather than `/ready`: dev workflows rarely have Ollama running,
-    # and `/ready` would 503 `ollama_unreachable` in that case and
-    # falsely flap the dev container to `unhealthy`. `/health` is a
-    # pure in-process liveness signal and stays green without Ollama.
-    # Issue #407.
+    # the process is dead. The probe below uses the same `curl -fsS`
+    # technique as the Dockerfile HEALTHCHECK (issue #363): `curl` is
+    # installed in the runtime stage of infra/docker/backend.Dockerfile
+    # precisely so probes do not spawn a cold Python interpreter
+    # against the ~500 MB app venv (Docling + LangExtract + PyMuPDF +
+    # torch CPU wheels) every 10s. The dev-compose probe reuses the
+    # exact same shape as that HEALTHCHECK, which matters more here
+    # than in prod (where compose probes `/ready` via urllib on a 30s
+    # cadence) because the dev interval is 10s. Hitting `/health`
+    # rather than `/ready` is deliberate: dev workflows rarely have
+    # Ollama running, and `/ready` would 503 `ollama_unreachable` in
+    # that case and falsely flap the dev container to `unhealthy`.
+    # `/health` is a pure in-process liveness signal and stays green
+    # without Ollama. Issue #407.
     healthcheck:
       test:
         - CMD
-        - python
-        - -c
-        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"
+        - curl
+        - -fsS
+        - --output
+        - /dev/null
+        - http://localhost:8000/health
       # Dev bias: short interval so a hot-reload crash surfaces fast.
       interval: 10s
       # `/health` does no I/O beyond returning a tiny JSON body, so the
-      # probe completes in milliseconds under normal load. 5s is plenty
-      # of headroom for a cold Python import on the first probe while
-      # still failing fast if uvicorn is wedged.
+      # probe completes in milliseconds under normal load. `curl` itself
+      # starts up in ~10ms — much cheaper than the Python-venv cold start
+      # that would otherwise dominate. 5s is plenty of headroom for
+      # scheduler jitter or a wedged uvicorn startup on the first probe.
       timeout: 5s
       retries: 3
       # `--reload` restarts uvicorn on every edit; give the app enough
