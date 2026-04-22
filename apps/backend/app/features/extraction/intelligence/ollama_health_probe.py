@@ -29,8 +29,9 @@ class OllamaHealthProbe:
     """Lightweight probe that checks Ollama reachability and model availability.
 
     Constructed with the full tags URL (built by the caller in the DI
-    factory), the configured model tag to look for, and an
-    ``httpx.AsyncClient``. Production DI (``app.api.deps``) shares the
+    factory), the configured model tag to look for, and optionally an
+    ``httpx.AsyncClient`` (the probe builds one internally when omitted;
+    see the constructor signature). Production DI (``app.api.deps``) shares the
     ``OllamaGemmaProvider``'s client so both components reuse a single
     connection pool — under 1 Hz Kubernetes-style readiness polling this
     halves DNS lookups, TLS handshakes, and connection churn against
