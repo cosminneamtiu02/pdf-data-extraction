@@ -35,8 +35,13 @@ class SubBlockMatcher:
     original `block_text`, never the normalized form. Returns `None` if all
     three steps fail.
 
-    The matcher is a pure function: no mutation, no shared state. Empty `value`
-    returns the vacuous `CharRange(0, 0)`.
+    The matcher holds no shared state and does not mutate its inputs. The
+    only side effect is a structured ``info`` log emitted via the
+    module-level ``_logger`` when the caller's non-empty ``value``
+    normalizes to an empty string (``sub_block_matcher_normalizer_degenerate``) —
+    a defensive diagnostic so the caller's generic ``matcher_failed`` log
+    is not miscategorized (issue #389). Empty ``value`` returns the
+    vacuous ``CharRange(0, 0)``.
     """
 
     def locate(self, block_text: str, value: str) -> CharRange | None:
