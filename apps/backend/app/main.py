@@ -1,7 +1,10 @@
 """FastAPI application factory."""
 
+import contextlib
+import inspect
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING, cast
 
 import structlog
 from fastapi import FastAPI
@@ -24,7 +27,117 @@ from app.features.extraction.skills import (
     SkillManifest,
 )
 
+if TYPE_CHECKING:
+    from types import SimpleNamespace
+
+    from starlette.datastructures import State
+
 _logger = structlog.get_logger(__name__)
+
+
+# Attributes set by ``create_app`` on ``app.state`` that must survive
+# lifespan re-enters. These are process-scoped (bound once at app
+# construction) and carry no open network/file/thread handles —
+# keeping them across lifespan boundaries is correct because the
+# second lifespan is expected to read the same configuration the first
+# was built against.
+#
+# Every OTHER attribute on ``app.state`` is treated as lifespan-scoped
+# and cleaned up by ``_lifespan_cleanup`` on shutdown, regardless of
+# whether it was pre-installed as a test seam or lazily cached during
+# a request. This replaces the issue-#381 hardcoded 10-entry cleanup
+# tuple with a single allowlist of long-lived attrs — a much smaller,
+# more stable invariant to maintain.
+#
+# A cached attribute added here by accident would leak resources on
+# shutdown; an attribute that belongs here but is forgotten would
+# simply be re-created next lifespan (slightly wasteful but not
+# incorrect). The former is the more dangerous failure mode, which is
+# why this set is kept minimal and documented.
+_LIFESPAN_PRESERVED_ATTRS: frozenset[str] = frozenset(
+    {
+        "settings",
+        "skill_manifest",
+    },
+)
+
+
+async def _lifespan_cleanup(
+    state: "State | SimpleNamespace",
+    preserved_attrs: frozenset[str] = _LIFESPAN_PRESERVED_ATTRS,
+) -> None:
+    """Clean up every ``app.state`` attribute not in ``preserved_attrs``.
+
+    Issue #381: the old cleanup block hardcoded a 10-entry tuple of
+    attribute names. Every new lazily-cached dependency added to
+    ``app/api/deps.py`` or ``app/features/extraction/deps.py`` had to be
+    kept in sync with that tuple manually — a footgun with no enforcement.
+    The architecture test in
+    ``tests/unit/architecture/test_lifespan_cleanup_ast.py`` is a second
+    layer of defense but the primary fix is this generic helper: we
+    iterate over everything on ``app.state`` that is not in the small
+    ``_LIFESPAN_PRESERVED_ATTRS`` allowlist, await ``aclose()`` on
+    objects that expose it, and always ``delattr`` so the re-entered
+    lifespan rebuilds a fresh DI graph.
+
+    Failures on individual ``aclose`` calls are logged via structlog
+    under the ``lifespan_cleanup_failed`` event and never propagated:
+    shutdown must be best-effort so a failure in one resource does not
+    prevent sibling resources from closing. CLAUDE.md forbids silently
+    swallowing exceptions, so every failure is logged — it is not
+    swallowed.
+    """
+    # Starlette's `State` proxies attribute access through `self._state` (a
+    # plain dict); `vars(state)` on a real request.app.state returns only
+    # `{"_state": dict}` — the storage slot itself, not the user attributes.
+    # Iterating `vars(state)` and calling `delattr` would wipe starlette's
+    # internal dict and break every subsequent lookup. Read `state._state`
+    # when present (production path) and fall back to `vars(state)` for
+    # SimpleNamespace-style test fakes. The extra `_state` filter is
+    # defensive against future introspection shapes.
+    underlying_raw: object = getattr(state, "_state", None)
+    underlying: dict[str, object]
+    if isinstance(underlying_raw, dict):
+        underlying = cast("dict[str, object]", underlying_raw)
+    else:
+        underlying = cast("dict[str, object]", vars(state))
+    state_attrs: dict[str, object] = dict(underlying)
+    to_clean: list[tuple[str, object]] = [
+        (name, value)
+        for name, value in state_attrs.items()
+        if name not in preserved_attrs and name != "_state"
+    ]
+
+    for attr_name, obj in to_clean:
+        try:
+            # Resolve ``aclose`` inside the try block so a hostile
+            # ``__getattr__`` or descriptor ``__get__`` raising during
+            # attribute lookup is caught and logged like any other
+            # ``aclose`` failure. Resolving before the try (as an
+            # earlier revision did) would let such an exception abort
+            # the cleanup loop and leak sibling resources.
+            aclose = getattr(obj, "aclose", None)
+            if callable(aclose):
+                result = aclose()
+                if inspect.isawaitable(result):
+                    await result
+        except Exception as exc:  # noqa: BLE001 - cleanup must not prevent sibling resources from closing
+            _logger.warning(
+                "lifespan_cleanup_failed",
+                attr=attr_name,
+                error_class=type(exc).__name__,
+                exc_info=True,
+            )
+        finally:
+            # Always delattr so the re-entered lifespan resolves fresh
+            # dependencies through the Depends() graph rather than
+            # handing back stale cached objects (integration test
+            # ``test_lifespan_service_cache`` pins this invariant at
+            # the transport layer). ``contextlib.suppress`` covers the
+            # defensive case where a nested ``aclose`` reached into
+            # ``app.state`` and already removed the attribute.
+            with contextlib.suppress(AttributeError):
+                delattr(state, attr_name)
 
 
 def _install_provider_and_probe(app: FastAPI) -> OllamaHealthProbe:
@@ -154,51 +267,29 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None]:
     try:
         yield
     finally:
-        # Close each lazily-constructed resource independently. Each cleanup
-        # is wrapped in its own try/except so a failure in one does not
-        # prevent the others from running (e.g. probe.aclose() raising must
-        # not skip provider.aclose()).
+        # Generic cleanup (issue #381): previously this block hardcoded a
+        # 10-entry tuple of attribute names that had to be kept in sync
+        # every time a new lazily-cached dependency was added in
+        # ``app/api/deps.py`` or ``app/features/extraction/deps.py``.
+        # A forgotten entry leaked resources on lifespan re-enter.
         #
-        # The probe_cache is also cleared because it holds a reference to the
-        # probe's (now-closed) httpx client. Without clearing it, a reused
-        # app instance would serve a stale cache backed by a closed client.
+        # The helper reads ``app.state._state`` (starlette's internal
+        # dict) in production and falls back to ``vars(app.state)`` for
+        # ``SimpleNamespace`` test fakes, then cleans up every attr
+        # that is not in ``_LIFESPAN_PRESERVED_ATTRS`` (``settings``,
+        # ``skill_manifest`` — the process-scoped attrs ``create_app``
+        # sets before the lifespan runs). This keeps the probe +
+        # cache + every DI-cached pipeline component in scope without
+        # naming them individually, so the next lazily-cached dep is
+        # covered automatically.
         #
-        # ``extraction_service`` and its collaborator caches
-        # (``structured_output_validator``, ``document_parser``,
-        # ``text_concatenator``, ``extraction_engine``, ``span_resolver``,
-        # ``pdf_annotator``) are also cleared. ``extraction_service`` holds
-        # the ``intelligence_provider`` internally; without invalidating it
-        # on shutdown, a re-entered lifespan would rebuild a fresh provider
-        # on ``app.state`` but ``get_extraction_service`` would still return
-        # the first lifespan's cached service, whose ``_intelligence_provider``
-        # points at the already-``aclose()``'d provider. The next extraction
-        # request then fails with a closed-httpx-client 500. The sibling
-        # component caches are invalidated for the same reason: the
-        # re-entered lifespan must build a fresh graph so every dependency
+        # The extraction service and its collaborator caches are cleared
+        # for the same reason the old code cleared them: a re-entered
+        # lifespan must build a fresh DI graph so every dependency
         # reflects the current ``app.state.settings`` and current
         # ``Depends()`` override map, not values captured at the first
         # lifespan's first-resolve.
-        for attr in (
-            "ollama_health_probe",
-            "probe_cache",
-            "intelligence_provider",
-            "extraction_service",
-            "structured_output_validator",
-            "document_parser",
-            "text_concatenator",
-            "extraction_engine",
-            "span_resolver",
-            "pdf_annotator",
-        ):
-            obj = getattr(app.state, attr, None)
-            if obj is not None:
-                try:
-                    if hasattr(obj, "aclose"):
-                        await obj.aclose()
-                except Exception:  # noqa: BLE001 - cleanup must not prevent sibling resources from closing
-                    _logger.warning("lifespan_cleanup_failed", attr=attr, exc_info=True)
-                finally:
-                    delattr(app.state, attr)
+        await _lifespan_cleanup(app.state)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
