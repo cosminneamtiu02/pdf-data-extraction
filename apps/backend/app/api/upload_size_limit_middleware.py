@@ -195,11 +195,20 @@ class UploadSizeLimitMiddleware:
         matching the fallback in ``app.api.errors._get_request_id``.
 
         ``request_id`` is also bound to ``structlog.contextvars`` for the
-        duration of the rejection emit (try/finally) so any deeper
-        logger call on this path carries correlation — mirroring what
-        ``RequestIdMiddleware`` does on the happy path (issue #377).
-        Unbinding is done unconditionally in ``finally`` to avoid leaking
-        the id across requests sharing the same asyncio task.
+        duration of the rejection emit (via ``bound_contextvars``) so any
+        deeper logger call on this path carries correlation — mirroring
+        what ``RequestIdMiddleware`` does on the happy path (issue #377).
+
+        ``bound_contextvars`` is used instead of a manual
+        bind/unbind pair because it saves any prior binding on enter and
+        restores it on exit. That matters when ``RequestIdMiddleware``
+        is upstream: it binds ``request_id`` before delegating and
+        expects that binding to survive until its own ``finally``
+        unbinds it. A plain ``unbind_contextvars("request_id")`` in our
+        ``finally`` would wipe the upstream binding early, breaking
+        correlation for any logging that happens between
+        ``await self._reject(...)`` and the upstream ``finally``
+        (Copilot #497 review).
         """
         # Envelope reports ``_reported_limit`` (the authoritative PDF-byte
         # limit in production), not ``_max_bytes`` (the inflated ASGI
@@ -209,8 +218,7 @@ class UploadSizeLimitMiddleware:
         err = PdfTooLargeError(max_bytes=self._reported_limit, actual_bytes=actual_bytes)
         request_id = _get_request_id(scope)
 
-        structlog.contextvars.bind_contextvars(request_id=request_id)
-        try:
+        with structlog.contextvars.bound_contextvars(request_id=request_id):
             _logger.warning(
                 "upload_rejected",
                 path=scope.get("path"),
@@ -238,8 +246,6 @@ class UploadSizeLimitMiddleware:
             # JSONResponse is itself an ASGI app; calling it with a no-op
             # receive is safe because it never reads the request body.
             await response(scope, _empty_receive, send)
-        finally:
-            structlog.contextvars.unbind_contextvars("request_id")
 
 
 async def _empty_receive() -> Message:
