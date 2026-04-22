@@ -224,6 +224,54 @@ def test_handle_validation_error_empty_errors_logs_traceback(
     assert kwargs["exc_info"] is True
 
 
+async def test_handle_validation_error_empty_errors_chains_original_cause() -> None:
+    """The ``InternalError`` raised for empty ``exc.errors()`` must chain the original.
+
+    Copilot review on PR #489 (issue #369 follow-up): a bare
+    ``raise InternalError`` sets only ``__context__`` (implicit chaining)
+    and leaves ``__cause__`` as ``None``. Aggregators and debuggers that
+    walk ``__cause__`` to reconstruct the "caused by" line therefore lose
+    the original ``RequestValidationError`` entirely, even though
+    ``logger.warning(..., exc_info=True)`` in ``handle_domain_error``
+    prints an ``exc_info`` block -- because ``exc_info`` captures the
+    ``InternalError`` currently being raised, not the original. The fix
+    is ``raise InternalError from exc`` so ``__cause__`` carries the
+    original exception.
+
+    This test invokes the registered handler directly (bypassing the
+    TestClient round-trip) so the raised ``InternalError`` can be caught
+    and inspected -- a ``TestClient`` exercise would see only the final
+    500 response, not the exception object.
+    """
+    from fastapi.exceptions import RequestValidationError
+
+    from app.api.errors import register_exception_handlers
+
+    app = FastAPI()
+    register_exception_handlers(app)
+    handler = app.exception_handlers[RequestValidationError]
+
+    original = RequestValidationError(errors=[])
+    # The handler calls ``_get_request_id(request)`` before reaching the
+    # empty-errors branch, and that helper reads ``request.state``. A bare
+    # ``object()`` has no ``.state`` attribute, so use a ``SimpleNamespace``
+    # with an empty ``state`` to mimic the ASGI ``Request`` surface the
+    # helper touches -- avoids constructing a full ASGI scope.
+    from types import SimpleNamespace
+
+    fake_request = SimpleNamespace(state=SimpleNamespace())
+    with pytest.raises(InternalError) as exc_info:
+        await handler(fake_request, original)  # pyright: ignore[reportGeneralTypeIssues]
+
+    assert exc_info.value.__cause__ is original, (
+        "Expected ``raise InternalError from exc`` to set ``__cause__`` to the "
+        "original RequestValidationError; got "
+        f"{exc_info.value.__cause__!r}. Without explicit chaining, the "
+        "warning-level traceback logged by handle_domain_error loses the "
+        "original validation exception as the causal link."
+    )
+
+
 def test_error_handler_maps_unhandled_to_internal_error(test_client: TestClient) -> None:
     """Unhandled exceptions should map to INTERNAL_ERROR with 500 status."""
     response = test_client.get("/trigger-unhandled")

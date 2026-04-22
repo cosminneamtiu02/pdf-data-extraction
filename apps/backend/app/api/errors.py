@@ -96,7 +96,14 @@ def register_exception_handlers(app: FastAPI) -> None:
             # call in ``handle_domain_error`` (code, http_status, request_id,
             # exc_info) which gives on-call responders the traceback. Adding
             # a log line here would duplicate the observability event.
-            raise InternalError
+            #
+            # Copilot review on PR #489: ``from exc`` chains the original
+            # ``RequestValidationError`` via ``__cause__`` so the traceback
+            # logged at warning level by ``handle_domain_error`` (``exc_info=True``)
+            # preserves the "caused by" link to the framework anomaly; a bare
+            # ``raise`` would only set ``__context__`` (implicit chaining) and
+            # aggregators that walk ``__cause__`` would lose the original.
+            raise InternalError from exc
         # Issue #344: VALIDATION_FAILED carries all per-field failures in
         # ``details``. ``params`` is intentionally empty — the prior
         # "first-of-N" shape silently truncated multi-field failures and
