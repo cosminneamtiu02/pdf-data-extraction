@@ -78,9 +78,12 @@ class SubBlockMatcher:
         # (Copilot-review #487 thread A.)
         normalized_value, _ = normalizer(value)
         if normalized_value == "":
+            # Event name carries the cause; no redundant ``reason`` kwarg
+            # (Copilot follow-up on PR #487 — ``reason`` is reserved for
+            # cross-event discriminators like ``span_resolver_matcher_failed``
+            # where the same event covers multiple failure modes).
             _logger.info(
-                "normalizer_degenerate",
-                reason="normalizer_degenerate",
+                "sub_block_matcher_normalizer_degenerate",
                 normalizer=normalizer.__name__,
                 value_length=len(value),
                 block_text_length=len(block_text),

@@ -327,8 +327,9 @@ def test_sub_block_matcher_logs_normalizer_degenerate_when_nfkc_collapses_to_emp
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Regression for #389: the defensive branch guarded by
-    ``normalized_value == ""`` must log ``reason='normalizer_degenerate'`` so
-    the caller's ``matcher_failed`` log is not miscategorized.
+    ``normalized_value == ""`` must log the
+    ``sub_block_matcher_normalizer_degenerate`` event so the caller's
+    generic ``matcher_failed`` log is not miscategorized.
 
     No known single Unicode character in today's NFKC tables collapses a
     non-empty value to an empty normalized form under either step 2's
@@ -375,12 +376,14 @@ def test_sub_block_matcher_logs_normalizer_degenerate_when_nfkc_collapses_to_emp
     result = matcher.locate("some block text", "value-not-in-block")
 
     assert result is None
-    degenerate_events = [kwargs for event, kwargs in spy.events if event == "normalizer_degenerate"]
+    degenerate_events = [
+        kwargs for event, kwargs in spy.events if event == "sub_block_matcher_normalizer_degenerate"
+    ]
     assert len(degenerate_events) >= 1, (
         f"Expected at least one normalizer_degenerate event; got {spy.events!r}"
     )
-    first = degenerate_events[0]
-    assert first["reason"] == "normalizer_degenerate"
+    # Event name is the sole carrier of the cause (no redundant ``reason`` kwarg).
+    assert degenerate_events[0]["normalizer"] != ""
 
 
 def test_sub_block_matcher_does_not_log_normalizer_degenerate_for_regular_miss(
@@ -401,7 +404,9 @@ def test_sub_block_matcher_does_not_log_normalizer_degenerate_for_regular_miss(
     result = matcher.locate("The cat sat on the mat", "$1,847.50")
 
     assert result is None
-    degenerate_events = [kwargs for event, kwargs in spy.events if event == "normalizer_degenerate"]
+    degenerate_events = [
+        kwargs for event, kwargs in spy.events if event == "sub_block_matcher_normalizer_degenerate"
+    ]
     assert degenerate_events == []
 
 
