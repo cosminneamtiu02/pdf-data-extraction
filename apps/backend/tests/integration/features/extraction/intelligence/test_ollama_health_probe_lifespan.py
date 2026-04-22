@@ -119,3 +119,59 @@ async def test_lifespan_does_not_build_real_provider_when_probe_is_preseeded() -
         assert app.state.ollama_health_probe is not None
         # Critical assertion: no real provider was constructed.
         assert getattr(app.state, "intelligence_provider", None) is None
+
+
+@respx.mock
+async def test_lifespan_shares_single_validator_instance_with_deps_path() -> None:
+    """Lifespan must install the same validator instance ``app.api.deps`` would cache.
+
+    Second Copilot review on PR #488 flagged that ``_install_provider_and_probe``
+    duplicated the provider/validator construction logic in ``app.api.deps``,
+    so the two graphs could drift. Specifically: lifespan built a
+    ``StructuredOutputValidator`` inline to wrap in the provider but did not
+    store it on ``app.state.structured_output_validator``. A subsequent
+    request then resolved ``get_structured_output_validator(request)``,
+    saw ``None`` on state, and constructed a *second* validator — so the
+    provider held validator A while the rest of the request graph saw
+    validator B.
+
+    Pins the single-source-of-truth contract: after lifespan enters,
+    ``app.state.structured_output_validator`` is populated, and the
+    validator that the request-path dep would return at request time is
+    the *same instance* the provider was built with.
+    """
+    from app.api.deps import (
+        get_intelligence_provider,
+        get_structured_output_validator,
+    )
+
+    app = create_app()
+    settings: Settings = app.state.settings
+
+    # Mock `/api/tags` so the startup probe call succeeds without network.
+    respx.get(build_tags_url(settings.ollama_base_url)).mock(
+        return_value=httpx.Response(200, json={"models": [{"name": settings.ollama_model}]}),
+    )
+
+    async with app.router.lifespan_context(app):
+        # Pin: validator is now on app.state — the drift bug is closed.
+        assert getattr(app.state, "structured_output_validator", None) is not None
+
+        # Pin: request-path dep returns the cached instance, not a new one.
+        # Build a minimal Request proxy for the deps factory. The deps read
+        # through ``request.app.state``, so only ``app`` is needed in scope.
+        from fastapi import Request
+
+        scope = {"type": "http", "app": app, "headers": []}
+        request = Request(scope=scope)  # type: ignore[arg-type]  # test seam: request proxy for deps readthrough
+        dep_validator = get_structured_output_validator(request)
+        dep_provider = get_intelligence_provider(request)
+
+        # Same validator object on both sides: no drift between lifespan
+        # wiring and request-time wiring.
+        assert dep_validator is app.state.structured_output_validator
+        assert dep_provider is app.state.intelligence_provider
+        # The provider was built with the same validator instance: the
+        # provider's internal validator matches what the request path
+        # now sees.
+        assert dep_provider._validator is dep_validator  # noqa: SLF001 — pinning single-source-of-truth wiring

@@ -25,7 +25,7 @@ guard when the provider is the first dependency touched.
 import threading
 from typing import Annotated
 
-from fastapi import Depends, Request
+from fastapi import Depends, FastAPI, Request
 
 from app.api.probe_cache import ProbeCache
 from app.core.config import Settings
@@ -94,9 +94,20 @@ def get_correction_prompt_builder() -> CorrectionPromptBuilder:
     return CorrectionPromptBuilder()
 
 
-def get_structured_output_validator(request: Request) -> StructuredOutputValidator:
-    """Return (and lazily cache) the validator bound to this app instance."""
-    state = request.app.state
+def get_structured_output_validator_for_app(app: FastAPI) -> StructuredOutputValidator:
+    """Return (and lazily cache) the validator bound to ``app``.
+
+    Takes ``FastAPI`` directly rather than a ``Request`` so that ASGI
+    lifespan (which has no ``Request`` in scope) can share one source of
+    truth with the request-time dependency graph. Copilot review on PR
+    #488: before this factoring, ``app.main._lifespan`` built a separate
+    validator inline, which bypassed ``app.state.structured_output_validator``
+    and let the provider hold validator A while a subsequent request
+    resolved ``get_structured_output_validator(request)`` into validator
+    B — silent drift. Routing both paths through this helper keeps
+    exactly one validator per app.
+    """
+    state = app.state
     validator: StructuredOutputValidator | None = getattr(
         state,
         "structured_output_validator",
@@ -109,16 +120,34 @@ def get_structured_output_validator(request: Request) -> StructuredOutputValidat
             validator = getattr(state, "structured_output_validator", None)
             if validator is None:
                 validator = StructuredOutputValidator(
-                    settings=get_settings(request),
+                    settings=state.settings,
                     correction_prompt_builder=get_correction_prompt_builder(),
                 )
                 state.structured_output_validator = validator
     return validator
 
 
-def get_intelligence_provider(request: Request) -> OllamaGemmaProvider:
-    """Return (and lazily cache) the provider bound to this app instance."""
-    state = request.app.state
+def get_structured_output_validator(request: Request) -> StructuredOutputValidator:
+    """Return (and lazily cache) the validator bound to this app instance.
+
+    Thin ``Request``-typed wrapper around
+    ``get_structured_output_validator_for_app`` so FastAPI's
+    ``Depends()`` graph can resolve it at request time. The shared helper
+    is the single construction site — see that function for drift-safety
+    rationale (PR #488 follow-up).
+    """
+    return get_structured_output_validator_for_app(request.app)
+
+
+def get_intelligence_provider_for_app(app: FastAPI) -> OllamaGemmaProvider:
+    """Return (and lazily cache) the provider bound to ``app``.
+
+    Counterpart to ``get_structured_output_validator_for_app``: shared by
+    request-time deps and by ``app.main._lifespan``'s eager wiring so
+    both paths see the same provider (and, transitively, the same
+    validator on ``app.state``). Issue #392 / PR #488.
+    """
+    state = app.state
     provider: OllamaGemmaProvider | None = getattr(
         state,
         "intelligence_provider",
@@ -129,11 +158,16 @@ def get_intelligence_provider(request: Request) -> OllamaGemmaProvider:
             provider = getattr(state, "intelligence_provider", None)
             if provider is None:
                 provider = OllamaGemmaProvider(
-                    settings=get_settings(request),
-                    validator=get_structured_output_validator(request),
+                    settings=state.settings,
+                    validator=get_structured_output_validator_for_app(app),
                 )
                 state.intelligence_provider = provider
     return provider
+
+
+def get_intelligence_provider(request: Request) -> OllamaGemmaProvider:
+    """Return (and lazily cache) the provider bound to this app instance."""
+    return get_intelligence_provider_for_app(request.app)
 
 
 def get_document_parser(request: Request) -> DoclingDocumentParser:
@@ -217,8 +251,13 @@ def get_extraction_service(  # noqa: PLR0913 — each param is a DI-resolved pip
     return service
 
 
-def get_ollama_health_probe(request: Request) -> OllamaHealthProbe:
-    """Return (and lazily cache) the health probe bound to this app instance.
+def get_ollama_health_probe_for_app(app: FastAPI) -> OllamaHealthProbe:
+    """Return (and lazily cache) the health probe bound to ``app``.
+
+    Counterpart to ``get_intelligence_provider_for_app``: shared by
+    request-time deps and by ``app.main._lifespan``'s eager wiring so
+    both paths install the same probe on ``app.state``. Issue #392 /
+    PR #488.
 
     The tags URL is built here (reusing ``build_tags_url`` from the
     provider module) so the probe class does not duplicate the URL
@@ -231,14 +270,14 @@ def get_ollama_health_probe(request: Request) -> OllamaHealthProbe:
     provider's client, and the probe's ``aclose()`` no-ops on a client
     it did not create.
     """
-    state = request.app.state
+    state = app.state
     probe: OllamaHealthProbe | None = getattr(state, "ollama_health_probe", None)
     if probe is None:
         with _dep_init_lock:
             probe = getattr(state, "ollama_health_probe", None)
             if probe is None:
-                settings = get_settings(request)
-                provider = get_intelligence_provider(request)
+                settings: Settings = state.settings
+                provider = get_intelligence_provider_for_app(app)
                 probe = OllamaHealthProbe(
                     tags_url=build_tags_url(settings.ollama_base_url),
                     expected_model=settings.ollama_model,
@@ -247,6 +286,11 @@ def get_ollama_health_probe(request: Request) -> OllamaHealthProbe:
                 )
                 state.ollama_health_probe = probe
     return probe
+
+
+def get_ollama_health_probe(request: Request) -> OllamaHealthProbe:
+    """Return (and lazily cache) the health probe bound to this app instance."""
+    return get_ollama_health_probe_for_app(request.app)
 
 
 def get_probe_cache(request: Request) -> ProbeCache:

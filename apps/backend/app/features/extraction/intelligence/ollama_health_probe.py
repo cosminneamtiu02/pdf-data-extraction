@@ -31,11 +31,18 @@ class OllamaHealthProbe:
     Constructed with the full tags URL (built by the caller in the DI
     factory), the configured model tag to look for, and optionally an
     ``httpx.AsyncClient`` (the probe builds one internally when omitted;
-    see the constructor signature). Production DI (``app.api.deps``) shares the
+    see the constructor signature). Production wiring shares the
     ``OllamaGemmaProvider``'s client so both components reuse a single
     connection pool — under 1 Hz Kubernetes-style readiness polling this
     halves DNS lookups, TLS handshakes, and connection churn against
-    Ollama (issue #392).
+    Ollama (issue #392). Two entry points converge on the same
+    ``app.api.deps.get_ollama_health_probe_for_app`` factory so there is
+    a single source of truth:
+    ``app.api.deps.get_ollama_health_probe`` resolves the probe at
+    request time (e.g. ``/ready`` handler), and ``app.main._lifespan``
+    (via ``_install_provider_and_probe``) resolves it eagerly on startup
+    so the shared client is bound before the first request. Either entry
+    lands the same provider/validator/probe instances on ``app.state``.
 
     Ownership semantics: when ``http_client`` is injected, the probe does
     NOT close it on ``aclose()`` — the provider (or whichever caller

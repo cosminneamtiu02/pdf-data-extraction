@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 import structlog
 from fastapi import FastAPI
 
+from app.api.deps import get_ollama_health_probe_for_app
 from app.api.errors import register_exception_handlers
 from app.api.health_router import router as health_router
 from app.api.middleware import configure_middleware
@@ -13,18 +14,8 @@ from app.api.probe_cache import ProbeCache
 from app.core.config import Settings
 from app.core.logging import configure_logging
 from app.exceptions import SkillValidationFailedError
-from app.features.extraction.intelligence.correction_prompt_builder import (
-    CorrectionPromptBuilder,
-)
-from app.features.extraction.intelligence.ollama_gemma_provider import (
-    OllamaGemmaProvider,
-    build_tags_url,
-)
 from app.features.extraction.intelligence.ollama_health_probe import (
     OllamaHealthProbe,
-)
-from app.features.extraction.intelligence.structured_output_validator import (
-    StructuredOutputValidator,
 )
 from app.features.extraction.router import router as extraction_router
 from app.features.extraction.skills import (
@@ -36,10 +27,7 @@ from app.features.extraction.skills import (
 _logger = structlog.get_logger(__name__)
 
 
-def _install_provider_and_probe(
-    app: FastAPI,
-    settings: Settings,
-) -> OllamaHealthProbe:
+def _install_provider_and_probe(app: FastAPI) -> OllamaHealthProbe:
     """Install the intelligence provider and health probe on ``app.state``.
 
     If a probe has already been pre-seeded on ``app.state`` (test seam —
@@ -54,40 +42,35 @@ def _install_provider_and_probe(
     for downstream reuse — there is no need to return it here (keeping the
     return type probe-only lets the type system express the real gating
     behavior instead of forcing a ``type: ignore`` on the probe-only path).
+
+    Construction is delegated to
+    ``app.api.deps.get_ollama_health_probe_for_app`` (which transitively
+    runs through ``get_intelligence_provider_for_app`` and
+    ``get_structured_output_validator_for_app``) so the lifespan and
+    request-time DI graphs share exactly one wiring path. Before this
+    delegation (Copilot review on PR #488), the lifespan built a separate
+    ``StructuredOutputValidator`` inline that never landed on
+    ``app.state.structured_output_validator`` — a subsequent request then
+    resolved a *second* validator via the deps factory, so the provider
+    held validator A while the request graph saw validator B. Routing
+    both paths through the ``_for_app`` helpers keeps one validator and
+    one provider per app.
     """
     existing_probe: OllamaHealthProbe | None = getattr(app.state, "ollama_health_probe", None)
     if existing_probe is not None:
         # Pre-seeded probe short-circuits the whole flow: do not build a
         # real provider (unless one was ALSO pre-seeded, in which case it
-        # stays on app.state). Copilot-review on #488: keeping the
-        # ``provider`` None-case outside the subsequent branch avoids the
-        # pyright ``type: ignore`` that previously masked the None-possible
-        # assignment.
+        # stays on app.state). Keeping this gate in the lifespan (rather
+        # than the deps-level ``get_ollama_health_probe_for_app``) means
+        # the deps path still lazily builds the real provider if a caller
+        # resolves ``get_intelligence_provider`` directly without the probe
+        # short-circuit — which is the expected request-time behavior.
         return existing_probe
 
-    existing_provider: OllamaGemmaProvider | None = getattr(
-        app.state, "intelligence_provider", None
-    )
-    if existing_provider is None:
-        provider: OllamaGemmaProvider = OllamaGemmaProvider(
-            settings=settings,
-            validator=StructuredOutputValidator(
-                settings=settings,
-                correction_prompt_builder=CorrectionPromptBuilder(),
-            ),
-        )
-        app.state.intelligence_provider = provider
-    else:
-        provider = existing_provider
-
-    probe = OllamaHealthProbe(
-        tags_url=build_tags_url(settings.ollama_base_url),
-        expected_model=settings.ollama_model,
-        timeout_seconds=settings.ollama_probe_timeout_seconds,
-        http_client=provider.http_client,
-    )
-    app.state.ollama_health_probe = probe
-    return probe
+    # Shared factory handles lazy construction + caching of
+    # provider/validator/probe on ``app.state`` under the same re-entrant
+    # lock the request-time deps use.
+    return get_ollama_health_probe_for_app(app)
 
 
 @asynccontextmanager
@@ -118,7 +101,7 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None]:
     # defeats the test seam and eagerly holds inference resources the
     # test will never use. See ``_install_provider_and_probe`` for the
     # gating logic.
-    probe = _install_provider_and_probe(app, settings)
+    probe = _install_provider_and_probe(app)
 
     cache: ProbeCache = getattr(app.state, "probe_cache", None) or ProbeCache(
         probe=probe,
