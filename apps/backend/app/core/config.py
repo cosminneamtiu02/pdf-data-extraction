@@ -293,3 +293,21 @@ class Settings(BaseSettings):
     # queued on a semaphore wait list. Queuing would pile up callers behind
     # their own 504 timeout budget and defeat the backpressure contract.
     max_concurrent_extractions: Annotated[int, Field(gt=0)] = 4
+
+
+def load_settings() -> Settings:
+    """Construct a ``Settings`` instance from environment / dotenv / defaults.
+
+    Thin wrapper around ``Settings()`` whose sole purpose is centralizing the
+    ``# type: ignore[reportCallIssue]`` suppression that every no-arg call site
+    would otherwise repeat. Pyright (strict) flags ``Settings()`` because
+    pydantic-settings does not expose a ``.from_env()`` classmethod that
+    returns ``Self`` — every field is declared with a default or a
+    ``default_factory`` and the runtime pulls values from env / ``.env`` /
+    defaults, but pyright cannot see that path through the ``BaseSettings``
+    signature. Narrowly suppressing the complaint here means production call
+    sites (``app/main.py``, ``ollama_gemma_provider.py``,
+    ``extraction_engine.py``) can call ``load_settings()`` with no inline
+    pragma, and the justification lives in exactly one place (issue #378).
+    """
+    return Settings()  # type: ignore[reportCallIssue]  # pydantic-settings populates fields from env / .env / defaults

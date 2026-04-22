@@ -49,7 +49,7 @@ from langextract.core.base_model import BaseLanguageModel
 from langextract.core.types import ScoredOutput
 from langextract.providers.router import register
 
-from app.core.config import Settings
+from app.core.config import Settings, load_settings
 from app.exceptions import IntelligenceTimeoutError, IntelligenceUnavailableError
 from app.features.extraction.intelligence.correction_prompt_builder import (
     CorrectionPromptBuilder,
@@ -227,7 +227,7 @@ class OllamaGemmaProvider(BaseLanguageModel):
         **_langextract_kwargs: Any,
     ) -> None:
         super().__init__()
-        effective_settings = settings if settings is not None else Settings()  # type: ignore[reportCallIssue]  # pydantic-settings loads fields from env
+        effective_settings = settings if settings is not None else load_settings()
         effective_validator = (
             validator
             if validator is not None

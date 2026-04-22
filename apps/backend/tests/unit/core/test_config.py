@@ -3,7 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from app.core.config import Settings
+from app.core.config import Settings, load_settings
 
 
 def test_settings_defaults() -> None:
@@ -359,3 +359,37 @@ def test_settings_app_env_accepts_three_known_values() -> None:
     for value in ("development", "production", "testing"):
         s = Settings(app_env=value)  # type: ignore[arg-type]
         assert s.app_env == value
+
+
+# -- load_settings() helper (issue #378) ------------------------------------
+#
+# ``load_settings()`` centralizes the ``# type: ignore[reportCallIssue]``
+# suppression previously repeated at three production call sites
+# (``app/main.py``, ``features/extraction/intelligence/ollama_gemma_provider.py``,
+# ``features/extraction/extraction/extraction_engine.py``). Pyright strict
+# flags ``Settings()`` because pydantic-settings does not surface the
+# "fields-from-env" construction path in its class signature. Wrapping the
+# call in one narrowly-suppressed helper removes the repeated justification
+# comments and keeps the suppression in a single location.
+
+
+def test_load_settings_returns_settings_instance() -> None:
+    """``load_settings()`` must return a ``Settings`` instance loaded from env."""
+    result = load_settings()
+    assert isinstance(result, Settings)
+
+
+def test_load_settings_equivalent_to_direct_construction() -> None:
+    """``load_settings()`` must behave identically to ``Settings()``.
+
+    The helper is a pure re-export of the no-arg ``Settings()`` call — its
+    sole purpose is centralizing the ``reportCallIssue`` suppression, not
+    changing semantics. Key defaults must match to prove the helper is not
+    silently mutating inputs.
+    """
+    via_helper = load_settings()
+    direct = Settings()
+    assert via_helper.app_env == direct.app_env
+    assert via_helper.log_level == direct.log_level
+    assert via_helper.ollama_model == direct.ollama_model
+    assert via_helper.ollama_base_url == direct.ollama_base_url
