@@ -22,6 +22,46 @@ services:
       - LOG_LEVEL=info
       - CORS_ORIGINS=["http://localhost:5173"]
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    # Without a compose-level healthcheck, the bind-mount at line 14
+    # (../../apps/backend/app:/app/app) can produce a misleading green
+    # state: a working baked image plus a broken host `.py` file will
+    # crash uvicorn on boot, yet `docker compose up` reports the
+    # container as `running` because Docker has no signal telling it
+    # the process is dead. The probe below uses the same `curl -fsS`
+    # technique as the Dockerfile HEALTHCHECK (issue #363): `curl` is
+    # installed in the runtime stage of infra/docker/backend.Dockerfile
+    # precisely so probes do not spawn a cold Python interpreter
+    # against the ~500 MB app venv (Docling + LangExtract + PyMuPDF +
+    # torch CPU wheels) every 10s. The dev-compose probe reuses the
+    # exact same shape as that HEALTHCHECK, which matters more here
+    # than in prod (where compose probes `/ready` via urllib on a 30s
+    # cadence) because the dev interval is 10s. Hitting `/health`
+    # rather than `/ready` is deliberate: dev workflows rarely have
+    # Ollama running, and `/ready` would 503 `ollama_unreachable` in
+    # that case and falsely flap the dev container to `unhealthy`.
+    # `/health` is a pure in-process liveness signal and stays green
+    # without Ollama. Issue #407.
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - -fsS
+        - --output
+        - /dev/null
+        - http://localhost:8000/health
+      # Dev bias: short interval so a hot-reload crash surfaces fast.
+      interval: 10s
+      # `/health` does no I/O beyond returning a tiny JSON body, so the
+      # probe completes in milliseconds under normal load. `curl` itself
+      # starts up in ~10ms — much cheaper than the Python-venv cold start
+      # that would otherwise dominate. 5s is plenty of headroom for
+      # scheduler jitter or a wedged uvicorn startup on the first probe.
+      timeout: 5s
+      retries: 3
+      # `--reload` restarts uvicorn on every edit; give the app enough
+      # room to come up once on `compose up` without flapping to
+      # `unhealthy` before the first successful probe.
+      start_period: 15s
     extra_hosts:
       # Makes `host.docker.internal` resolve on Linux to the host. On
       # Docker Desktop for Mac and Windows this is automatic.
