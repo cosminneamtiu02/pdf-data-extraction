@@ -203,3 +203,53 @@ def test_stream_aware_parser_print_message_with_file_none_no_err_override_writes
     captured = capsys.readouterr()
     assert captured.err == "boom\n"
     assert captured.out == ""
+
+
+def test_stream_aware_parser_print_message_with_falsy_file_routes_to_err() -> None:
+    """``_print_message(msg, file=<falsy>)`` mirrors stdlib ``file or _sys.stderr`` and routes to err.
+
+    Stdlib ``ArgumentParser._print_message`` does ``file = file or
+    _sys.stderr``, so ANY falsy ``file`` argument (``None``, a file-like
+    proxy whose ``__bool__`` returns ``False``, etc.) is shorthand for
+    stderr. This subclass must match that contract exactly: routing a
+    falsy-but-not-``None`` file through the else-branch would silently
+    diverge from stdlib and misroute argparse's error messages for any
+    caller that passes a custom file proxy. Regression guard for PR #474
+    round-6 review feedback.
+    """
+
+    class FalsyStream:
+        """File-like with ``__bool__`` returning False, and a ``write`` sink.
+
+        Models a custom proxy a caller might pass in. Stdlib's
+        ``file = file or _sys.stderr`` would discard this and send to
+        stderr; the subclass must behave identically.
+        """
+
+        def __init__(self) -> None:
+            self.written: list[str] = []
+
+        def __bool__(self) -> bool:
+            return False
+
+        def write(self, s: str) -> int:
+            self.written.append(s)
+            return len(s)
+
+    err_stream = io.StringIO()
+    out_stream = io.StringIO()
+    parser = StreamAwareArgumentParser(
+        prog="demo",
+        out_stream=out_stream,
+        err_stream=err_stream,
+    )
+    falsy = FalsyStream()
+
+    parser._print_message("boom\n", file=falsy)  # noqa: SLF001
+
+    # Stdlib parity: falsy ``file`` means "route to stderr", which in the
+    # injected case means ``err_stream``. The falsy proxy itself must NOT
+    # receive the write.
+    assert err_stream.getvalue() == "boom\n"
+    assert out_stream.getvalue() == ""
+    assert falsy.written == []
