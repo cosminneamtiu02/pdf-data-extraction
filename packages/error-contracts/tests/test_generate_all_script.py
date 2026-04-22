@@ -152,36 +152,25 @@ def test_main_writes_all_three_artifact_families(tmp_path: Path) -> None:
 
 
 def test_main_module_invocation_exits_zero_and_writes_live_artifacts(
-    tmp_path: Path,
+    staged_scripts_dir: Path,
 ) -> None:
     """End-to-end: `python -m scripts.generate_all` with an isolated errors.yaml.
 
     Exercises the exact command shape the Taskfile and CI workflow run.
-    The test stages `scripts/` in `tmp_path` and writes a temporary
-    `errors.yaml` from ``SAMPLE_YAML``, so we verify module invocation
-    without mutating the live `apps/backend/app/exceptions/_generated`
-    tree — that's `task errors:generate`'s job on demand, not a side
-    effect of `task check`.
+    The shared ``staged_scripts_dir`` fixture (conftest.py) stages
+    `scripts/` alongside ``tmp_path`` and returns the working directory;
+    this test writes a temporary `errors.yaml` from ``SAMPLE_YAML``, so
+    we verify module invocation without mutating the live
+    `apps/backend/app/exceptions/_generated` tree — that's
+    `task errors:generate`'s job on demand, not a side effect of
+    `task check`.
     """
-    package_root = Path(__file__).resolve().parents[1]
-    scripts_src = package_root / "scripts"
-
-    work = tmp_path / "work"
-    work.mkdir()
-    errors_yaml = work / "errors.yaml"
+    errors_yaml = staged_scripts_dir / "errors.yaml"
     errors_yaml.write_text(SAMPLE_YAML)
 
-    # Lay scripts/ alongside errors.yaml so `python -m scripts.generate_all`
-    # resolves identically to how it does from packages/error-contracts/.
-    scripts_dst = work / "scripts"
-    scripts_dst.mkdir()
-    for src in scripts_src.iterdir():
-        if src.is_file() and src.suffix == ".py":
-            (scripts_dst / src.name).write_text(src.read_text())
-
-    python_dir = work / "python_out"
-    ts_path = work / "generated.ts"
-    keys_path = work / "required-keys.json"
+    python_dir = staged_scripts_dir / "python_out"
+    ts_path = staged_scripts_dir / "generated.ts"
+    keys_path = staged_scripts_dir / "required-keys.json"
 
     proc = subprocess.run(  # noqa: S603 — sys.executable is trusted
         [
@@ -197,7 +186,7 @@ def test_main_module_invocation_exits_zero_and_writes_live_artifacts(
             "--required-keys-path",
             str(keys_path),
         ],
-        cwd=work,
+        cwd=staged_scripts_dir,
         capture_output=True,
         text=True,
         check=False,
