@@ -49,6 +49,17 @@ _EMAIL_PATTERN = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 _NUMERIC_PATTERN = re.compile(
     r"(?<!line )\b(?:\d{1,3}(?:[,\s]\d{3})+(?:\.\d+)?|\d{4,}(?:\.\d+)?)\b"
 )
+# 32-char lowercase hex tokens — the request_id format mandated by
+# PDFX-E007-F003 (see ``RequestIdMiddleware``). `merge_contextvars` normally
+# surfaces request_id as its own event-dict key, but an f-string log call
+# (``logger.error(f"failed for {request_id}")``) can smuggle the id into a
+# rendered traceback. The numeric pattern would then scrub any digit-only
+# or digit-leading span that matches `\b\d{4,}\b` — destroying log
+# correlation. Masking these tokens before numeric scrubbing (and restoring
+# them after) pins the correlation invariant explicitly (issue #375).
+_REQUEST_ID_PATTERN = re.compile(r"\b[a-f0-9]{32}\b")
+_REQUEST_ID_PLACEHOLDER_PREFIX = "\x00REQID"
+_REQUEST_ID_PLACEHOLDER_SUFFIX = "\x00"
 
 
 class LogRedactionFilter:
@@ -104,8 +115,28 @@ class LogRedactionFilter:
         return result
 
     def _scrub_exception_string(self, value: str) -> str:
-        scrubbed = _EMAIL_PATTERN.sub(_REDACTED_EMAIL, value)
-        return _NUMERIC_PATTERN.sub(_REDACTED_NUMBER, scrubbed)
+        # Mask 32-char hex request_id tokens with positional placeholders before
+        # running numeric redaction, then restore them verbatim. Without this,
+        # an all-digit uuid4.hex or a digit-leading id smuggled into a
+        # traceback via an f-string would be mangled to [REDACTED_NUMBER],
+        # breaking log correlation (issue #375).
+        preserved: list[str] = []
+
+        def _mask(match: re.Match[str]) -> str:
+            token = match.group(0)
+            placeholder = (
+                f"{_REQUEST_ID_PLACEHOLDER_PREFIX}{len(preserved)}{_REQUEST_ID_PLACEHOLDER_SUFFIX}"
+            )
+            preserved.append(token)
+            return placeholder
+
+        masked = _REQUEST_ID_PATTERN.sub(_mask, value)
+        scrubbed = _EMAIL_PATTERN.sub(_REDACTED_EMAIL, masked)
+        scrubbed = _NUMERIC_PATTERN.sub(_REDACTED_NUMBER, scrubbed)
+        for index, token in enumerate(preserved):
+            placeholder = f"{_REQUEST_ID_PLACEHOLDER_PREFIX}{index}{_REQUEST_ID_PLACEHOLDER_SUFFIX}"
+            scrubbed = scrubbed.replace(placeholder, token)
+        return scrubbed
 
     def _is_redacted_key(self, key: Any) -> bool:
         # Non-string keys cannot be case-folded and are not in the denylist.

@@ -293,3 +293,53 @@ def test_exception_key_still_redacts_long_numbers_not_after_line_keyword() -> No
     out = _call(_filter(), event="unhandled_exception", exception=traceback)
     assert "987654321" not in out["exception"]
     assert "4321" not in out["exception"]
+
+
+@pytest.mark.parametrize(
+    "request_id",
+    [
+        # Mixed hex with long internal digit run; word-boundary flanking hex
+        # letters currently shields this from the regex, but the invariant is
+        # load-bearing for log correlation and must be pinned explicitly.
+        "abc12345678def0123456789abcdef01",
+        # All-digits uuid4.hex (statistically rare but valid `[a-f0-9]{32}`);
+        # without explicit preservation the 32-digit run trips `\b\d{4,}\b`.
+        "00000000000000000000000000000000",
+        "12345678901234567890123456789012",
+        # Digit run immediately preceded by a non-hex-letter boundary and
+        # terminated by a hex letter mid-id.
+        "deadbeef12345678abcdef0123456789",
+    ],
+)
+def test_exception_key_preserves_embedded_request_id(request_id: str) -> None:
+    """Issue #375: a 32-char hex request_id embedded in an exception message survives scrubbing.
+
+    Although ``request_id`` is normally bound as its own log key via
+    ``merge_contextvars`` and never appears inside ``exception``, any
+    f-string log call (``logger.error(f"failed for {request_id}")``) can
+    smuggle the id into a rendered traceback. The numeric redaction pattern
+    must preserve 32-char hex tokens so log correlation survives — mangling
+    an all-digit id to ``[REDACTED_NUMBER]`` destroys the link between the
+    failure and the request that caused it.
+    """
+    traceback = (
+        "Traceback (most recent call last):\n"
+        '  File "<string>", line 1, in <module>\n'
+        f"RuntimeError: failed for {request_id}"
+    )
+    out = _call(_filter(), event="unhandled_exception", exception=traceback)
+    assert request_id in out["exception"]
+
+
+def test_exception_key_preserves_request_id_but_still_redacts_surrounding_numbers() -> None:
+    """Preserving 32-char hex ids must not leak adjacent numeric PII in the same message."""
+    request_id = "00000000000000000000000000000000"
+    traceback = (
+        "Traceback (most recent call last):\n"
+        '  File "<string>", line 1, in <module>\n'
+        f"RuntimeError: invoice 1847.50 for request {request_id} failed"
+    )
+    out = _call(_filter(), event="unhandled_exception", exception=traceback)
+    assert request_id in out["exception"]
+    assert "1847.50" not in out["exception"]
+    assert "1847" not in out["exception"]
