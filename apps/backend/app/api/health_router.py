@@ -45,15 +45,32 @@ async def ready(
     config: an empty manifest cannot be healed by Ollama coming up, so
     surfacing that dimension before the Ollama dimension sends
     operators to the right layer to debug.
+
+    Every ``model_dump`` call uses ``mode="json"`` so the dict handed to
+    ``JSONResponse`` is guaranteed JSON-serializable.  The default
+    ``mode="python"`` preserves Python types (``datetime``, ``UUID``,
+    enums, ``Decimal``) that Starlette's stdlib JSON encoder cannot
+    serialize, which would surface as a 500 the moment either response
+    schema gains such a field — see the parity tests below for the
+    monkeypatched regression guard.
     """
     if skill_manifest.is_empty:
         return JSONResponse(
             status_code=503,
-            content={"status": "not_ready", "reason": "no_skills_loaded"},
+            content=NotReadyResponse(
+                status="not_ready",
+                reason="no_skills_loaded",
+            ).model_dump(mode="json"),
         )
     if await probe_cache.is_ready():
-        return JSONResponse(status_code=200, content={"status": "ready"})
+        return JSONResponse(
+            status_code=200,
+            content=ReadyResponse(status="ready").model_dump(mode="json"),
+        )
     return JSONResponse(
         status_code=503,
-        content={"status": "not_ready", "reason": "ollama_unreachable"},
+        content=NotReadyResponse(
+            status="not_ready",
+            reason="ollama_unreachable",
+        ).model_dump(mode="json"),
     )
