@@ -56,7 +56,21 @@ _NUMERIC_PATTERN = re.compile(
 # otherwise be mangled to ``[REDACTED_NUMBER]``, defeating traceability. The
 # allowlist is applied by placeholder-substituting hex runs before the numeric
 # scrub, then restoring them after (issue #375).
-_HEX_REQUEST_ID_PATTERN = re.compile(r"\b[0-9a-fA-F]{32}\b")
+#
+# The pattern is *prefix-restricted* to contexts that strongly indicate a
+# request id: ``request_id=``, ``request-id=``, and the ``X-Request-Id:``
+# header form (with or without the trailing space). A bare 32-char run that
+# happens to be all hex is deliberately NOT allowlisted — otherwise a 32-digit
+# numeric identifier (e.g. an account number) appearing free-standing in an
+# exception string would escape the numeric scrub (PR #509 review, Copilot).
+# The ``re.IGNORECASE`` flag makes every prefix case-insensitive, so
+# ``Request_Id=``, ``X-REQUEST-ID:``, etc. all work. Variable-width lookbehind
+# across the alternation is supported on Python >=3.7.
+_HEX_REQUEST_ID_PATTERN = re.compile(
+    r"(?:(?<=request_id=)|(?<=request-id=)|(?<=x-request-id: )|(?<=x-request-id:))"
+    r"[0-9a-fA-F]{32}\b",
+    re.IGNORECASE,
+)
 _HEX_PLACEHOLDER_TEMPLATE = "\x00HEX{index}\x00"
 
 

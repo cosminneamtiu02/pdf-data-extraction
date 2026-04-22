@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from app.core.log_redaction_filter import LogRedactionFilter
+from app.core.log_redaction_filter import _REDACTED_NUMBER, LogRedactionFilter
 
 DEFAULT_DENYLIST = ["pdf_bytes", "raw_output", "extracted_value", "prompt", "field_values"]
 
@@ -298,16 +298,13 @@ def test_exception_key_still_redacts_long_numbers_not_after_line_keyword() -> No
 @pytest.mark.parametrize(
     "request_id",
     [
-        # Mixed hex — embedded digit runs already survive via word boundaries.
-        "a1b2c3d40000abcd000000001234567890abcdef1",  # >32 chars mixed
         "abcdef0123456789abcdef0123456789",  # 32 hex, alpha-leading
         # Pure-digit 32-char request_id: uuid4().hex can produce all-digit runs
-        # across the full 32-char window; without the hex allowlist the current
-        # numeric pattern would mangle it because word boundaries fire at the
-        # non-hex neighbours of the whole run.
+        # across the full 32-char window; without the hex allowlist the numeric
+        # pattern would mangle it because word boundaries fire at the non-hex
+        # neighbours (``request_id=`` prefix) of the whole run.
         "12345678901234567890123456789012",
-        # Digit-leading 32-char hex mix — survives via word boundaries but
-        # pinned here to guard against future regex tightening.
+        # Digit-leading 32-char hex mix — the allowlist must cover this shape.
         "12345678abcdef0123456789abcdef01",
     ],
 )
@@ -319,11 +316,93 @@ def test_exception_key_preserves_32char_hex_request_id(request_id: str) -> None:
     call (CLAUDE.md forbids f-string log messages, but a reviewer might miss
     one) would leak the id into the rendered exception string. The numeric
     pattern must not mangle the id — otherwise correlation breaks silently.
+
+    The allowlist is prefix-restricted (``request_id=``) so the id is only
+    preserved when the context textually marks it as a request id — a bare
+    32-digit identifier is NOT allowlisted and is scrubbed as numeric PII
+    (see ``test_bare_32_digit_numeric_identifier_is_still_redacted``).
     """
     traceback = (
         "Traceback (most recent call last):\n"
         '  File "<string>", line 1, in <module>\n'
         f"ValueError: failed for request_id={request_id}"
+    )
+    out = _call(_filter(), event="unhandled_exception", exception=traceback)
+    assert request_id in out["exception"]
+
+
+def test_exception_key_preserves_long_mixed_hex_request_id() -> None:
+    """A >32-char mixed hex id in a ``request_id=`` context survives redaction.
+
+    The ``>32 chars`` value doesn't match the 32-char allowlist pattern (the
+    trailing ``\\b`` fails inside an unbroken hex run), but it also doesn't
+    match the numeric pattern (digit subruns have no word-boundary neighbours
+    inside a long hex sequence). It therefore passes the scrubber verbatim.
+    Pinned in its own test so the name/intent don't drift (PR #509 review).
+    """
+    request_id = "a1b2c3d40000abcd000000001234567890abcdef1"  # 41 chars mixed
+    traceback = (
+        "Traceback (most recent call last):\n"
+        '  File "<string>", line 1, in <module>\n'
+        f"ValueError: failed for request_id={request_id}"
+    )
+    out = _call(_filter(), event="unhandled_exception", exception=traceback)
+    assert request_id in out["exception"]
+
+
+def test_bare_32_digit_numeric_identifier_is_still_redacted() -> None:
+    """A 32-digit numeric id free-standing in an exception is scrubbed.
+
+    Copilot's PR #509 review flagged the broad ``\\b[0-9a-fA-F]{32}\\b``
+    allowlist as a potential PII leak: a 32-digit account/identifier in an
+    exception string would have been preserved verbatim. The narrowed
+    allowlist requires a ``request_id=`` / ``x-request-id:`` prefix, so a
+    bare 32-digit run falls back to the numeric scrub and is redacted.
+    """
+    account = "12345678901234567890123456789012"  # 32 digits, no prefix
+    traceback = (
+        "Traceback (most recent call last):\n"
+        '  File "<string>", line 1, in <module>\n'
+        f"ValueError: account {account} has overdraft"
+    )
+    out = _call(_filter(), event="unhandled_exception", exception=traceback)
+    assert account not in out["exception"]
+    assert _REDACTED_NUMBER in out["exception"]
+
+
+def test_request_id_equals_hex_survives_redaction() -> None:
+    """``request_id=<hex>`` context preserves the id through redaction."""
+    request_id = "12345678901234567890123456789012"
+    traceback = (
+        "Traceback (most recent call last):\n"
+        '  File "<string>", line 1, in <module>\n'
+        f"ValueError: failed for request_id={request_id}"
+    )
+    out = _call(_filter(), event="unhandled_exception", exception=traceback)
+    assert request_id in out["exception"]
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        "X-Request-Id: ",
+        "X-Request-Id:",
+        "x-request-id: ",
+        "X-REQUEST-ID: ",
+    ],
+)
+def test_x_request_id_header_hex_survives_redaction(prefix: str) -> None:
+    """The ``X-Request-Id:`` header form preserves the id case-insensitively.
+
+    Exception messages may embed an HTTP header line; the allowlist pattern
+    covers the header prefix (with or without trailing space) under
+    ``re.IGNORECASE`` so any casing of the header name is recognised.
+    """
+    request_id = "12345678901234567890123456789012"
+    traceback = (
+        "Traceback (most recent call last):\n"
+        '  File "<string>", line 1, in <module>\n'
+        f"ValueError: upstream returned header {prefix}{request_id}"
     )
     out = _call(_filter(), event="unhandled_exception", exception=traceback)
     assert request_id in out["exception"]
