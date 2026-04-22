@@ -47,12 +47,20 @@ class StreamAwareArgumentParser(argparse.ArgumentParser):
     Parameters
     ----------
     out_stream
-        Target for help / usage output (argparse's default is ``sys.stdout``).
+        Target for writes argparse directs to ``sys.stdout`` (for example,
+        ``--help`` and explicit ``print_usage()`` output). Usage banners
+        emitted as part of parse/type errors are NOT sent here, because
+        ``argparse.ArgumentParser.error()`` prints them to ``sys.stderr``
+        via ``print_usage(_sys.stderr)`` before raising ``SystemExit``;
+        those route to ``err_stream`` instead.
         When ``None``, falls back to ``sys.stdout`` at write time so the
         subclass is behaviorally identical to a plain ``ArgumentParser``
         for callers that never supply a buffer.
     err_stream
-        Target for error output (argparse's default is ``sys.stderr``).
+        Target for writes argparse directs to ``sys.stderr`` (argparse's
+        default error stream), including parse/type error messages and
+        the accompanying usage banner printed by
+        ``argparse.ArgumentParser.error()``.
         When ``None``, falls back to ``sys.stderr`` at write time for the
         same reason.
 
