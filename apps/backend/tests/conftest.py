@@ -8,6 +8,28 @@ from app.features.extraction.skills import Skill, SkillDoclingConfig, SkillExamp
 from app.features.extraction.skills.deep_freeze import deep_freeze_mapping
 
 
+class FakeProbeExhausted(BaseException):
+    """Raised by ``FakeProbe.check`` when scripted results are exhausted.
+
+    Subclasses ``BaseException`` — *not* ``Exception`` — deliberately.
+
+    Production code paths that consume ``probe.check()`` (``ProbeCache.is_ready``
+    and ``app.main._lifespan``) wrap the call in a broad ``except Exception``
+    so that any unexpected ``Exception`` subclass is degraded into a cached
+    ``False`` instead of propagating and turning ``/ready`` into a 500 (issue
+    #144). That guard is load-bearing for the ``/ready`` contract — but it
+    would silently swallow an ``AssertionError`` from an exhausted ``FakeProbe``,
+    converting a misconfigured test into a green ``False`` result instead of a
+    loud pytest failure.
+
+    Making the exhaustion signal a ``BaseException`` subclass means ``except
+    Exception`` does not match it (same reason ``asyncio.CancelledError`` isn't
+    caught by those guards on Python 3.8+), so the signal propagates all the
+    way up to pytest and the test fails at the offending ``await`` site with a
+    readable stack. (Issues #396 and the Copilot review on PR #483.)
+    """
+
+
 class FakeProbe:
     """Controllable probe returning scripted boolean results.
 
@@ -22,14 +44,18 @@ class FakeProbe:
 
     async def check(self) -> bool:
         if self.call_count >= len(self._results):
-            # Raise AssertionError rather than calling pytest.fail(): under
-            # pytest-asyncio's session-scoped event loop, pytest.fail()
-            # surfaces a Failed report on whichever async test consumed the
-            # probe, not the logically-wrong call site. A plain
-            # AssertionError propagates through the await and pytest reports
-            # the stack at the offending caller. (Issue #396.)
+            # Raise ``FakeProbeExhausted`` (a ``BaseException`` subclass) rather
+            # than ``AssertionError`` or ``pytest.fail``: production code wraps
+            # ``probe.check()`` in ``except Exception`` to degrade rather than
+            # crash on unexpected failures (issue #144). An ``AssertionError``
+            # would be caught by that guard and silently converted into a
+            # cached ``False``, turning a misconfigured test into a green
+            # result. ``FakeProbeExhausted`` bypasses ``except Exception`` the
+            # same way ``asyncio.CancelledError`` does, so the exhaustion
+            # signal surfaces at the offending ``await`` site. (Issue #396,
+            # Copilot review on PR #483.)
             msg = f"FakeProbe.check called more times than scripted (call #{self.call_count + 1})"
-            raise AssertionError(msg)
+            raise FakeProbeExhausted(msg)
         result = self._results[self.call_count]
         self.call_count += 1
         return result
