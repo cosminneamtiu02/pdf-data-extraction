@@ -32,16 +32,32 @@ Hypothesis profiles
 - ``dev`` : larger example budget (200), default deadline, non-
   derandomized for local fuzzing exploration.
 
-Selection order (resolved in our own ``pytest_configure`` hook below,
-registered with ``@pytest.hookimpl(trylast=True)`` so it runs after
-the Hypothesis plugin's own ``pytest_configure``): pytest
-``--hypothesis-profile=<name>`` flag wins; otherwise
-``HYPOTHESIS_PROFILE`` env var; otherwise default ``ci`` (safest
-tightest budget for fresh clones and forgetful CI pipelines). We
-register profiles at import time (idempotent name/value storage) but
-defer the ``load_profile`` call to ``pytest_configure`` so plain
+Selection order: pytest ``--hypothesis-profile=<name>`` flag wins;
+otherwise ``HYPOTHESIS_PROFILE`` env var; otherwise default ``ci``
+(safest tightest budget for fresh clones and forgetful CI pipelines).
+
+Pytest may import this ``conftest.py`` either before or after the
+Hypothesis plugin's ``pytest_configure`` runs, depending on whether
+it is loaded as an initial conftest or discovered during collection,
+so conftest-import ordering alone is not what guarantees CLI
+precedence. The guarantee comes from two cooperating mechanisms in
+our own ``pytest_configure`` hook below:
+
+* ``@pytest.hookimpl(trylast=True)`` pins our hook to run AFTER every
+  other ``pytest_configure``, including the Hypothesis plugin's —
+  regardless of import order — so by the time we look at
+  ``config.getoption("hypothesis_profile")`` the CLI value is final.
+* If that option is set, we ``return`` without calling ``load_profile``,
+  leaving the plugin's CLI-driven selection intact.
+
+We register profiles at import time (idempotent name/value storage)
+but defer the ``load_profile`` call to ``pytest_configure`` so plain
 ``import tests.contract.conftest`` from a unit meta-test does not
-mutate Hypothesis' global active profile.
+mutate Hypothesis' global active profile. The
+``_default_profile_is_still_active()`` helper exposed below is a
+fingerprint probe used by the unit meta-suite to assert that the
+hook actually switched profiles; it is NOT part of the CLI-precedence
+path.
 
 Why ``ci`` is the default and not ``dev``: an unknown caller (a fresh
 clone, an IDE test-runner, a forgetful CI pipeline) should get the
@@ -149,9 +165,11 @@ def _default_profile_is_still_active() -> bool:
     ``tests/unit/meta/test_hypothesis_profile_selection.py``) because it
     is the fingerprint used to prove that the ``pytest_configure`` hook
     below actually switched the active profile away from Hypothesis'
-    ``default``. The hook is the sole caller in this module — see the
-    note there for why we prefer ``config.getoption`` over this
-    fingerprint for CLI-flag detection.
+    ``default``. Not called from this module — the hook uses
+    ``config.getoption("hypothesis_profile")`` for CLI-flag detection,
+    which is a reliable public pytest API and does not need a
+    fingerprint heuristic. See the ``pytest_configure`` docstring for
+    the full rationale.
 
     The fingerprint uses only public Hypothesis API
     (``settings()`` for the active instance, ``settings.get_profile("default")``
