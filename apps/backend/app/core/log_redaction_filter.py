@@ -49,6 +49,15 @@ _EMAIL_PATTERN = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 _NUMERIC_PATTERN = re.compile(
     r"(?<!line )\b(?:\d{1,3}(?:[,\s]\d{3})+(?:\.\d+)?|\d{4,}(?:\.\d+)?)\b"
 )
+# 32-char hex runs are request_id / uuid4().hex strings. They are load-bearing
+# for log correlation and must survive numeric redaction — a uuid4 whose hex
+# happens to be all 0-9 (e.g. ``uuid4().hex`` occasionally produces runs of
+# digits long enough that the standalone ``\d{4,}`` branch matches) would
+# otherwise be mangled to ``[REDACTED_NUMBER]``, defeating traceability. The
+# allowlist is applied by placeholder-substituting hex runs before the numeric
+# scrub, then restoring them after (issue #375).
+_HEX_REQUEST_ID_PATTERN = re.compile(r"\b[0-9a-fA-F]{32}\b")
+_HEX_PLACEHOLDER_TEMPLATE = "\x00HEX{index}\x00"
 
 
 class LogRedactionFilter:
@@ -105,7 +114,22 @@ class LogRedactionFilter:
 
     def _scrub_exception_string(self, value: str) -> str:
         scrubbed = _EMAIL_PATTERN.sub(_REDACTED_EMAIL, value)
-        return _NUMERIC_PATTERN.sub(_REDACTED_NUMBER, scrubbed)
+        # Stash 32-char hex runs (request_id / uuid4().hex) behind opaque
+        # placeholders so the numeric scrub cannot mangle an all-digit uuid.
+        hex_runs: list[str] = []
+
+        def _stash(match: re.Match[str]) -> str:
+            hex_runs.append(match.group(0))
+            return _HEX_PLACEHOLDER_TEMPLATE.format(index=len(hex_runs) - 1)
+
+        stashed = _HEX_REQUEST_ID_PATTERN.sub(_stash, scrubbed)
+        numeric_scrubbed = _NUMERIC_PATTERN.sub(_REDACTED_NUMBER, stashed)
+        # Restore every stashed hex run in place of its placeholder.
+        for index, original in enumerate(hex_runs):
+            numeric_scrubbed = numeric_scrubbed.replace(
+                _HEX_PLACEHOLDER_TEMPLATE.format(index=index), original
+            )
+        return numeric_scrubbed
 
     def _is_redacted_key(self, key: Any) -> bool:
         # Non-string keys cannot be case-folded and are not in the denylist.

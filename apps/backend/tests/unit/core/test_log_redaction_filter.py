@@ -293,3 +293,53 @@ def test_exception_key_still_redacts_long_numbers_not_after_line_keyword() -> No
     out = _call(_filter(), event="unhandled_exception", exception=traceback)
     assert "987654321" not in out["exception"]
     assert "4321" not in out["exception"]
+
+
+@pytest.mark.parametrize(
+    "request_id",
+    [
+        # Mixed hex — embedded digit runs already survive via word boundaries.
+        "a1b2c3d40000abcd000000001234567890abcdef1",  # >32 chars mixed
+        "abcdef0123456789abcdef0123456789",  # 32 hex, alpha-leading
+        # Pure-digit 32-char request_id: uuid4().hex can produce all-digit runs
+        # across the full 32-char window; without the hex allowlist the current
+        # numeric pattern would mangle it because word boundaries fire at the
+        # non-hex neighbours of the whole run.
+        "12345678901234567890123456789012",
+        # Digit-leading 32-char hex mix — survives via word boundaries but
+        # pinned here to guard against future regex tightening.
+        "12345678abcdef0123456789abcdef01",
+    ],
+)
+def test_exception_key_preserves_32char_hex_request_id(request_id: str) -> None:
+    """Issue #375: 32-char hex request_id strings survive exception redaction.
+
+    `request_id` is a `uuid4().hex` — 32 hex chars — and is load-bearing for
+    log correlation. A forbidden `logger.error(f"failed for {request_id}")`
+    call (CLAUDE.md forbids f-string log messages, but a reviewer might miss
+    one) would leak the id into the rendered exception string. The numeric
+    pattern must not mangle the id — otherwise correlation breaks silently.
+    """
+    traceback = (
+        "Traceback (most recent call last):\n"
+        '  File "<string>", line 1, in <module>\n'
+        f"ValueError: failed for request_id={request_id}"
+    )
+    out = _call(_filter(), event="unhandled_exception", exception=traceback)
+    assert request_id in out["exception"]
+
+
+def test_exception_key_preserves_hex_but_still_scrubs_nearby_numeric_pii() -> None:
+    """Hex allowlist must not swallow adjacent numeric PII in the same message."""
+    request_id = "12345678901234567890123456789012"
+    traceback = (
+        "Traceback (most recent call last):\n"
+        '  File "<string>", line 1, in <module>\n'
+        f"ValueError: request_id={request_id} total was 1847.50 dollars"
+    )
+    out = _call(_filter(), event="unhandled_exception", exception=traceback)
+    # Hex run is preserved verbatim.
+    assert request_id in out["exception"]
+    # Standalone monetary amount is still scrubbed.
+    assert "1847.50" not in out["exception"]
+    assert "1847" not in out["exception"]
