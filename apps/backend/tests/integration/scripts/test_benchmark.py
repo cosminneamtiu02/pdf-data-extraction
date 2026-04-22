@@ -20,7 +20,7 @@ from __future__ import annotations
 import socket
 import threading
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -30,15 +30,13 @@ import yaml
 from app.api.deps import get_extraction_service
 from app.core.config import Settings
 from app.exceptions import IntelligenceUnavailableError
-from app.features.extraction.extraction_result import ExtractionResult
-from app.features.extraction.schemas.bounding_box_ref import BoundingBoxRef
-from app.features.extraction.schemas.extract_response import ExtractResponse
-from app.features.extraction.schemas.extracted_field import ExtractedField
-from app.features.extraction.schemas.extraction_metadata import ExtractionMetadata
-from app.features.extraction.schemas.field_status import FieldStatus
 from app.features.extraction.service import ExtractionService
 from app.main import create_app
 from scripts.benchmark import main as bench_main
+from tests._support.extraction_fixtures import make_canned_result
+
+if TYPE_CHECKING:
+    from app.features.extraction.extraction_result import ExtractionResult
 
 pytestmark = pytest.mark.slow
 
@@ -89,32 +87,6 @@ def _write_bench_skill(base: Path) -> None:
     (target / "1.yaml").write_text(yaml.safe_dump(body), encoding="utf-8")
 
 
-def _make_canned_result(
-    *,
-    annotated_pdf_bytes: bytes | None = None,
-) -> ExtractionResult:
-    field = ExtractedField(
-        name="invoice_number",
-        value="INV-001",
-        status=FieldStatus.extracted,
-        source="document",
-        grounded=True,
-        bbox_refs=[BoundingBoxRef(page=1, x0=10.0, y0=20.0, x1=100.0, y1=30.0)],
-    )
-    metadata = ExtractionMetadata(
-        page_count=10,
-        duration_ms=500,
-        attempts_per_field={"invoice_number": 1},
-    )
-    response = ExtractResponse(
-        skill_name="invoice",
-        skill_version=1,
-        fields={"invoice_number": field},
-        metadata=metadata,
-    )
-    return ExtractionResult(response=response, annotated_pdf_bytes=annotated_pdf_bytes)
-
-
 def _stub_service(
     result: ExtractionResult | None = None,
     *,
@@ -124,7 +96,9 @@ def _stub_service(
     if side_effect is not None:
         svc.extract.side_effect = side_effect
     else:
-        svc.extract.return_value = result or _make_canned_result(
+        svc.extract.return_value = result or make_canned_result(
+            field_name="invoice_number",
+            page_count=10,
             annotated_pdf_bytes=_FAKE_PDF_BYTES,
         )
     return svc

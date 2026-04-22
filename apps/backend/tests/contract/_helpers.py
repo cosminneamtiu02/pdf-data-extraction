@@ -7,6 +7,13 @@ so `/openapi.json` is exposed), and a canned `ExtractionResult` for the
 200 happy path. Keeping one definition here instead of two copies means
 a contract-envelope change lands in one place; the two test files drift
 less as the spec evolves.
+
+The canned-result builder itself (`make_canned_result`) lives in
+``tests/_support/extraction_fixtures`` so the contract layer, the
+``/extract`` integration suite, and the benchmark integration suite all
+consume a single parametrized helper (issue #404). It is re-exported
+here so existing contract-test imports (``from tests.contract._helpers
+import make_canned_result``) keep working without a second path.
 """
 
 from __future__ import annotations
@@ -16,12 +23,9 @@ from pathlib import Path
 import yaml
 
 from app.core.config import Settings
-from app.features.extraction.extraction_result import ExtractionResult
-from app.features.extraction.schemas.bounding_box_ref import BoundingBoxRef
-from app.features.extraction.schemas.extract_response import ExtractResponse
-from app.features.extraction.schemas.extracted_field import ExtractedField
-from app.features.extraction.schemas.extraction_metadata import ExtractionMetadata
-from app.features.extraction.schemas.field_status import FieldStatus
+from tests._support.extraction_fixtures import make_canned_result
+
+__all__ = ["make_canned_result", "settings", "write_valid_skill"]
 
 
 def write_valid_skill(base: Path) -> None:
@@ -50,27 +54,3 @@ def settings(skills_dir: Path, **overrides: object) -> Settings:
     `create_app` uses to disable the OpenAPI route in prod).
     """
     return Settings(skills_dir=skills_dir, app_env="development", **overrides)  # type: ignore[reportCallIssue]
-
-
-def make_canned_result() -> ExtractionResult:
-    """Return a canned `ExtractionResult` for the 200 happy-path contract test."""
-    field = ExtractedField(
-        name="number",
-        value="INV-001",
-        status=FieldStatus.extracted,
-        source="document",
-        grounded=True,
-        bbox_refs=[BoundingBoxRef(page=1, x0=10.0, y0=20.0, x1=100.0, y1=30.0)],
-    )
-    metadata = ExtractionMetadata(
-        page_count=1,
-        duration_ms=500,
-        attempts_per_field={"number": 1},
-    )
-    response = ExtractResponse(
-        skill_name="invoice",
-        skill_version=1,
-        fields={"number": field},
-        metadata=metadata,
-    )
-    return ExtractionResult(response=response, annotated_pdf_bytes=None)
