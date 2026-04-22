@@ -19,9 +19,12 @@ import asyncio
 from typing import Any, cast
 
 import pymupdf
+import structlog
 
 from app.features.extraction.schemas.bounding_box_ref import BoundingBoxRef
 from app.features.extraction.schemas.extracted_field import ExtractedField
+
+_logger = structlog.get_logger(__name__)
 
 
 class PdfAnnotator:
@@ -59,7 +62,19 @@ class PdfAnnotator:
             for field in fields:
                 for bbox_ref in field.bbox_refs:
                     _draw_highlight(doc_any, bbox_ref)
-            return cast("bytes", doc_any.tobytes())
+            output_pdf_bytes = cast("bytes", doc_any.tobytes())
+        # `tobytes()` materializes the full annotated buffer in Python memory on
+        # a worker thread, concurrently with up to ``max_concurrent_extractions``
+        # other pipelines. ``Settings.max_pdf_bytes`` bounds the input, but
+        # highlight streams can inflate the output — emit the post-annotation
+        # size (alongside the input size for ratio observability) so operators
+        # can watch the output ceiling in production (GH #393).
+        _logger.info(
+            "pdf_annotation_output_bytes",
+            output_bytes=len(output_pdf_bytes),
+            input_bytes=len(pdf_bytes),
+        )
+        return output_pdf_bytes
 
 
 def _draw_highlight(doc: Any, bbox_ref: BoundingBoxRef) -> None:
