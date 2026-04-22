@@ -410,3 +410,62 @@ async def test_middleware_generates_fallback_request_id_when_state_missing() -> 
     assert len(request_id) == 32
     assert all(c in "0123456789abcdef" for c in request_id)
     assert response.json()["error"]["request_id"] == request_id
+
+
+async def test_rejection_binds_request_id_to_structlog_contextvars() -> None:
+    """Issue #377: when the rejection path fires (even without
+    ``RequestIdMiddleware`` upstream, as in unit tests mounting this
+    middleware directly), any deeper logger call during the rejection
+    must see ``request_id`` on ``structlog.contextvars`` so the event
+    carries correlation. Before the fix, the middleware passed
+    ``request_id=...`` explicitly to the single ``upload_rejected``
+    event, but did not bind it to contextvars — so any other logger
+    call on the same rejection path would emit uncorrelated.
+
+    We use ``capture_logs`` with ``merge_contextvars`` so captured
+    events include whatever was on ``structlog.contextvars`` at emit
+    time, matching the production processor chain.
+    """
+    from structlog import contextvars as ctxvars
+    from structlog.testing import capture_logs
+
+    app = _build_app(max_bytes=1024)
+
+    with capture_logs(processors=[ctxvars.merge_contextvars]) as cap_logs:
+        async with _client(app) as ac:
+            response = await ac.post(
+                "/api/v1/extract",
+                content=b"x" * 2048,
+                headers={"content-type": "multipart/form-data; boundary=b"},
+            )
+
+    assert response.status_code == 413
+    request_id = response.headers["x-request-id"]
+
+    rejection_events = [e for e in cap_logs if e.get("event") == "upload_rejected"]
+    assert rejection_events, "middleware must emit upload_rejected on reject path"
+    # ``request_id`` must be present via contextvars merge, and must match
+    # both the response header and the envelope's ``error.request_id``.
+    assert rejection_events[-1].get("request_id") == request_id
+
+
+async def test_rejection_unbinds_request_id_after_response() -> None:
+    """Issue #377: the contextvar bound on the rejection path must be
+    unbound once the middleware returns, so it does not leak into any
+    subsequent code running on the same asyncio task.
+    """
+    import structlog
+
+    app = _build_app(max_bytes=1024)
+
+    async with _client(app) as ac:
+        response = await ac.post(
+            "/api/v1/extract",
+            content=b"x" * 2048,
+            headers={"content-type": "multipart/form-data; boundary=b"},
+        )
+
+    assert response.status_code == 413
+    # After the rejection path completes, ``request_id`` must NOT remain
+    # on the current task's contextvars.
+    assert "request_id" not in structlog.contextvars.get_contextvars()

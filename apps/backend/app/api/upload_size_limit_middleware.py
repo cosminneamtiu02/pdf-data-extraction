@@ -193,6 +193,13 @@ class UploadSizeLimitMiddleware:
         directly (e.g. unit tests). Either way the envelope and
         ``X-Request-Id`` header always carry a valid correlation id,
         matching the fallback in ``app.api.errors._get_request_id``.
+
+        ``request_id`` is also bound to ``structlog.contextvars`` for the
+        duration of the rejection emit (try/finally) so any deeper
+        logger call on this path carries correlation — mirroring what
+        ``RequestIdMiddleware`` does on the happy path (issue #377).
+        Unbinding is done unconditionally in ``finally`` to avoid leaking
+        the id across requests sharing the same asyncio task.
         """
         # Envelope reports ``_reported_limit`` (the authoritative PDF-byte
         # limit in production), not ``_max_bytes`` (the inflated ASGI
@@ -202,33 +209,37 @@ class UploadSizeLimitMiddleware:
         err = PdfTooLargeError(max_bytes=self._reported_limit, actual_bytes=actual_bytes)
         request_id = _get_request_id(scope)
 
-        _logger.warning(
-            "upload_rejected",
-            path=scope.get("path"),
-            reason=reason,
-            threshold_bytes=self._max_bytes,
-            reported_limit=self._reported_limit,
-            actual_bytes=actual_bytes,
-            request_id=request_id,
-        )
+        structlog.contextvars.bind_contextvars(request_id=request_id)
+        try:
+            _logger.warning(
+                "upload_rejected",
+                path=scope.get("path"),
+                reason=reason,
+                threshold_bytes=self._max_bytes,
+                reported_limit=self._reported_limit,
+                actual_bytes=actual_bytes,
+                request_id=request_id,
+            )
 
-        content: dict[str, object] = {
-            "error": {
-                "code": err.code,
-                "params": err.params.model_dump() if err.params else {},
-                "details": None,
-                "request_id": request_id,
-            },
-        }
+            content: dict[str, object] = {
+                "error": {
+                    "code": err.code,
+                    "params": err.params.model_dump() if err.params else {},
+                    "details": None,
+                    "request_id": request_id,
+                },
+            }
 
-        response = JSONResponse(
-            status_code=err.http_status,
-            content=content,
-            headers={"X-Request-Id": request_id},
-        )
-        # JSONResponse is itself an ASGI app; calling it with a no-op
-        # receive is safe because it never reads the request body.
-        await response(scope, _empty_receive, send)
+            response = JSONResponse(
+                status_code=err.http_status,
+                content=content,
+                headers={"X-Request-Id": request_id},
+            )
+            # JSONResponse is itself an ASGI app; calling it with a no-op
+            # receive is safe because it never reads the request body.
+            await response(scope, _empty_receive, send)
+        finally:
+            structlog.contextvars.unbind_contextvars("request_id")
 
 
 async def _empty_receive() -> Message:
