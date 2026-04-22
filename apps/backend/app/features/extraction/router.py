@@ -12,11 +12,14 @@ form and spooled the upload to a temp file.  It does not reject at the
 HTTP framing level.  What it prevents is the downstream Docling +
 extraction pipeline from being invoked on an oversized document.
 
-The multipart/mixed builder (~15 lines) is inlined because it has exactly
-one consumer.  ``read_with_byte_limit`` is a public async helper (tested
-directly by unit tests) that reads the upload in 1 MB chunks and aborts
-early on the first chunk that pushes the total over
-``Settings.max_pdf_bytes``.
+The multipart/mixed builder is a generator that yields framing and body
+chunks without concatenating them (issue #387): concatenating
+``header + json + pdf + footer`` into one ``bytes`` blob would roughly
+double worker RSS per BOTH-mode request, and under
+``max_concurrent_extractions`` simultaneous requests that scales linearly.
+``read_with_byte_limit`` is a public async helper (tested directly by unit
+tests) that reads the upload in 1 MB chunks and aborts early on the first
+chunk that pushes the total over ``Settings.max_pdf_bytes``.
 """
 
 from __future__ import annotations
@@ -26,7 +29,7 @@ from typing import TYPE_CHECKING, Annotated, NoReturn, assert_never
 
 import structlog
 from fastapi import APIRouter, Depends, File, Form, Response, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.api.deps import get_extraction_service, get_settings
 from app.core.config import (
@@ -39,6 +42,8 @@ from app.features.extraction.service import ExtractionService  # noqa: TC001  # 
 from app.schemas.error_response import ErrorResponse
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from app.features.extraction.extraction_result import ExtractionResult
 
 _CHUNK_SIZE = 1024 * 1024  # 1 MB
@@ -74,34 +79,44 @@ async def read_with_byte_limit(upload: UploadFile, max_bytes: int) -> bytes:
     return bytes(buf)
 
 
-def build_multipart_mixed(json_body: bytes, pdf_body: bytes) -> tuple[bytes, str]:
-    """Build a ``multipart/mixed`` response body with two parts.
+def build_multipart_mixed(json_body: bytes, pdf_body: bytes) -> tuple[Iterator[bytes], str]:
+    """Build a streaming ``multipart/mixed`` response body with two parts.
 
-    Returns ``(body_bytes, boundary_string)``.  Uses CRLF line endings per
-    the multipart RFC.
+    Returns ``(chunk_iterator, boundary_string)``.  The iterator yields each
+    framing chunk, then the JSON body, then the separator, then the PDF body
+    by identity, then the terminator — WITHOUT concatenating them into a
+    single ``bytes`` blob (issue #387).  Uses CRLF line endings per the
+    multipart RFC.
+
+    The PDF body is yielded as-is (identity-preserved) so the memory
+    footprint of a BOTH-mode response is roughly ``PDF size + small framing``
+    rather than ``2 x PDF size`` that concatenation would cost.
     """
     boundary = secrets.token_hex(16)
     crlf = "\r\n"
-    parts = (
-        (
-            f"--{boundary}{crlf}"
-            f'Content-Disposition: form-data; name="result"{crlf}'
-            f"Content-Type: application/json{crlf}"
-            f"{crlf}"
-        ).encode()
-        + json_body
-        + (
-            f"{crlf}"
-            f"--{boundary}{crlf}"
-            f'Content-Disposition: form-data; name="pdf"; filename="annotated.pdf"{crlf}'
-            f"Content-Type: application/pdf{crlf}"
-            f"{crlf}"
-        ).encode()
-        + pdf_body
-        + f"{crlf}--{boundary}--{crlf}".encode()
-    )
+    header = (
+        f"--{boundary}{crlf}"
+        f'Content-Disposition: form-data; name="result"{crlf}'
+        f"Content-Type: application/json{crlf}"
+        f"{crlf}"
+    ).encode()
+    separator = (
+        f"{crlf}"
+        f"--{boundary}{crlf}"
+        f'Content-Disposition: form-data; name="pdf"; filename="annotated.pdf"{crlf}'
+        f"Content-Type: application/pdf{crlf}"
+        f"{crlf}"
+    ).encode()
+    footer = f"{crlf}--{boundary}--{crlf}".encode()
 
-    return parts, boundary
+    def _chunks() -> Iterator[bytes]:
+        yield header
+        yield json_body
+        yield separator
+        yield pdf_body
+        yield footer
+
+    return _chunks(), boundary
 
 
 def _raise_missing_annotated_pdf(output_mode: OutputMode) -> NoReturn:
@@ -147,8 +162,11 @@ def _serialize_result(result: ExtractionResult, output_mode: OutputMode) -> Resp
         if result.annotated_pdf_bytes is None:
             _raise_missing_annotated_pdf(output_mode)
         json_bytes = result.response.model_dump_json().encode()
-        body, boundary = build_multipart_mixed(json_bytes, result.annotated_pdf_bytes)
-        return Response(content=body, media_type=f'multipart/mixed; boundary="{boundary}"')
+        chunks, boundary = build_multipart_mixed(json_bytes, result.annotated_pdf_bytes)
+        return StreamingResponse(
+            chunks,
+            media_type=f'multipart/mixed; boundary="{boundary}"',
+        )
 
     assert_never(output_mode)
 
