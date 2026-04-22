@@ -57,6 +57,29 @@ PARAM_TYPE_TO_TS: dict[str, str] = {
 # generated imports are pre-formatted consistently with ruff format --check.
 _PY_LINE_LENGTH_LIMIT = 100
 
+# Shared regenerate-command pointer embedded in every emitted Python file's
+# module docstring (issue #373). Factored to a module-level constant so the
+# five emitter sites below (params class, error class with params, error
+# class without params, __init__.py, _registry.py) cannot drift — each site
+# composes its file-specific first line with this trailer via
+# ``_py_generated_header`` rather than copy-pasting the three-line docstring
+# (PR #517 review).
+_PY_GENERATED_REGENERATE_HINT = (
+    "Run ``task errors:generate`` to regenerate after editing errors.yaml."
+)
+
+
+def _py_generated_header(first_line: str) -> str:
+    """Return the shared triple-quoted module docstring header.
+
+    ``first_line`` is the file-specific one-liner (e.g. ``"Generated from
+    errors.yaml. Do not edit."``) that precedes the shared regenerate-command
+    pointer. The returned string is a complete, standalone module docstring
+    terminated with ``\\n\\n`` so emitters can concatenate imports / class
+    bodies directly after it.
+    """
+    return f'"""{first_line}\n\n{_PY_GENERATED_REGENERATE_HINT}\n"""\n\n'
+
 
 def _py_import_line(module: str, name: str) -> str:
     """Format a `from <module> import <name>` line, wrapping if > line-length.
@@ -240,11 +263,11 @@ def generate_python(errors_path: Path, output_dir: Path) -> list[Path]:
                 for name, ptype in sorted_param_items
             )
             params_file.write_text(
-                f'"""Generated from errors.yaml. Do not edit."""\n\n'
-                f"from pydantic import BaseModel\n\n\n"
-                f"class {params_class_name}(BaseModel):\n"
-                f'    """Parameters for {code} error."""\n\n'
-                f"{fields}\n"
+                _py_generated_header("Generated from errors.yaml. Do not edit.")
+                + "from pydantic import BaseModel\n\n\n"
+                + f"class {params_class_name}(BaseModel):\n"
+                + f'    """Parameters for {code} error."""\n\n'
+                + f"{fields}\n"
             )
             generated_files.append(params_file)
             init_imports.append(
@@ -279,27 +302,28 @@ def generate_python(errors_path: Path, output_dir: Path) -> list[Path]:
                 f"app.exceptions._generated.{params_file_stem}", params_class_name
             )
             error_content = (
-                f'"""Generated from errors.yaml. Do not edit."""\n\n'
-                f"from typing import ClassVar\n\n"
-                f"{params_import_line}\n"
-                f"from app.exceptions.base import DomainError\n\n\n"
-                f"class {error_class_name}(DomainError):\n"
-                f'    """Error: {code}."""\n\n'
-                f'    code: ClassVar[str] = "{code}"\n'
-                f"    http_status: ClassVar[int] = {http_status}\n\n"
-                f"    def __init__(self, *, {init_signature}) -> None:\n" + super_block
+                _py_generated_header("Generated from errors.yaml. Do not edit.")
+                + "from typing import ClassVar\n\n"
+                + f"{params_import_line}\n"
+                + "from app.exceptions.base import DomainError\n\n\n"
+                + f"class {error_class_name}(DomainError):\n"
+                + f'    """Error: {code}."""\n\n'
+                + f'    code: ClassVar[str] = "{code}"\n'
+                + f"    http_status: ClassVar[int] = {http_status}\n\n"
+                + f"    def __init__(self, *, {init_signature}) -> None:\n"
+                + super_block
             )
         else:
             error_content = (
-                f'"""Generated from errors.yaml. Do not edit."""\n\n'
-                f"from typing import ClassVar\n\n"
-                f"from app.exceptions.base import DomainError\n\n\n"
-                f"class {error_class_name}(DomainError):\n"
-                f'    """Error: {code}."""\n\n'
-                f'    code: ClassVar[str] = "{code}"\n'
-                f"    http_status: ClassVar[int] = {http_status}\n\n"
-                f"    def __init__(self) -> None:\n"
-                f"        super().__init__(params=None)\n"
+                _py_generated_header("Generated from errors.yaml. Do not edit.")
+                + "from typing import ClassVar\n\n"
+                + "from app.exceptions.base import DomainError\n\n\n"
+                + f"class {error_class_name}(DomainError):\n"
+                + f'    """Error: {code}."""\n\n'
+                + f'    code: ClassVar[str] = "{code}"\n'
+                + f"    http_status: ClassVar[int] = {http_status}\n\n"
+                + "    def __init__(self) -> None:\n"
+                + "        super().__init__(params=None)\n"
             )
 
         error_file.write_text(error_content)
@@ -315,7 +339,7 @@ def generate_python(errors_path: Path, output_dir: Path) -> list[Path]:
     sorted_imports = sorted(init_imports, key=lambda entry: entry[1])
     init_file = output_dir / "__init__.py"
     init_content = (
-        '"""Generated error classes. Do not edit."""\n\n'
+        _py_generated_header("Generated error classes. Do not edit.")
         + "\n".join(_py_import_line(module, name) for module, name in sorted_imports)
         + "\n\n__all__ = [\n"
         + "\n".join(f'    "{name}",' for _module, name in sorted_imports)
@@ -346,11 +370,11 @@ def generate_python(errors_path: Path, output_dir: Path) -> list[Path]:
     # affects the user-visible dict-key order.
     sorted_registry_entries = sorted(registry_entries)
     registry_content = (
-        '"""Generated error registry. Do not edit."""\n\n'
-        "from __future__ import annotations\n\n"
-        "from typing import TYPE_CHECKING\n\n"
-        "if TYPE_CHECKING:\n"
-        "    from app.exceptions.base import DomainError\n\n"
+        _py_generated_header("Generated error registry. Do not edit.")
+        + "from __future__ import annotations\n\n"
+        + "from typing import TYPE_CHECKING\n\n"
+        + "if TYPE_CHECKING:\n"
+        + "    from app.exceptions.base import DomainError\n\n"
         + "\n".join(_py_import_line(module, name) for module, name in error_imports)
         + "\n\n"
         + "ERROR_CLASSES: dict[str, type[DomainError]] = {\n"
