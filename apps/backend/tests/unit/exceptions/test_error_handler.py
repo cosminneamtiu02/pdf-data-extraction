@@ -212,7 +212,7 @@ def test_handle_validation_error_empty_errors_logs_traceback(
     must fire with ``exc_info=True`` so the framework-level anomaly is
     actionable rather than silently masked.
     """
-    with patch.object(errors_module, "logger") as mock_logger:
+    with patch.object(errors_module, "_logger") as mock_logger:
         response = test_client.get("/trigger-empty-validation-error")
 
     assert response.status_code == InternalError.http_status
@@ -232,7 +232,7 @@ async def test_handle_validation_error_empty_errors_chains_original_cause() -> N
     and leaves ``__cause__`` as ``None``. Aggregators and debuggers that
     walk ``__cause__`` to reconstruct the "caused by" line therefore lose
     the original ``RequestValidationError`` entirely, even though
-    ``logger.warning(..., exc_info=True)`` in ``handle_domain_error``
+    ``_logger.warning(..., exc_info=True)`` in ``handle_domain_error``
     prints an ``exc_info`` block -- because ``exc_info`` captures the
     ``InternalError`` currently being raised, not the original. The fix
     is ``raise InternalError from exc`` so ``__cause__`` carries the
@@ -379,12 +379,12 @@ def test_handle_domain_error_emits_warning_with_exc_info_for_5xx(
     line with no code, no params, no traceback. Observers had to
     correlate the request_id against the exception's origin by hand.
 
-    Spies directly on ``errors_module.logger`` because
+    Spies directly on ``errors_module._logger`` because
     ``structlog.testing.capture_logs`` depends on structlog's own processor
     chain and is bypassed when earlier tests in the suite reroute structlog
     through stdlib logging.
     """
-    with patch.object(errors_module, "logger") as mock_logger:
+    with patch.object(errors_module, "_logger") as mock_logger:
         response = test_client.get("/trigger-5xx-domain-error")
 
     assert response.status_code == InternalError.http_status
@@ -407,7 +407,7 @@ def test_handle_domain_error_emits_info_for_4xx(test_client: TestClient) -> None
     high-volume by design. Info level keeps them visible in aggregation
     without paging, and ``exc_info`` is omitted to avoid noise in logs.
     """
-    with patch.object(errors_module, "logger") as mock_logger:
+    with patch.object(errors_module, "_logger") as mock_logger:
         response = test_client.get("/trigger-domain-error")
 
     assert response.status_code == 404  # NotFoundError
@@ -501,7 +501,7 @@ def test_handle_domain_error_logs_warning_for_each_named_5xx_subclass(
 
     client = TestClient(app, raise_server_exceptions=False)
 
-    with patch.object(errors_module, "logger") as mock_logger:
+    with patch.object(errors_module, "_logger") as mock_logger:
         response = client.get("/boom")
 
     assert response.status_code == error_cls.http_status, (
