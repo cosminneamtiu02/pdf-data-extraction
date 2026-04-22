@@ -4,15 +4,19 @@ Each error code produces one Python file per class (error + params if any).
 Generated files are committed but never edited by hand.
 
 Also exposes a ``__main__`` entry point (issue #372) so the module can be
-invoked as ``python -m scripts.generate`` from any shell with no reliance
-on a fragile inline ``python -c '...'`` string. ``task errors:generate``
-and the local developer loop now call ``python -m scripts.generate``
-directly. The ``scripts.generate_all`` wrapper from issue #365 remains
-the CI entry point (``.github/workflows/ci.yml`` "Regenerate error
-contracts" step); both entry points call the same three generator
-functions defined here in the same order with the same defaults, so
-their outputs are byte-identical and ``task errors:check`` (plus CI's
-"Verify generated files are up to date" diff) catches any drift.
+invoked as ``python -m scripts.generate`` when ``packages/error-contracts``
+is on ``sys.path`` (for example, by running from that directory — as
+``task errors:generate`` and the CI workflow both do — or by setting
+``PYTHONPATH``), with no reliance on a fragile inline ``python -c '...'``
+string. ``task errors:generate`` and the local developer loop now call
+``python -m scripts.generate`` directly. The ``scripts.generate_all``
+wrapper from issue #365 remains the CI entry point
+(``.github/workflows/ci.yml`` "Regenerate error contracts" step); drift
+between the two entry points is mechanically prevented because
+``scripts.generate_all.main`` now delegates to ``main()`` here rather
+than duplicating the default-path constants. ``task errors:check`` (plus
+CI's "Verify generated files are up to date" diff) still catches any
+drift in the generated artifacts.
 """
 
 from __future__ import annotations
@@ -450,8 +454,11 @@ def generate_required_keys(errors_path: Path, output_path: Path) -> Path:
 # command "just works" when invoked from packages/error-contracts/, which
 # is the working directory both the Taskfile (`dir: packages/error-contracts`)
 # and the CI workflow (`working-directory: packages/error-contracts`) use.
-# Mirrors the default resolution in scripts.generate_all for byte-identical
-# output between the two entry points.
+# These constants are the single source of truth for default paths — the
+# ``scripts.generate_all`` CI shim imports ``main``/``build_parser`` from
+# this module, so any future default-path change reaches both entry points
+# atomically (PR #499 review: previously each module had its own copy and
+# drift was possible).
 _ERROR_CONTRACTS_DIR = Path(__file__).resolve().parents[1]
 _REPO_ROOT = _ERROR_CONTRACTS_DIR.parents[1]
 _DEFAULT_ERRORS_YAML = _ERROR_CONTRACTS_DIR / "errors.yaml"
@@ -481,11 +488,11 @@ def main(
     code — a malformed ``errors.yaml`` is a developer-facing bug and the
     raw traceback is the most useful signal.
 
-    Kept intentionally parallel to ``scripts.generate_all.main`` so the
-    two entry points emit byte-identical artifacts; ``generate_all``
-    remains the CI entry point (issue #365), while the Taskfile and
-    local developer loop now call ``python -m scripts.generate`` directly
-    (issue #372).
+    The canonical entry point for both local (``task errors:generate``,
+    issue #372) and CI (``python -m scripts.generate_all``, issue #365)
+    flows. ``scripts.generate_all.main`` delegates here so the two paths
+    mechanically share default paths + argparse wiring and cannot drift
+    (PR #499 review).
     """
     errors_path = errors_yaml if errors_yaml is not None else _DEFAULT_ERRORS_YAML
     py_dir = python_dir if python_dir is not None else _DEFAULT_PYTHON_DIR
@@ -504,7 +511,19 @@ def main(
     return 0
 
 
-def _parse_args(argv: list[str]) -> argparse.Namespace:
+def build_parser() -> argparse.ArgumentParser:
+    """Return the shared argparse parser for the generate CLI.
+
+    Exposed (non-underscore) so ``scripts.generate_all`` can reuse the
+    exact same parser — the two entry points must accept identical flags
+    with identical defaults to preserve the byte-identical guarantee
+    between ``task errors:generate`` (local) and the CI "Regenerate
+    error contracts" step (see issue #365 and issue #372).
+
+    ``help=`` strings are composed from the ``_DEFAULT_*`` module
+    constants so editing a default path can never leave ``--help`` out
+    of sync with reality — the drift that PR #499 review flagged.
+    """
     parser = argparse.ArgumentParser(
         description=(
             "Regenerate Python exception classes, TypeScript types, and "
@@ -515,15 +534,15 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         "--errors-yaml",
         type=Path,
         default=None,
-        help="Path to errors.yaml (defaults to packages/error-contracts/errors.yaml).",
+        help=f"Path to errors.yaml (defaults to {_DEFAULT_ERRORS_YAML}).",
     )
     parser.add_argument(
         "--python-dir",
         type=Path,
         default=None,
         help=(
-            "Directory to write generated Python exception modules "
-            "(defaults to apps/backend/app/exceptions/_generated). "
+            f"Directory to write generated Python exception modules "
+            f"(defaults to {_DEFAULT_PYTHON_DIR}). "
             "Override is intended for tests writing to tmp_path: the "
             "generated __init__.py and _registry.py emit hard-coded "
             "`app.exceptions._generated.*` import paths, so artifacts "
@@ -535,8 +554,8 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         type=Path,
         default=None,
         help=(
-            "Path to write the generated TypeScript module "
-            "(defaults to packages/error-contracts/src/generated.ts)."
+            f"Path to write the generated TypeScript module "
+            f"(defaults to {_DEFAULT_TS_PATH})."
         ),
     )
     parser.add_argument(
@@ -544,11 +563,15 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         type=Path,
         default=None,
         help=(
-            "Path to write required-keys.json "
-            "(defaults to packages/error-contracts/src/required-keys.json)."
+            f"Path to write required-keys.json "
+            f"(defaults to {_DEFAULT_REQUIRED_KEYS_PATH})."
         ),
     )
-    return parser.parse_args(argv)
+    return parser
+
+
+def _parse_args(argv: list[str]) -> argparse.Namespace:
+    return build_parser().parse_args(argv)
 
 
 if __name__ == "__main__":

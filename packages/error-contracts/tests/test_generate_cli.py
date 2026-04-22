@@ -17,7 +17,12 @@ These tests pin the new entrypoint contract:
    --typescript-path Z --required-keys-path W`` produces all three
    artifact families against supplied paths without mutating the live
    ``apps/backend/app/exceptions/_generated`` tree — the same isolation
-   pattern ``test_generate_all_script.py`` uses.
+   pattern ``test_generate_all_script.py`` uses (via the shared
+   ``staged_scripts_dir`` fixture in ``conftest.py``).
+3. ``--help`` output reflects the actual module-constant defaults, so
+   tweaking ``_DEFAULT_*`` paths in ``scripts.generate`` can never
+   silently leave the ``help=`` strings showing stale values (PR #499
+   review: hard-coded help text was drift-prone).
 
 The individual generator functions have their own coverage in
 ``test_generate.py``; this file is scoped to the CLI surface only.
@@ -29,6 +34,8 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+
+from scripts import generate as generate_module
 
 SAMPLE_YAML = """
 version: 1
@@ -45,29 +52,7 @@ errors:
 """
 
 
-def _stage_scripts(tmp_path: Path) -> Path:
-    """Copy the real ``scripts/`` package into ``tmp_path`` and return its parent.
-
-    ``python -m scripts.generate`` resolves ``scripts`` from ``sys.path``,
-    which Python populates with the current working directory. Laying the
-    script package alongside a per-test ``errors.yaml`` means we exercise
-    the exact command shape the Taskfile and CI run without mutating the
-    real monorepo layout (mirrors the fixture setup in
-    ``test_generate_all_script.py``).
-    """
-    package_root = Path(__file__).resolve().parents[1]
-    scripts_src = package_root / "scripts"
-    work = tmp_path / "work"
-    work.mkdir()
-    scripts_dst = work / "scripts"
-    scripts_dst.mkdir()
-    for src in scripts_src.iterdir():
-        if src.is_file() and src.suffix == ".py":
-            (scripts_dst / src.name).write_text(src.read_text())
-    return work
-
-
-def test_generate_help_exits_zero_and_shows_usage(tmp_path: Path) -> None:
+def test_generate_help_exits_zero_and_shows_usage(staged_scripts_dir: Path) -> None:
     """``python -m scripts.generate --help`` must return 0 with usage text.
 
     This is the load-bearing signal that ``generate.py`` has a proper
@@ -77,10 +62,9 @@ def test_generate_help_exits_zero_and_shows_usage(tmp_path: Path) -> None:
     because ``python -m`` on a module with no ``__main__`` returns
     exit 0 but produces no usage output.
     """
-    work = _stage_scripts(tmp_path)
     proc = subprocess.run(  # noqa: S603 — sys.executable is trusted
         [sys.executable, "-m", "scripts.generate", "--help"],
-        cwd=work,
+        cwd=staged_scripts_dir,
         capture_output=True,
         text=True,
         check=False,
@@ -98,20 +82,63 @@ def test_generate_help_exits_zero_and_shows_usage(tmp_path: Path) -> None:
     assert "--required-keys-path" in proc.stdout
 
 
-def test_generate_cli_writes_all_three_artifact_families(tmp_path: Path) -> None:
+def test_generate_help_reflects_actual_default_paths() -> None:
+    """``--help`` output contains the real ``_DEFAULT_*`` constant values.
+
+    The argparse ``help=`` strings used to hard-code default path literals
+    (e.g. the string ``packages/error-contracts/errors.yaml``) alongside
+    ``default=None`` (with the actual resolution happening inside
+    ``main()`` against module constants). That opened a drift window: if
+    someone updated ``_DEFAULT_ERRORS_YAML`` but forgot the help string,
+    ``--help`` would confidently advertise a stale path.
+
+    This test runs the subprocess with ``cwd`` set to the real
+    error-contracts package root so the subprocess resolves
+    ``scripts.generate`` to the same ``__file__`` as the in-process import
+    — therefore both compute identical ``_DEFAULT_*`` constants via
+    ``Path(__file__).parents[1]``. The staged-scripts fixture isn't
+    suitable here because staging moves ``__file__`` under ``tmp_path``,
+    which would shift the ``_DEFAULT_*`` paths into the temp tree and
+    decouple them from the in-process module's view.
+    """
+    package_root = Path(generate_module.__file__).resolve().parents[1]
+    proc = subprocess.run(  # noqa: S603 — sys.executable is trusted
+        [sys.executable, "-m", "scripts.generate", "--help"],
+        cwd=package_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, f"stderr: {proc.stderr}\nstdout: {proc.stdout}"
+
+    # argparse's default HelpFormatter wraps help= text across lines at
+    # terminal width, breaking at hyphens and spaces alike — which inserts
+    # whitespace inside what were contiguous path segments. Strip ALL
+    # whitespace (spaces, newlines, indentation) before substring checks so
+    # the assertions are resilient to wrap-column differences across
+    # environments. Paths don't contain whitespace, so this is lossless.
+    flat_stdout = "".join(proc.stdout.split())
+    assert str(generate_module._DEFAULT_ERRORS_YAML) in flat_stdout
+    assert str(generate_module._DEFAULT_PYTHON_DIR) in flat_stdout
+    assert str(generate_module._DEFAULT_TS_PATH) in flat_stdout
+    assert str(generate_module._DEFAULT_REQUIRED_KEYS_PATH) in flat_stdout
+
+
+def test_generate_cli_writes_all_three_artifact_families(
+    staged_scripts_dir: Path,
+) -> None:
     """End-to-end: ``python -m scripts.generate <paths>`` writes Py + TS + JSON.
 
     Confirms the new CLI is observationally equivalent to calling the three
     generator functions directly — i.e. the ``__main__`` block doesn't drop
     a generator, shuffle arguments, or fail silently.
     """
-    work = _stage_scripts(tmp_path)
-    errors_yaml = work / "errors.yaml"
+    errors_yaml = staged_scripts_dir / "errors.yaml"
     errors_yaml.write_text(SAMPLE_YAML)
 
-    python_dir = work / "python_out"
-    ts_path = work / "generated.ts"
-    keys_path = work / "required-keys.json"
+    python_dir = staged_scripts_dir / "python_out"
+    ts_path = staged_scripts_dir / "generated.ts"
+    keys_path = staged_scripts_dir / "required-keys.json"
 
     proc = subprocess.run(  # noqa: S603 — sys.executable is trusted
         [
@@ -127,7 +154,7 @@ def test_generate_cli_writes_all_three_artifact_families(tmp_path: Path) -> None
             "--required-keys-path",
             str(keys_path),
         ],
-        cwd=work,
+        cwd=staged_scripts_dir,
         capture_output=True,
         text=True,
         check=False,
