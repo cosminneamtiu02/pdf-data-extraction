@@ -49,11 +49,20 @@ async def ready(
     if skill_manifest.is_empty:
         return JSONResponse(
             status_code=503,
-            content={"status": "not_ready", "reason": "no_skills_loaded"},
+            content=NotReadyResponse(
+                status="not_ready",
+                reason="no_skills_loaded",
+            ).model_dump(),
         )
     if await probe_cache.is_ready():
-        return JSONResponse(status_code=200, content={"status": "ready"})
+        return JSONResponse(
+            status_code=200,
+            content=ReadyResponse(status="ready").model_dump(),
+        )
     return JSONResponse(
         status_code=503,
-        content={"status": "not_ready", "reason": "ollama_unreachable"},
+        content=NotReadyResponse(
+            status="not_ready",
+            reason="ollama_unreachable",
+        ).model_dump(),
     )

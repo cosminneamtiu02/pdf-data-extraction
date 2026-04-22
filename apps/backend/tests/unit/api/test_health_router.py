@@ -7,7 +7,11 @@ ASGI round-trip.
 
 from __future__ import annotations
 
+import json
+
 from app.api.health_router import health, ready
+from app.api.schemas.not_ready_response import NotReadyResponse
+from app.api.schemas.ready_response import ReadyResponse
 from app.features.extraction.skills import SkillManifest
 from tests.conftest import make_skill
 
@@ -102,3 +106,56 @@ async def test_ready_prefers_no_skills_loaded_over_ollama_unreachable() -> None:
     assert response.status_code == 503
     assert b'"no_skills_loaded"' in response.body
     assert b'"ollama_unreachable"' not in response.body
+
+
+# ---------------------------------------------------------------------------
+# Schema-parity tests (issue #374)
+#
+# Guard against the handler hand-constructing a dict that drifts from the
+# Pydantic schema declared in ``app/api/schemas/``. The handler must build
+# its JSON body from ``ReadyResponse(...).model_dump()`` /
+# ``NotReadyResponse(...).model_dump()`` so any field added to the schema
+# is guaranteed to appear in the runtime body without a follow-up handler
+# edit. These tests iterate ``model_fields`` rather than hard-coding field
+# names so future additions are covered automatically.
+# ---------------------------------------------------------------------------
+
+
+async def test_ready_response_body_contains_all_schema_fields_when_ready() -> None:
+    """The 200 body must include every field declared by ``ReadyResponse``."""
+    cache = _FakeProbeCache(ready=True)
+    response = await ready(
+        probe_cache=cache,  # type: ignore[arg-type]  # test seam
+        skill_manifest=_non_empty_manifest(),
+    )
+    body = json.loads(response.body)
+    for field_name in ReadyResponse.model_fields:
+        assert field_name in body, (
+            f"/ready 200 body is missing schema field '{field_name}'; "
+            f"the handler must build its payload from "
+            f"ReadyResponse(...).model_dump() to stay in sync with the schema."
+        )
+    assert body == ReadyResponse(status="ready").model_dump()
+
+
+async def test_not_ready_response_body_contains_all_schema_fields_when_probe_fails() -> None:
+    """The 503 body must include every field declared by ``NotReadyResponse``."""
+    cache = _FakeProbeCache(ready=False)
+    response = await ready(
+        probe_cache=cache,  # type: ignore[arg-type]  # test seam
+        skill_manifest=_non_empty_manifest(),
+    )
+    body = json.loads(response.body)
+    for field_name in NotReadyResponse.model_fields:
+        assert field_name in body, (
+            f"/ready 503 body is missing schema field '{field_name}'; "
+            f"the handler must build its payload from "
+            f"NotReadyResponse(...).model_dump() to stay in sync with the schema."
+        )
+    assert (
+        body
+        == NotReadyResponse(
+            status="not_ready",
+            reason="ollama_unreachable",
+        ).model_dump()
+    )
