@@ -124,7 +124,7 @@ class Settings(BaseSettings):
     # ``/docs``, ``/redoc``, and ``/openapi.json`` in production, so a typo
     # exposed the interactive docs UI in a live deploy. Pydantic's
     # ``Literal`` matching is case-sensitive by design, which is what we
-    # want here: "Production" is not the same production.
+    # want here: "Production" is not the same as "production".
     app_env: Literal["development", "production", "testing"] = "development"
     log_level: str = "info"
     cors_origins: list[str] = ["http://localhost:5173"]
