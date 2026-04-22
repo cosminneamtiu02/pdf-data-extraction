@@ -989,6 +989,59 @@ def test_multi_block_end_block_missing_from_index_falls_back_to_start_block_bbox
     assert invariant_events[0]["reason"] == "end_block_not_seen_after_start"
 
 
+def test_multi_block_start_block_missing_from_index_logs_distinct_reason() -> None:
+    # Issue #339, additional variant surfaced by the PR #459 Copilot review:
+    # if `start_block_id` itself never appears in the offset index, the span
+    # is never entered, and the post-loop fallback still fires. The pre-review
+    # implementation logged `reason="end_block_not_seen_after_start"` for this
+    # shape, which misattributes the corruption — the actual failure is that
+    # the *start* block is missing, not that the end block is absent after the
+    # start. Distinct reason code keeps the two shapes diagnosable in
+    # production logs.
+    #
+    # `RawExtraction.__post_init__` plus the caller's `offset_index.lookup`
+    # call prevent this shape via the public path (the start block must be in
+    # the index to be returned from `lookup`), so we drive
+    # `_collect_multi_block_bboxes` directly — exactly the misuse surface the
+    # invariant guard is there to catch.
+    from app.features.extraction.coordinates.span_resolver import (
+        _collect_multi_block_bboxes,
+    )
+
+    b_start = _block(block_id="b_start", text="first", bbox=(1.0, 2.0, 3.0, 4.0))
+    b_other = _block(block_id="b_other", text="second", bbox=(0, 20, 50, 30))
+    doc = _doc(b_start, b_other)
+    # The index contains `b_other` but not `b_start` — a corrupt/truncated
+    # index shape where the caller passes a start_block_id that isn't indexed.
+    index = _index((0, 6, "b_other"))
+    blocks_by_id = {b.block_id: b for b in doc.blocks}
+
+    with capture_logs() as logs:
+        refs = _collect_multi_block_bboxes(
+            start_block_id="b_start",
+            end_block_id="b_other",
+            offset_index=index,
+            blocks_by_id=blocks_by_id,
+        )
+
+    # Same fallback as the other violation shapes: one whole-block bbox for
+    # the start block. Correctness over silent fan-out.
+    assert len(refs) == 1
+    assert (refs[0].x0, refs[0].y0, refs[0].x1, refs[0].y1) == (1.0, 2.0, 3.0, 4.0)
+
+    invariant_events = [
+        e for e in logs if e.get("event") == "span_resolver_multi_block_invariant_violated"
+    ]
+    assert len(invariant_events) == 1
+    assert invariant_events[0]["start_block_id"] == "b_start"
+    assert invariant_events[0]["end_block_id"] == "b_other"
+    # Distinct from `end_block_not_seen_after_start` — the span was never
+    # entered, so claiming "end not seen after start" would misdescribe the
+    # corruption shape.
+    assert invariant_events[0]["reason"] == "start_block_not_seen"
+    assert invariant_events[0]["collected_bbox_count"] == 0
+
+
 def test_happy_path_emits_no_span_resolver_logs() -> None:
     resolver = SpanResolver()
     block = _block(block_id="b0", text="Total: $1,847.50 due", bbox=(0, 0, 200, 20))

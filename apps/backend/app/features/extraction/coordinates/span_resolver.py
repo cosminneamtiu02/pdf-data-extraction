@@ -284,11 +284,21 @@ def _collect_multi_block_bboxes(
     #     happy path.
     #   - `end_block_not_seen_after_start` — detected post-hoc after the loop
     #     finishes without ever reaching `end_block_id`. In practice this
-    #     fires only when `end_block_id` is absent from the index entirely;
-    #     the end-before-start-only shape is caught synchronously by the
-    #     first branch above. The post-hoc check remains as a belt-and-braces
-    #     guarantee that a fallback fires for any residual shape.
-    # Both paths log and fall back to a single whole-block bbox for the start
+    #     fires only when `end_block_id` is absent from the index entirely
+    #     (but `start_block_id` *was* seen); the end-before-start-only shape
+    #     is caught synchronously by the first branch above. The post-hoc
+    #     check remains as a belt-and-braces guarantee that a fallback fires
+    #     for any residual shape.
+    #   - `start_block_not_seen` — detected post-hoc when the loop finished
+    #     without `in_span` ever flipping to `True`, i.e. `start_block_id`
+    #     itself is absent from the index. The public caller
+    #     (`SpanResolver._resolve_one`) gets `start_block_id` from
+    #     `OffsetIndex.lookup`, so by construction it must be present — this
+    #     shape is only reachable via direct misuse of
+    #     `_collect_multi_block_bboxes` or a corrupt index. Distinct reason
+    #     code so a production log consumer doesn't confuse "start missing"
+    #     with "end missing after a valid start" (PR #459 review follow-up).
+    # All paths log and fall back to a single whole-block bbox for the start
     # block — correctness over silent fan-out.
     #
     # Pre-scan for the LAST index position of `end_block_id` so the
@@ -328,11 +338,17 @@ def _collect_multi_block_bboxes(
         if in_span and entry.block_id == end_block_id:
             return refs
 
+    # If `in_span` never flipped to True, `start_block_id` itself is absent
+    # from the index — a different corruption shape from "start seen, end not
+    # seen after." Emit a distinct reason code so production log consumers
+    # can tell the two apart; labelling this as `end_block_not_seen_after_start`
+    # would misattribute the failure to the end block.
+    reason = "end_block_not_seen_after_start" if in_span else "start_block_not_seen"
     _logger.warning(
         "span_resolver_multi_block_invariant_violated",
         start_block_id=start_block_id,
         end_block_id=end_block_id,
-        reason="end_block_not_seen_after_start",
+        reason=reason,
         collected_bbox_count=len(refs),
     )
     return [_whole_block_bbox(blocks_by_id[start_block_id])]
