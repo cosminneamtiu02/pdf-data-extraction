@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import importlib
 import io
+import uuid
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -56,7 +57,22 @@ class RealDoclingConverterAdapter:
     def convert(self, pdf_bytes: bytes) -> DoclingDocumentLike:
         base_models: Any = importlib.import_module("docling.datamodel.base_models")
         document_stream_cls: Any = base_models.DocumentStream
-        source: Any = document_stream_cls(name="input.pdf", stream=io.BytesIO(pdf_bytes))
+        # Issue #383: Docling may surface the DocumentStream ``name`` in its
+        # logging/debug stream. A hardcoded ``input.pdf`` makes concurrent-
+        # request logs impossible to correlate. Prefer the structlog
+        # contextvars ``request_id`` bound by ``RequestIdMiddleware``; fall
+        # back to a fresh uuid hex otherwise. The ``.pdf`` suffix is preserved
+        # so Docling's filename-based format detection still routes to the
+        # PDF backend. Non-string ``request_id`` values (defensive guard
+        # against an int or other type leaking through a binder) fall back
+        # to the uuid path rather than propagating into Docling.
+        context_request_id: Any = structlog.contextvars.get_contextvars().get("request_id")
+        stream_name: str = (
+            f"{context_request_id}.pdf"
+            if isinstance(context_request_id, str) and context_request_id
+            else f"{uuid.uuid4().hex}.pdf"
+        )
+        source: Any = document_stream_cls(name=stream_name, stream=io.BytesIO(pdf_bytes))
         result: Any = self._real_converter.convert(source)
         return RealDoclingDocumentAdapter(result.document)
 
