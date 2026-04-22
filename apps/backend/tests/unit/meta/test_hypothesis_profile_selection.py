@@ -20,28 +20,22 @@ These tests pin the friendlier behaviour:
    ``ci`` default.
 
 Importing ``tests.contract.conftest`` from a unit test is a deliberate
-choice here: ``_select_profile`` is private to that module, and the
-module's side effects (two ``register_profile`` calls and one
-``load_profile`` call for ``ci``) are idempotent and don't leak into
-other unit tests — Hypothesis isn't exercised by the unit suite.
+choice here: ``_select_profile`` is private to that module. The module
+import is now side-effect-free with respect to Hypothesis' active
+profile — ``load_profile`` is deferred to a ``pytest_configure`` hook,
+so importing the conftest from the unit suite registers the ``ci`` and
+``dev`` profiles (idempotent) but does not mutate which profile is
+active. That means these unit tests no longer need a module-scope
+``os.environ.pop`` to protect conftest import from a typoed
+``HYPOTHESIS_PROFILE`` in the developer's shell — ``_select_profile``
+is a pure function now invoked only from inside each test under
+``monkeypatch`` control.
 """
 
 from __future__ import annotations
 
-import os
-
 import pytest
-
-# Hermetic unit-test contract: clear ``HYPOTHESIS_PROFILE`` *before* the
-# first ``tests.contract.conftest`` import. That conftest reads the env
-# var and calls ``hypothesis_settings.load_profile`` at module-import
-# time, which raises ``ValueError`` if the developer's shell has
-# ``HYPOTHESIS_PROFILE`` set to an unregistered value (e.g. a typo like
-# ``cii``). Per-test ``monkeypatch`` fixtures apply in the test body,
-# AFTER conftest import, so they cannot protect against this failure
-# mode. Popping at module scope keeps these unit tests reproducible
-# across developer shells and CI runners.
-os.environ.pop("HYPOTHESIS_PROFILE", None)
+from hypothesis import settings as hypothesis_settings
 
 
 def test_select_profile_returns_ci_default_when_env_var_unset(
@@ -74,11 +68,11 @@ def test_select_profile_rejects_unknown_env_var_with_helpful_message(
     """A typoed ``HYPOTHESIS_PROFILE`` must raise ``ValueError`` listing allowed names.
 
     Without the allow-list guard, ``hypothesis_settings.load_profile("cii")``
-    would raise ``InvalidArgument`` at conftest import time with a terse
-    Hypothesis-library message. The wrapper guard replaces that with a
-    ``ValueError`` whose message names the offending value AND every
-    registered profile, so bare ``--collect-only`` output tells the
-    caller both what broke and how to fix it.
+    would raise ``InvalidArgument`` when the ``pytest_configure`` hook
+    called it, with a terse Hypothesis-library message. The wrapper
+    guard replaces that with a ``ValueError`` whose message names the
+    offending value AND every registered profile, so the pytest startup
+    error tells the caller both what broke and how to fix it.
     """
     from tests.contract.conftest import _select_profile
 
@@ -100,29 +94,36 @@ def test_select_profile_rejects_unknown_env_var_with_helpful_message(
     )
 
 
-def test_default_profile_is_still_active_is_false_after_ci_load() -> None:
-    """After the contract conftest loads ``ci``, the default-active probe must say ``False``.
+def test_default_profile_is_still_active_detects_mismatched_fingerprint() -> None:
+    """``_default_profile_is_still_active`` must return ``False`` while a non-default profile is loaded.
 
-    This is the guard that makes the CLI flag ``--hypothesis-profile=<name>``
-    win over this conftest's own default-loading. If the Hypothesis pytest
-    plugin ran first (e.g. because the contract conftest is imported via
-    collection walk rather than as an "initial" conftest), the plugin
-    will have loaded a non-default profile and the fingerprint match
-    must report False so the conftest skips its own ``load_profile``
-    call.
+    The helper's one job is to be a reliable fingerprint probe: when a
+    non-default profile (e.g. ``ci``) is the active one, the fingerprint
+    must NOT match Hypothesis' built-in default. The unit suite now
+    exercises that invariant by loading ``ci`` explicitly inside the
+    test body and restoring the previously-active profile on teardown.
+    The contract conftest import no longer triggers ``load_profile`` as
+    a side effect (the load is deferred to a ``pytest_configure`` hook
+    the unit suite never runs), so without the in-test load step this
+    test would only ever see Hypothesis' default profile.
 
-    The contract conftest is imported unconditionally at the top of this
-    module (via ``_select_profile``'s module-level import inside the
-    other tests), which triggers a ``load_profile("ci")`` side effect.
-    By the time this test runs, ``ci`` is active, so the probe must
-    return False — otherwise the guard would be a no-op and we'd be
-    back to racing the plugin.
+    ``try/finally`` restores whatever profile was active when the test
+    started, so a failure here does not leak ``ci`` into the rest of
+    the unit suite and flake unrelated property-based tests.
     """
+    # Importing the contract conftest registers ``ci`` and ``dev``
+    # idempotently; ``load_profile`` below would raise if ``ci`` were
+    # not registered.
     from tests.contract.conftest import _default_profile_is_still_active
 
-    assert _default_profile_is_still_active() is False, (
-        "_default_profile_is_still_active() returned True after the contract "
-        "conftest loaded its 'ci' profile. The fingerprint check is broken — "
-        "see apps/backend/tests/contract/conftest.py _default_profile_is_still_active. "
-        "Issue #353."
-    )
+    previous_profile = hypothesis_settings.get_current_profile_name()
+    hypothesis_settings.load_profile("ci")
+    try:
+        assert _default_profile_is_still_active() is False, (
+            "_default_profile_is_still_active() returned True while the "
+            "'ci' profile was the active one. The fingerprint probe is "
+            "broken — see apps/backend/tests/contract/conftest.py "
+            "_default_profile_is_still_active. Issue #353."
+        )
+    finally:
+        hypothesis_settings.load_profile(previous_profile)
