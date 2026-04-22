@@ -5,14 +5,17 @@ Tests cover:
 - ``build_multipart_mixed`` response builder (scenarios 5-6)
 - Handler output-mode branching (scenarios 7-9)
 - Structured log context on ``InternalError`` raises (issue #337)
+- Streaming (chunked) shape of ``build_multipart_mixed`` (issue #387)
 """
 
 from __future__ import annotations
 
 import io
+from collections.abc import Iterable, Iterator
 
 import pytest
 from fastapi import UploadFile
+from fastapi.responses import StreamingResponse
 
 from app.features.extraction.extraction_result import ExtractionResult
 from app.features.extraction.schemas.bounding_box_ref import BoundingBoxRef
@@ -118,8 +121,8 @@ def test_multipart_builder_produces_two_parts_with_correct_headers() -> None:
 
     json_body = b'{"skill_name":"invoice"}'
     pdf_body = b"%PDF-1.4 fake"
-    body, boundary = build_multipart_mixed(json_body, pdf_body)
-    body_str = body.decode("utf-8", errors="replace")
+    chunks, boundary = build_multipart_mixed(json_body, pdf_body)
+    body_str = b"".join(chunks).decode("utf-8", errors="replace")
 
     # Verify both content types are present
     assert "Content-Type: application/json" in body_str
@@ -139,14 +142,85 @@ def test_multipart_builder_boundary_appears_exactly_three_times() -> None:
 
     json_body = b'{"key":"value"}'
     pdf_body = b"%PDF-1.4 content"
-    body, boundary = build_multipart_mixed(json_body, pdf_body)
-    body_str = body.decode("utf-8", errors="replace")
+    chunks, boundary = build_multipart_mixed(json_body, pdf_body)
+    body_str = b"".join(chunks).decode("utf-8", errors="replace")
 
     # Count the opener and separator (--boundary\r\n) and the closer (--boundary--)
     opener_sep_count = body_str.count(f"--{boundary}\r\n")
     closer_count = body_str.count(f"--{boundary}--")
     assert opener_sep_count == 2, f"expected 2 opener/separator, got {opener_sep_count}"
     assert closer_count == 1, f"expected 1 closer, got {closer_count}"
+
+
+# ---------------------------------------------------------------------------
+# Streaming (chunked) shape — issue #387
+# ---------------------------------------------------------------------------
+
+
+def test_multipart_builder_yields_iterable_of_chunks_without_concatenating() -> None:
+    """Builder returns an iterable that yields multiple chunks, not a single bytes blob.
+
+    Issue #387: previously the BOTH-mode handler built ``header + json +
+    separator + pdf + footer`` as a single ``bytes`` blob, bloating worker RSS
+    to roughly ``N x (PDF size + JSON size)`` under concurrent BOTH requests.
+    The fix must yield the PDF chunk WITHOUT copying it into a combined
+    framing blob — verified here by checking the PDF body bytes are emitted
+    as their own standalone chunk (``is`` identity) rather than a substring
+    of a larger bytes object.
+    """
+    from app.features.extraction.router import build_multipart_mixed
+
+    json_body = b'{"skill_name":"invoice"}'
+    pdf_body = b"%PDF-1.4 fake pdf content that should not be copied"
+    chunks, _boundary = build_multipart_mixed(json_body, pdf_body)
+
+    # Must be a non-bytes iterable (generator / iterator / list of bytes).
+    assert not isinstance(chunks, bytes | bytearray | memoryview)
+    assert isinstance(chunks, Iterable)
+
+    chunk_list = list(chunks)
+
+    # Must yield more than one chunk (framing headers + json + separator + pdf + footer).
+    assert len(chunk_list) >= 2, f"expected chunked output, got {len(chunk_list)} chunk(s)"
+
+    # Every chunk is bytes.
+    for chunk in chunk_list:
+        assert isinstance(chunk, bytes)
+
+    # Critical: the PDF body must be passed through by identity — NOT embedded
+    # in a larger bytes object. This is what prevents the 2x memory blow-up
+    # under max_concurrent_extractions simultaneous BOTH requests.
+    assert any(chunk is pdf_body for chunk in chunk_list), (
+        "PDF body must be yielded as its own chunk (identity-preserved), "
+        "not concatenated into a framing blob"
+    )
+
+
+def test_multipart_builder_returns_generator_that_can_be_consumed_once() -> None:
+    """Builder returns a single-consumption iterator (generator semantics)."""
+    from app.features.extraction.router import build_multipart_mixed
+
+    chunks, _boundary = build_multipart_mixed(b"{}", b"%PDF-1.4")
+    # Must be an Iterator (not merely Iterable) so StreamingResponse treats it
+    # as a one-shot stream.
+    assert isinstance(chunks, Iterator)
+
+
+def test_handler_both_returns_streaming_response() -> None:
+    """BOTH mode returns a StreamingResponse, not a buffered Response."""
+    from app.features.extraction.router import _serialize_result
+    from app.features.extraction.schemas.output_mode import OutputMode
+
+    pdf_bytes = b"%PDF-1.4 annotated content"
+    result = _make_extraction_result(annotated_pdf_bytes=pdf_bytes)
+    response = _serialize_result(result, OutputMode.BOTH)
+
+    assert isinstance(response, StreamingResponse), (
+        "BOTH mode must stream via StreamingResponse to avoid buffering "
+        "the entire response body in memory (issue #387)"
+    )
+    assert response.media_type is not None
+    assert response.media_type.startswith('multipart/mixed; boundary="')
 
 
 # ---------------------------------------------------------------------------
