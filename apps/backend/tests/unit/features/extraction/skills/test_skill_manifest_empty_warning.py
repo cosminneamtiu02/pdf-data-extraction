@@ -108,3 +108,81 @@ def test_populated_manifest_missing_skill_does_not_warn(
 
     names = [name for name, _ in spy.events]
     assert "skill_lookup_on_empty_manifest" not in names
+
+
+def test_empty_manifest_warning_logged_only_once_across_multiple_lookups(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Repeated lookups against the same empty manifest warn exactly once.
+
+    ``lookup`` is on the request path. A misconfigured deployment that keeps
+    receiving traffic would otherwise emit one warning per request, flooding
+    the log stream with the same "no skills ever loaded" event. The manifest
+    instance remembers whether it has warned so operators get the signal
+    once, not per-request (PR #493 Copilot feedback).
+
+    The raise behavior is unchanged — every lookup still raises
+    ``SkillNotFoundError`` because that's the correct per-request response.
+    """
+    spy = _SpyLogger()
+    monkeypatch.setattr(skill_manifest_module, "_logger", spy)
+    manifest = SkillManifest({})
+
+    for _ in range(3):
+        with pytest.raises(SkillNotFoundError):
+            manifest.lookup("invoice", "1")
+
+    empty_warnings = [
+        kwargs for name, kwargs in spy.events if name == "skill_lookup_on_empty_manifest"
+    ]
+    assert len(empty_warnings) == 1, (
+        f"expected exactly one empty-manifest warning across 3 lookups, got {spy.events!r}"
+    )
+
+
+def test_empty_manifest_warning_once_covers_latest_and_integer_and_invalid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """All three version-branch miss paths share the same once-per-instance flag.
+
+    The three raise sites — ``latest`` unresolved, integer parse failure,
+    integer not present — each need to consult the flag so the first miss
+    in any form suppresses the warning for the remaining misses.
+    """
+    spy = _SpyLogger()
+    monkeypatch.setattr(skill_manifest_module, "_logger", spy)
+    manifest = SkillManifest({})
+
+    with pytest.raises(SkillNotFoundError):
+        manifest.lookup("invoice", "latest")
+    with pytest.raises(SkillNotFoundError):
+        manifest.lookup("invoice", "1")
+    with pytest.raises(SkillNotFoundError):
+        manifest.lookup("invoice", "abc")
+
+    empty_warnings = [
+        kwargs for name, kwargs in spy.events if name == "skill_lookup_on_empty_manifest"
+    ]
+    assert len(empty_warnings) == 1, (
+        f"expected exactly one empty-manifest warning across all branches, got {spy.events!r}"
+    )
+
+
+def test_empty_manifest_non_integer_version_preserves_value_error_chain() -> None:
+    """Non-integer ``version`` on an empty manifest still chains ``ValueError``.
+
+    Before PR #493's early-return fix, an invalid version string like
+    ``"abc"`` would raise ``SkillNotFoundError(...) from ValueError`` because
+    the parse failure propagated through. The PR #493 Copilot feedback
+    flagged that the early-return short-circuit silently dropped that
+    chaining on empty manifests — consistent debugging requires the chain
+    be preserved regardless of manifest emptiness.
+    """
+    manifest = SkillManifest({})
+
+    with pytest.raises(SkillNotFoundError) as exc_info:
+        manifest.lookup("invoice", "not-a-number")
+
+    assert isinstance(exc_info.value.__cause__, ValueError), (
+        f"expected SkillNotFoundError.__cause__ to be ValueError, got {exc_info.value.__cause__!r}"
+    )
