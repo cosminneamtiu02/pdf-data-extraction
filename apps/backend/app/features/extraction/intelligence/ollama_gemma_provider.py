@@ -197,7 +197,14 @@ def _build_payload(
     # kwarg — issue #385), those values replace the baseline per-key. The
     # validator still enforces our downstream schema shape, but it no longer
     # pays the malformed-output retry cost on the happy path.
-    options = sampling_options if sampling_options is not None else dict(default_sampling_options)
+    # Defensive copy on both branches: Ollama won't mutate the options dict,
+    # but the caller-supplied ``sampling_options`` might be a long-lived dict
+    # retained elsewhere — never let request-local wiring share a reference
+    # with it. Symmetric with the ``dict(default_sampling_options)`` copy
+    # that protects the shared per-provider baseline.
+    options = (
+        dict(sampling_options) if sampling_options is not None else dict(default_sampling_options)
+    )
     return {
         "model": model,
         "prompt": prompt,
