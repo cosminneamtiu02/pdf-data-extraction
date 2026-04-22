@@ -7,11 +7,39 @@ a CharRange whose indices ALWAYS refer to the original block_text.
 """
 
 import pytest
-from structlog.testing import capture_logs
 
 from app.features.extraction.coordinates import sub_block_matcher as sub_block_matcher_module
 from app.features.extraction.coordinates.char_range import CharRange
 from app.features.extraction.coordinates.sub_block_matcher import SubBlockMatcher
+
+
+class _SpyLogger:
+    """Test double for ``sub_block_matcher_module._logger`` (Copilot-review #487).
+
+    Why we don't use ``structlog.testing.capture_logs()`` here: the matcher
+    module defines ``_logger = structlog.get_logger(__name__)`` at import
+    time, and ``app.core.logging.configure_logging()`` registers
+    ``cache_logger_on_first_use=True``. Whichever test first touches this
+    module-level logger outside a ``capture_logs()`` context can cause
+    structlog to cache a bound logger that subsequent ``capture_logs()``
+    contexts won't see — making log-assertion tests order-dependent. A
+    direct monkeypatched spy sidesteps structlog's global state entirely,
+    mirroring the pattern used in
+    ``tests/unit/features/extraction/test_extraction_service.py`` and
+    ``tests/unit/features/extraction/extraction/test_extraction_engine.py``.
+    """
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict[str, object]]] = []
+
+    def info(self, event: str, **kwargs: object) -> None:
+        self.events.append((event, kwargs))
+
+    def warning(self, event: str, **kwargs: object) -> None:  # pragma: no cover
+        self.events.append((event, kwargs))
+
+    def error(self, event: str, **kwargs: object) -> None:  # pragma: no cover
+        self.events.append((event, kwargs))
 
 
 def test_direct_hit_returns_range_in_original_block_text() -> None:
@@ -298,19 +326,29 @@ def test_combining_acute_matches_precomposed_e_acute_via_nfkc_step() -> None:
 def test_sub_block_matcher_logs_normalizer_degenerate_when_nfkc_collapses_to_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Regression for #389: the defensive branch at `normalized_value == ""` must log
-    `reason='normalizer_degenerate'` so the caller's `matcher_failed` log is not
-    miscategorized.
+    """Regression for #389: the defensive branch guarded by
+    ``normalized_value == ""`` must log ``reason='normalizer_degenerate'`` so
+    the caller's ``matcher_failed`` log is not miscategorized.
 
     No known single Unicode character in today's NFKC tables collapses a
     non-empty value to an empty normalized form under either step 2's
     whitespace-collapse or step 3's composed NFKC+whitespace-collapse. The
-    guard at line 71-72 of `sub_block_matcher.py` is defensive for future
-    normalizer changes and edge cases. To exercise it through the public
-    `locate()` API we monkeypatch the module-level normalizer functions with a
-    stub that returns an empty normalized value for a non-empty input. That
-    routes the real `_locate_with_normalizer` through the guard and verifies
-    the log event.
+    guard at the ``normalized_value == ""`` check inside
+    ``_locate_with_normalizer`` is defensive for future normalizer changes
+    and edge cases. To exercise it through the public ``locate()`` API we
+    monkeypatch the module-level normalizer functions with a stub that
+    returns an empty normalized value for a non-empty input. That routes
+    the real ``_locate_with_normalizer`` through the guard and verifies the
+    log event.
+
+    Log capture uses a monkeypatched ``_SpyLogger`` rather than
+    ``structlog.testing.capture_logs()`` because
+    ``app.core.logging.configure_logging()`` sets
+    ``cache_logger_on_first_use=True`` and the matcher module resolves
+    ``_logger`` at import — whichever earlier test first touches that
+    logger outside a ``capture_logs()`` context can cache a bound logger
+    that subsequent ``capture_logs()`` contexts won't see, making
+    log-assertion tests order-dependent (Copilot-review #487).
     """
 
     def _degenerate_normalizer(_text: str) -> tuple[str, list[int]]:
@@ -330,33 +368,87 @@ def test_sub_block_matcher_logs_normalizer_degenerate_when_nfkc_collapses_to_emp
         _degenerate_normalizer,
     )
 
+    spy = _SpyLogger()
+    monkeypatch.setattr(sub_block_matcher_module, "_logger", spy)
+
     matcher = SubBlockMatcher()
-    with capture_logs() as cap_logs:
-        result = matcher.locate("some block text", "value-not-in-block")
+    result = matcher.locate("some block text", "value-not-in-block")
 
     assert result is None
-    degenerate_events = [
-        entry for entry in cap_logs if entry.get("event") == "normalizer_degenerate"
-    ]
-    assert len(degenerate_events) >= 1
+    degenerate_events = [kwargs for event, kwargs in spy.events if event == "normalizer_degenerate"]
+    assert len(degenerate_events) >= 1, (
+        f"Expected at least one normalizer_degenerate event; got {spy.events!r}"
+    )
     first = degenerate_events[0]
     assert first["reason"] == "normalizer_degenerate"
-    assert first["log_level"] == "info"
 
 
-def test_sub_block_matcher_does_not_log_normalizer_degenerate_for_regular_miss() -> None:
+def test_sub_block_matcher_does_not_log_normalizer_degenerate_for_regular_miss(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Regression guard for #389: a genuine matcher miss (both normalizers produce
     non-empty normalized forms but no substring hit) must NOT emit the
-    `normalizer_degenerate` event. Only the caller's downstream
-    `matcher_failed` path should fire in that case.
-    """
-    matcher = SubBlockMatcher()
+    ``normalizer_degenerate`` event. Only the caller's downstream
+    ``matcher_failed`` path should fire in that case.
 
-    with capture_logs() as cap_logs:
-        result = matcher.locate("The cat sat on the mat", "$1,847.50")
+    Uses the ``_SpyLogger`` pattern (Copilot-review #487) for the same
+    cache-ordering reason documented on the sibling test above.
+    """
+    spy = _SpyLogger()
+    monkeypatch.setattr(sub_block_matcher_module, "_logger", spy)
+
+    matcher = SubBlockMatcher()
+    result = matcher.locate("The cat sat on the mat", "$1,847.50")
 
     assert result is None
-    degenerate_events = [
-        entry for entry in cap_logs if entry.get("event") == "normalizer_degenerate"
-    ]
+    degenerate_events = [kwargs for event, kwargs in spy.events if event == "normalizer_degenerate"]
     assert degenerate_events == []
+
+
+def test_sub_block_matcher_does_not_normalize_block_text_when_value_collapses_to_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression for Copilot-review #487 thread A: when the *value* normalizes
+    to empty, the matcher must early-return BEFORE running the (potentially
+    expensive NFKC) normalizer on ``block_text``. The guard
+    ``normalized_value == ""`` has to be checked against the value's
+    normalized form first, not after doing the block-side work.
+
+    The spy normalizer returns an empty normalized string for every input and
+    records every text it was called with. Under the correct ordering it sees
+    only the value per fallback step (steps 2 and 3 each call it once for the
+    value), and ``block_text`` is NEVER in its call log. Under the broken
+    pre-fix ordering it would also see ``block_text`` before hitting the guard.
+    """
+    calls: list[str] = []
+
+    def _spy_degenerate_normalizer(text: str) -> tuple[str, list[int]]:
+        calls.append(text)
+        return ("", [])
+
+    monkeypatch.setattr(
+        sub_block_matcher_module,
+        "_collapse_whitespace_with_map",
+        _spy_degenerate_normalizer,
+    )
+    monkeypatch.setattr(
+        sub_block_matcher_module,
+        "_nfkc_then_collapse_whitespace_with_map",
+        _spy_degenerate_normalizer,
+    )
+
+    block_text = "some block text"
+    value = "value-not-in-block"
+
+    matcher = SubBlockMatcher()
+    result = matcher.locate(block_text, value)
+
+    assert result is None
+    assert block_text not in calls, (
+        f"block_text was normalized before the degenerate-value guard fired; "
+        f"observed normalizer inputs: {calls!r}"
+    )
+    # Value was the only thing normalized — once per fallback step (2 and 3).
+    assert calls == [value, value], (
+        f"Expected exactly two normalizer calls, both on the value; got {calls!r}"
+    )

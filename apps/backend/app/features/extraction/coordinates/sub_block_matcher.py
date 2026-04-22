@@ -69,14 +69,15 @@ class SubBlockMatcher:
         value: str,
         normalizer: "_Normalizer",
     ) -> CharRange | None:
-        normalized_block, block_map = normalizer(block_text)
+        # Issue #389: normalize the value FIRST and early-return if it
+        # collapses to empty. The block-side normalization can be expensive
+        # (NFKC mapping walks the whole string), so a degenerate value must
+        # not trigger that work — it is a degenerate normalizer input, not a
+        # matcher miss, and we log the cause here where it is known so the
+        # caller's generic `matcher_failed` log does not miscategorize it.
+        # (Copilot-review #487 thread A.)
         normalized_value, _ = normalizer(value)
-
         if normalized_value == "":
-            # Issue #389: a non-empty caller value whose normalized form is
-            # empty is not a matcher miss — it is a degenerate normalizer
-            # input. Log the cause here where it is known so the caller's
-            # generic `matcher_failed` log does not miscategorize it.
             _logger.info(
                 "normalizer_degenerate",
                 reason="normalizer_degenerate",
@@ -86,6 +87,7 @@ class SubBlockMatcher:
             )
             return None
 
+        normalized_block, block_map = normalizer(block_text)
         idx = normalized_block.find(normalized_value)
         if idx == -1:
             return None
