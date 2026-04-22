@@ -209,20 +209,32 @@ tasks:
     # contract). Editing errors.yaml invalidates the checksum and
     # forces regeneration; untouched runs short-circuit with an
     # "up-to-date" message. Issue #357.
+    #
+    # `sources` lists only files actually read by `python -m scripts.generate`:
+    # errors.yaml (input), generate.py (generator), and the duplicate-key
+    # safe loader it depends on. scripts/generate_all.py is the CI entry
+    # point; it delegates to generate.py so editing it does not change
+    # local codegen output, and listing it here would cause spurious
+    # cache invalidations (PR #499 review).
     sources:
       - errors.yaml
       - scripts/generate.py
-      - scripts/generate_all.py
       - scripts/_duplicate_key_safe_loader.py
     generates:
       - ../../apps/backend/app/exceptions/_generated/*.py
       - src/generated.ts
       - src/required-keys.json
     cmds:
-      # Single shared entry point; .github/workflows/ci.yml calls the same
-      # `python -m scripts.generate_all` so local and CI generation can never
-      # drift. See issue #365 for the deduplication context.
-      - python3 {{.TIMEOUT_WRAPPER}} 120 -- uv run --with pyyaml python -m scripts.generate_all
+      # Proper argparse-based CLI entry point on scripts.generate (issue #372);
+      # replaces the legacy inline `python -c '...'` block that used to live
+      # here. .github/workflows/ci.yml still calls `python -m scripts.generate_all`,
+      # which is now a thin shim that delegates to scripts.generate.main
+      # (PR #499 review: previously the two entry points duplicated default
+      # paths + argparse, which opened a silent drift window). Delegation
+      # makes the "local vs. CI output is byte-identical" claim mechanical
+      # rather than by-convention; `task errors:check` (and CI's "Verify
+      # generated files are up to date" diff) catches any remaining drift.
+      - python3 {{.TIMEOUT_WRAPPER}} 120 -- uv run --with pyyaml python -m scripts.generate
 
   errors:test:
     desc: Run error-contracts package tests (codegen + validator); CI parity with .github/workflows/ci.yml error-contracts job
