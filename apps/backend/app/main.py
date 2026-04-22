@@ -36,6 +36,55 @@ from app.features.extraction.skills import (
 _logger = structlog.get_logger(__name__)
 
 
+def _install_provider_and_probe(
+    app: FastAPI,
+    settings: Settings,
+) -> tuple[OllamaGemmaProvider, OllamaHealthProbe]:
+    """Install the intelligence provider and health probe on ``app.state``.
+
+    If a probe has already been pre-seeded on ``app.state`` (test seam —
+    e.g., a ``FakeProbe`` for integration tests), skip real-provider
+    construction entirely. The eager-provider wiring only exists to share
+    the provider's ``httpx.AsyncClient`` with the real probe; when the
+    probe is faked, the sharing need is moot and constructing the real
+    provider would waste inference resources and defeat the seam.
+    """
+    existing_probe: OllamaHealthProbe | None = getattr(app.state, "ollama_health_probe", None)
+    existing_provider: OllamaGemmaProvider | None = getattr(
+        app.state, "intelligence_provider", None
+    )
+
+    if existing_provider is None and existing_probe is None:
+        # ``type: ignore[assignment]`` because the test-seam branch may
+        # pre-populate ``app.state.intelligence_provider`` with a
+        # Protocol-conforming stub that is not an ``OllamaGemmaProvider``
+        # subclass.
+        provider: OllamaGemmaProvider = OllamaGemmaProvider(
+            settings=settings,
+            validator=StructuredOutputValidator(
+                settings=settings,
+                correction_prompt_builder=CorrectionPromptBuilder(),
+            ),
+        )
+        app.state.intelligence_provider = provider
+    else:
+        provider = existing_provider  # type: ignore[assignment]  # test seam allows Protocol-conforming stub
+        if existing_provider is not None:
+            app.state.intelligence_provider = existing_provider
+
+    if existing_probe is None:
+        probe: OllamaHealthProbe = OllamaHealthProbe(
+            tags_url=build_tags_url(settings.ollama_base_url),
+            expected_model=settings.ollama_model,
+            timeout_seconds=settings.ollama_probe_timeout_seconds,
+            http_client=provider.http_client,
+        )
+    else:
+        probe = existing_probe
+    app.state.ollama_health_probe = probe
+    return provider, probe
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncGenerator[None]:
     # --- Startup: build provider + probe + cache eagerly, prime with initial result ---
@@ -58,29 +107,13 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None]:
     # the ``/ready`` probe is pinging — no risk of the two drifting.
     settings: Settings = app.state.settings
 
-    # ``type: ignore[assignment]`` because the test-seam branch above may
-    # pre-populate ``app.state.intelligence_provider`` with a
-    # Protocol-conforming stub that is not an ``OllamaGemmaProvider``
-    # subclass. In production app.state has no provider at this point, so
-    # the real one is always constructed here.
-    provider: OllamaGemmaProvider = getattr(
-        app.state, "intelligence_provider", None
-    ) or OllamaGemmaProvider(  # type: ignore[assignment]
-        settings=settings,
-        validator=StructuredOutputValidator(
-            settings=settings,
-            correction_prompt_builder=CorrectionPromptBuilder(),
-        ),
-    )
-    app.state.intelligence_provider = provider
-
-    probe: OllamaHealthProbe = getattr(app.state, "ollama_health_probe", None) or OllamaHealthProbe(  # type: ignore[assignment]  # test seam allows FakeProbe
-        tags_url=build_tags_url(settings.ollama_base_url),
-        expected_model=settings.ollama_model,
-        timeout_seconds=settings.ollama_probe_timeout_seconds,
-        http_client=provider.http_client,
-    )
-    app.state.ollama_health_probe = probe
+    # Gate real-provider construction on the probe's absence (issue #392
+    # follow-up, PR #488 review). If a test has pre-seeded a probe
+    # (e.g. ``FakeProbe``), building the real ``OllamaGemmaProvider`` here
+    # defeats the test seam and eagerly holds inference resources the
+    # test will never use. See ``_install_provider_and_probe`` for the
+    # gating logic.
+    _, probe = _install_provider_and_probe(app, settings)
 
     cache: ProbeCache = getattr(app.state, "probe_cache", None) or ProbeCache(
         probe=probe,

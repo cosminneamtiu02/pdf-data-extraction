@@ -95,3 +95,27 @@ async def test_probe_aclose_is_idempotent() -> None:
     # Second call must not raise.
     await probe.aclose()
     assert probe._http_client.is_closed is True  # noqa: SLF001 — pinning close contract
+
+
+async def test_lifespan_does_not_build_real_provider_when_probe_is_preseeded() -> None:
+    """Pre-seeded probe on ``app.state`` must suppress real-provider construction.
+
+    Copilot review on PR #488 flagged that the eager-provider construction
+    added for issue #392 defeats the FakeProbe test seam: if tests seed
+    ``app.state.ollama_health_probe`` to avoid network dependency, the
+    lifespan was still building a real ``OllamaGemmaProvider`` — wasted
+    startup work and an avoidable resource. This test pins the gating
+    contract: when a probe is pre-seeded, no real provider is constructed
+    and ``app.state.intelligence_provider`` stays unset (unless also
+    pre-seeded).
+    """
+    from tests.conftest import FakeProbe  # local import — test-only double
+
+    app = create_app()
+    app.state.ollama_health_probe = FakeProbe(results=[True])
+
+    async with app.router.lifespan_context(app):
+        # The pre-seeded probe should still be on state (not overwritten).
+        assert app.state.ollama_health_probe is not None
+        # Critical assertion: no real provider was constructed.
+        assert getattr(app.state, "intelligence_provider", None) is None

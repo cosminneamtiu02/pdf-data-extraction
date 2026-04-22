@@ -55,6 +55,7 @@ class OllamaHealthProbe:
     ) -> None:
         self._tags_url = tags_url
         self._expected_model = expected_model
+        self._timeout_seconds = timeout_seconds
         if http_client is None:
             self._http_client = httpx.AsyncClient(
                 timeout=httpx.Timeout(timeout_seconds),
@@ -73,7 +74,17 @@ class OllamaHealthProbe:
         response shape, or missing model yields ``False``.
         """
         try:
-            response = await self._http_client.get(self._tags_url)
+            # Pass per-request ``timeout=`` even on the injected-client
+            # path. Under production DI the provider client's default is
+            # tuned for inference latency (``Settings.ollama_timeout_seconds``,
+            # typically 30s), which would let ``/ready`` hang far longer
+            # than ``Settings.ollama_probe_timeout_seconds`` intends. A
+            # per-request override keeps readiness polling bounded
+            # regardless of who owns the client (issue #392 follow-up).
+            response = await self._http_client.get(
+                self._tags_url,
+                timeout=httpx.Timeout(self._timeout_seconds),
+            )
             response.raise_for_status()
         except httpx.HTTPError:
             _logger.debug("ollama_probe_failed", url=self._tags_url, exc_info=True)
