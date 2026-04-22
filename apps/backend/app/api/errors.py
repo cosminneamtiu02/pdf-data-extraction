@@ -11,7 +11,7 @@ from app.exceptions import InternalError, ValidationFailedError
 from app.exceptions.base import DomainError
 from app.schemas import ErrorBody, ErrorResponse
 
-logger = structlog.get_logger(__name__)
+_logger = structlog.get_logger(__name__)
 
 
 def _get_request_id(request: Request) -> str:
@@ -42,7 +42,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         # without paging and omits the traceback.
         http_5xx_floor = 500
         if exc.http_status >= http_5xx_floor:
-            logger.warning(
+            _logger.warning(
                 "domain_error",
                 code=exc.code,
                 http_status=exc.http_status,
@@ -50,7 +50,7 @@ def register_exception_handlers(app: FastAPI) -> None:
                 exc_info=True,  # noqa: LOG014 — this function IS a FastAPI exception handler
             )
         else:
-            logger.info(
+            _logger.info(
                 "domain_error",
                 code=exc.code,
                 http_status=exc.http_status,
@@ -92,7 +92,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         # the bug is visible and actionable instead of silently masked.
         if not errors:
             # ``InternalError`` is parameterless (see ``errors.yaml``); the
-            # anomaly context is emitted via the structured ``logger.warning``
+            # anomaly context is emitted via the structured ``_logger.warning``
             # call in ``handle_domain_error`` (code, http_status, request_id,
             # exc_info) which gives on-call responders the traceback. Adding
             # a log line here would duplicate the observability event.
@@ -135,7 +135,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         exc: Exception,
     ) -> JSONResponse:
         request_id = _get_request_id(request)
-        logger.exception(
+        _logger.exception(
             "unhandled_exception",
             request_id=request_id,
             exc_type=type(exc).__name__,
