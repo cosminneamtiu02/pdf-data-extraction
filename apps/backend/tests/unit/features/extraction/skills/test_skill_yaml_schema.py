@@ -610,7 +610,7 @@ def test_is_empty_object_schema_catches_additional_properties_only_schema() -> N
     assert _is_empty_object_schema({"type": "object", "additionalProperties": True}) is True
 
 
-def test_is_empty_object_schema_accepts_additional_properties_false() -> None:
+def test_is_empty_object_schema_flags_additional_properties_false_as_empty() -> None:
     """`additionalProperties: False` + zero properties is still flagged as empty.
 
     When the author pins `additionalProperties: False` AND declares no
@@ -632,7 +632,7 @@ def test_is_empty_object_schema_accepts_additional_properties_false() -> None:
     )
 
 
-def test_skill_loader_rejects_additional_properties_only_output_schema_with_clear_error(
+def test_skill_yaml_schema_rejects_additional_properties_only_output_schema_with_clear_error(
     write_skill_yaml: SkillYamlFactory,
 ) -> None:
     """Load-time rejection must name `additionalProperties` in its reason.

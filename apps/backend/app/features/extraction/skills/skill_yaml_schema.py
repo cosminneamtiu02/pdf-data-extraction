@@ -115,16 +115,28 @@ class SkillYamlSchema(BaseModel):
                 "Declare concrete entries under 'properties' instead "
                 "(issue #388).",
             )
-            # Examples against a zero-field schema carry no useful signal:
-            # a Draft 7 object schema with no declared `properties` (and no
-            # `additionalProperties: false`) accepts arbitrary properties, so
-            # non-empty example outputs would silently pass — a false negative.
-            # The same is true when `additionalProperties` is set to a subschema
-            # or `true` with no concrete `properties`: meta-validation accepts
-            # it, but `declared_field_names` reads only top-level `properties`,
-            # yielding zero declared fields at request time and the 'all-failed'
-            # 502 in issue #388. Raise now so the author sees the structural
-            # defect directly.
+            # Examples against a zero-field schema carry no useful signal,
+            # but for two distinct reasons depending on the shape:
+            #
+            # 1. Permissive zero-field schemas (`additionalProperties` set to a
+            #    subschema or `true`, or omitted entirely on Draft 7): the
+            #    schema accepts arbitrary properties, so non-empty example
+            #    outputs silently pass meta-validation — a false-negative signal
+            #    that hides the structural defect. `declared_field_names`
+            #    nevertheless reads only top-level `properties`, yielding zero
+            #    declared fields at request time and the 'all-failed' 502 in
+            #    issue #388.
+            # 2. `additionalProperties: false` with zero `properties`: the
+            #    schema accepts only `{}`, so non-empty example outputs *would*
+            #    fail meta-validation and surface errors. We still raise here
+            #    rather than fall through to example validation, because the
+            #    schema is structurally incapable of producing any extraction
+            #    field — zero declared fields at runtime, same 502. The
+            #    structural rejection is the more useful diagnostic than a
+            #    downstream example-mismatch error.
+            #
+            # Either way, raise now so the author sees the structural defect
+            # directly.
             raise SkillValidationFailedError(file="", reason="\n".join(problems))
 
         validator = Draft7Validator(self.output_schema)
