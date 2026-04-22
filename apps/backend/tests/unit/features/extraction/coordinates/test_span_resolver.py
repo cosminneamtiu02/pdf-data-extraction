@@ -819,6 +819,251 @@ def test_multi_block_dedups_repeated_block_ids_in_offset_index() -> None:
     ]
 
 
+def test_multi_block_end_block_with_chunk_before_start_is_still_legal() -> None:
+    # Regression guard for the PR #459 review-feedback short-circuit: the
+    # synchronous "end_block_id seen before start_block_id" detector must not
+    # false-positive on a legitimate multi-chunk end block whose first chunk
+    # happens to appear BEFORE `start_block_id` in the offset index but whose
+    # LAST chunk appears after — the span's natural traversal.
+    #
+    # Shape: `b_end` has two chunks (positions 0 and 15); `b_start` is at
+    # position 5 between them. A legitimate span starts inside `b_start` and
+    # ends inside the second `b_end` chunk. The dedup guard (#288) ensures
+    # `b_end` is emitted exactly once. The invariant guard (#339) must NOT
+    # trip, because `last_end_idx = 2` is strictly greater than the index of
+    # the first `b_start` (`i = 1`), meaning there IS a future `b_end` to
+    # reach.
+    from app.features.extraction.coordinates.span_resolver import (
+        _collect_multi_block_bboxes,
+    )
+
+    b_end = _block(block_id="b_end", text="alpha", bbox=(0, 40, 50, 50))
+    b_start = _block(block_id="b_start", text="beta", bbox=(0, 20, 50, 30))
+    doc = _doc(b_end, b_start)
+    index = _index(
+        (0, 5, "b_end"),  # first chunk of end block, BEFORE start
+        (7, 13, "b_start"),
+        (15, 20, "b_end"),  # second chunk of end block, AFTER start
+    )
+    blocks_by_id = {b.block_id: b for b in doc.blocks}
+
+    with capture_logs() as logs:
+        refs = _collect_multi_block_bboxes(
+            start_block_id="b_start",
+            end_block_id="b_end",
+            offset_index=index,
+            blocks_by_id=blocks_by_id,
+        )
+
+    # Happy-path: start bbox then end bbox (dedup-keyed on block_id, so one
+    # `b_end` entry even though it appears twice in the index).
+    assert len(refs) == 2
+    assert [(r.x0, r.y0, r.x1, r.y1) for r in refs] == [
+        (0.0, 20.0, 50.0, 30.0),
+        (0.0, 40.0, 50.0, 50.0),
+    ]
+    # Crucially: NO invariant-violation log event.
+    invariant_events = [
+        e for e in logs if e.get("event") == "span_resolver_multi_block_invariant_violated"
+    ]
+    assert invariant_events == []
+
+
+def test_multi_block_end_before_start_falls_back_to_start_block_bbox() -> None:
+    # Issue #339: if the offset index is corrupt or a caller misuses the
+    # resolver such that end_block_id appears BEFORE start_block_id in the
+    # index order (which `start_offset < end_offset` is supposed to prevent),
+    # the pre-fix `_collect_multi_block_bboxes` would encounter `end_block_id`
+    # first and break out of the loop immediately, silently returning an
+    # empty list — still wrong geometry, still no observability. The separate
+    # "leak trailing blocks through the document tail" behavior applied when
+    # `end_block_id` was missing from the index entirely, and is covered by
+    # the next test. The guard must catch both invariant violations and fall
+    # back to a single whole-block bbox for the start block.
+    #
+    # `RawExtraction.__post_init__` prevents the bug shape from being
+    # constructed via the public constructor (it enforces start_offset <
+    # end_offset), so we drive `_collect_multi_block_bboxes` directly —
+    # exactly the misuse surface the invariant guard is there to catch.
+    #
+    # Also pins the PR #459 review-feedback fix: the end-before-start shape
+    # must short-circuit *at the moment* we reach `start_block_id` with
+    # `end_block_id` already seen, rather than running to the end of the
+    # iterator and discarding the accumulated refs. The pinning is two-fold:
+    # (a) the log `reason` is `end_block_seen_before_start_block`, distinct
+    # from the `end_block_not_seen_after_start` code used when end is missing
+    # entirely, so the two invariant-violation shapes are separately
+    # observable in production logs; (b) `collected_bbox_count=0` proves the
+    # loop did not accumulate bboxes for trailing blocks we would then
+    # discard — the short-circuit fires before any `refs.append(...)` call.
+    from app.features.extraction.coordinates.span_resolver import (
+        _collect_multi_block_bboxes,
+    )
+
+    # Index order: end_block_id ("b_end") at position 0, start_block_id
+    # ("b_start") at position 1, then two unrelated trailing blocks. In the
+    # pre-fix implementation, encountering `end_block_id` before
+    # `start_block_id` would break iteration immediately and yield no refs.
+    # The separate "leak trailing blocks through the end of the document"
+    # behavior applied when `end_block_id` was missing from the index, which
+    # is covered by the next test. The fixed implementation emits exactly one
+    # bbox here — the start block's whole-block bbox — via the fallback path.
+    b_end = _block(block_id="b_end", text="first", bbox=(0, 0, 50, 10))
+    b_start = _block(block_id="b_start", text="second", bbox=(0, 20, 50, 30))
+    b_middle = _block(block_id="b_middle", text="third", bbox=(0, 40, 50, 50))
+    b_trail = _block(block_id="b_trail", text="fourth", bbox=(0, 60, 50, 70))
+    doc = _doc(b_end, b_start, b_middle, b_trail)
+    index = _index(
+        (0, 5, "b_end"),
+        (7, 13, "b_start"),
+        (15, 20, "b_middle"),
+        (22, 28, "b_trail"),
+    )
+
+    blocks_by_id = {b.block_id: b for b in doc.blocks}
+    with capture_logs() as logs:
+        refs = _collect_multi_block_bboxes(
+            start_block_id="b_start",
+            end_block_id="b_end",
+            offset_index=index,
+            blocks_by_id=blocks_by_id,
+        )
+
+    # Guard: exactly one bbox (the start block) via the fallback, NOT the
+    # empty list the pre-fix implementation silently returned when
+    # end_block_id was encountered before start_block_id.
+    assert len(refs) == 1, (
+        f"Expected fallback to a single start-block bbox; got {len(refs)} bboxes. "
+        "Pre-fix behavior returned an empty list because the unguarded `break` "
+        "tripped on end_block_id before start_block_id was ever reached."
+    )
+    assert (refs[0].x0, refs[0].y0, refs[0].x1, refs[0].y1) == (0.0, 20.0, 50.0, 30.0)
+
+    # And the invariant-violation log event must have fired with the shape-
+    # specific reason code and a zero collected_bbox_count (proving the
+    # short-circuit ran before any bbox was appended).
+    invariant_events = [
+        e for e in logs if e.get("event") == "span_resolver_multi_block_invariant_violated"
+    ]
+    assert len(invariant_events) == 1
+    assert invariant_events[0]["start_block_id"] == "b_start"
+    assert invariant_events[0]["end_block_id"] == "b_end"
+    assert invariant_events[0]["reason"] == "end_block_seen_before_start_block"
+    assert invariant_events[0]["collected_bbox_count"] == 0
+
+
+def test_multi_block_end_block_missing_from_index_falls_back_to_start_block_bbox() -> None:
+    # Issue #339, variant: end_block_id never appears in the index at all
+    # (e.g. because the OffsetIndex was truncated). Same invariant — emit
+    # one bbox for the start block, not everything from start onwards.
+    #
+    # PR #459 Copilot-review follow-up: the pre-scan computes
+    # `last_end_idx == -1` for this shape, which is positive proof no future
+    # `end_block_id` exists. The guard must short-circuit at the moment we
+    # reach `start_block_id` rather than running to the end of the iterator
+    # and appending bboxes for trailing blocks we would then discard. This
+    # is pinned two ways: (a) `collected_bbox_count == 0` in the log event,
+    # proving no refs were accumulated before the short-circuit fired, and
+    # (b) a `b_trail` block positioned AFTER `b_start` in the index — the
+    # pre-review implementation would have appended its bbox to `refs`
+    # before the post-loop fallback threw them away.
+    from app.features.extraction.coordinates.span_resolver import (
+        _collect_multi_block_bboxes,
+    )
+
+    b_start = _block(block_id="b_start", text="first", bbox=(1.0, 2.0, 3.0, 4.0))
+    b_trail = _block(block_id="b_trail", text="second", bbox=(0, 20, 50, 30))
+    doc = _doc(b_start, b_trail)
+    # `b_trail` sits AFTER `b_start` in the index; the pre-short-circuit loop
+    # would have iterated through it and appended its bbox to `refs` before
+    # the post-loop fallback discarded them, yielding
+    # `collected_bbox_count=1` in the log — misleading noise attributable to
+    # discarded work. The assertion below pins the fix.
+    index = _index((0, 5, "b_start"), (7, 13, "b_trail"))
+    blocks_by_id = {b.block_id: b for b in doc.blocks}
+
+    with capture_logs() as logs:
+        refs = _collect_multi_block_bboxes(
+            start_block_id="b_start",
+            end_block_id="b_ghost",
+            offset_index=index,
+            blocks_by_id=blocks_by_id,
+        )
+
+    assert len(refs) == 1
+    assert (refs[0].x0, refs[0].y0, refs[0].x1, refs[0].y1) == (1.0, 2.0, 3.0, 4.0)
+
+    invariant_events = [
+        e for e in logs if e.get("event") == "span_resolver_multi_block_invariant_violated"
+    ]
+    assert len(invariant_events) == 1
+    assert invariant_events[0]["end_block_id"] == "b_ghost"
+    # This is the complementary shape to `end_before_start`: the span was
+    # entered but end_block_id never appeared afterwards. Distinct reason code
+    # so the two violation modes are separately diagnosable in production logs
+    # (PR #459 Copilot-review follow-up).
+    assert invariant_events[0]["reason"] == "end_block_not_seen_after_start"
+    # Short-circuit pin: the pre-scan proved `last_end_idx == -1`, so when
+    # we reached `start_block_id` we knew definitively no future `end_block_id`
+    # existed. The fallback fires BEFORE the loop accumulates any bboxes, so
+    # `collected_bbox_count` is 0 — not 1 (the trailing `b_trail` bbox the
+    # pre-review implementation would have appended and then discarded).
+    assert invariant_events[0]["collected_bbox_count"] == 0
+
+
+def test_multi_block_start_block_missing_from_index_logs_distinct_reason() -> None:
+    # Issue #339, additional variant surfaced by the PR #459 Copilot review:
+    # if `start_block_id` itself never appears in the offset index, the span
+    # is never entered, and the post-loop fallback still fires. The pre-review
+    # implementation logged `reason="end_block_not_seen_after_start"` for this
+    # shape, which misattributes the corruption — the actual failure is that
+    # the *start* block is missing, not that the end block is absent after the
+    # start. Distinct reason code keeps the two shapes diagnosable in
+    # production logs.
+    #
+    # `RawExtraction.__post_init__` plus the caller's `offset_index.lookup`
+    # call prevent this shape via the public path (the start block must be in
+    # the index to be returned from `lookup`), so we drive
+    # `_collect_multi_block_bboxes` directly — exactly the misuse surface the
+    # invariant guard is there to catch.
+    from app.features.extraction.coordinates.span_resolver import (
+        _collect_multi_block_bboxes,
+    )
+
+    b_start = _block(block_id="b_start", text="first", bbox=(1.0, 2.0, 3.0, 4.0))
+    b_other = _block(block_id="b_other", text="second", bbox=(0, 20, 50, 30))
+    doc = _doc(b_start, b_other)
+    # The index contains `b_other` but not `b_start` — a corrupt/truncated
+    # index shape where the caller passes a start_block_id that isn't indexed.
+    index = _index((0, 6, "b_other"))
+    blocks_by_id = {b.block_id: b for b in doc.blocks}
+
+    with capture_logs() as logs:
+        refs = _collect_multi_block_bboxes(
+            start_block_id="b_start",
+            end_block_id="b_other",
+            offset_index=index,
+            blocks_by_id=blocks_by_id,
+        )
+
+    # Same fallback as the other violation shapes: one whole-block bbox for
+    # the start block. Correctness over silent fan-out.
+    assert len(refs) == 1
+    assert (refs[0].x0, refs[0].y0, refs[0].x1, refs[0].y1) == (1.0, 2.0, 3.0, 4.0)
+
+    invariant_events = [
+        e for e in logs if e.get("event") == "span_resolver_multi_block_invariant_violated"
+    ]
+    assert len(invariant_events) == 1
+    assert invariant_events[0]["start_block_id"] == "b_start"
+    assert invariant_events[0]["end_block_id"] == "b_other"
+    # Distinct from `end_block_not_seen_after_start` — the span was never
+    # entered, so claiming "end not seen after start" would misdescribe the
+    # corruption shape.
+    assert invariant_events[0]["reason"] == "start_block_not_seen"
+    assert invariant_events[0]["collected_bbox_count"] == 0
+
+
 def test_happy_path_emits_no_span_resolver_logs() -> None:
     resolver = SpanResolver()
     block = _block(block_id="b0", text="Total: $1,847.50 due", bbox=(0, 0, 200, 20))
