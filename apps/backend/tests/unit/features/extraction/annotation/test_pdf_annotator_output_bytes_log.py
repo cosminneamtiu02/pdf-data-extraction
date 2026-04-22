@@ -22,7 +22,7 @@ entirely; the same pattern is used in
 from __future__ import annotations
 
 import asyncio
-from typing import Any, cast
+from typing import cast
 
 import pymupdf
 import pytest
