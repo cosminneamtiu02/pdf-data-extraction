@@ -410,3 +410,165 @@ async def test_middleware_generates_fallback_request_id_when_state_missing() -> 
     assert len(request_id) == 32
     assert all(c in "0123456789abcdef" for c in request_id)
     assert response.json()["error"]["request_id"] == request_id
+
+
+class _SpyLogger:
+    """Test double for ``upload_size_limit_middleware._logger``.
+
+    Why we don't use ``structlog.testing.capture_logs()`` here: the
+    middleware module defines ``_logger = structlog.get_logger(__name__)``
+    at import time, and our ``configure_logging()`` registers
+    ``cache_logger_on_first_use=True``. Whichever test first touches the
+    module's ``_logger`` outside a ``capture_logs()`` context can cause
+    structlog to cache a bound logger that subsequent ``capture_logs()``
+    contexts won't see — making log-assertion tests order-dependent. A
+    direct monkeypatched spy sidesteps structlog's global state entirely,
+    the same pattern used in
+    ``tests/unit/features/extraction/test_router.py`` (Copilot #497 review).
+
+    Each emitted event captures a snapshot of ``structlog.contextvars``
+    at emit time so tests can prove correlation came from a contextvar
+    binding rather than from a kwarg passed directly to the logger call.
+    """
+
+    def __init__(self) -> None:
+        # Each event is (event_name, kwargs, contextvars_snapshot).
+        self.events: list[tuple[str, dict[str, object], dict[str, object]]] = []
+
+    def _capture(self, event: str, kwargs: dict[str, object]) -> None:
+        import structlog
+
+        self.events.append((event, kwargs, dict(structlog.contextvars.get_contextvars())))
+
+    def info(self, event: str, **kwargs: object) -> None:  # pragma: no cover
+        self._capture(event, kwargs)
+
+    def warning(self, event: str, **kwargs: object) -> None:
+        self._capture(event, kwargs)
+
+    def error(self, event: str, **kwargs: object) -> None:  # pragma: no cover
+        self._capture(event, kwargs)
+
+
+async def test_rejection_binds_request_id_to_structlog_contextvars(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #377: when the rejection path fires (even without
+    ``RequestIdMiddleware`` upstream, as in unit tests mounting this
+    middleware directly), any deeper logger call during the rejection
+    must see ``request_id`` on ``structlog.contextvars`` so the event
+    carries correlation. Before the fix, the middleware passed
+    ``request_id=...`` explicitly to the single ``upload_rejected``
+    event, but did not bind it to contextvars — so any other logger
+    call on the same rejection path would emit uncorrelated.
+
+    Asserts the ``request_id`` present in the contextvars snapshot
+    captured at log-emit time (not the explicit kwarg), so this test
+    fails if the middleware stops binding to contextvars even though
+    it still passes the value as a kwarg.
+    """
+    import structlog
+
+    from app.api import upload_size_limit_middleware as mw_module
+
+    # Isolate from any prior test that may have left contextvars bound
+    # on the current asyncio task — the bind/unbind lifecycle must be
+    # observable against a clean baseline (Copilot #497 review).
+    structlog.contextvars.clear_contextvars()
+    spy = _SpyLogger()
+    monkeypatch.setattr(mw_module, "_logger", spy)
+
+    app = _build_app(max_bytes=1024)
+
+    async with _client(app) as ac:
+        response = await ac.post(
+            "/api/v1/extract",
+            content=b"x" * 2048,
+            headers={"content-type": "multipart/form-data; boundary=b"},
+        )
+
+    assert response.status_code == 413
+    request_id = response.headers["x-request-id"]
+
+    rejection_events = [
+        (kwargs, snapshot) for name, kwargs, snapshot in spy.events if name == "upload_rejected"
+    ]
+    assert rejection_events, "middleware must emit upload_rejected on reject path"
+    last_kwargs, last_snapshot = rejection_events[-1]
+    assert last_kwargs.get("request_id") == request_id
+    # ``request_id`` must be present via a contextvar binding at emit
+    # time — this is what proves correlation survives for any deeper
+    # logger call that doesn't pass ``request_id`` explicitly.
+    assert last_snapshot.get("request_id") == request_id
+
+
+async def test_rejection_unbinds_request_id_after_response() -> None:
+    """Issue #377: the contextvar bound on the rejection path must be
+    unbound once the middleware returns, so it does not leak into any
+    subsequent code running on the same asyncio task.
+    """
+    import structlog
+
+    # Clear first so the assertion is specifically about the middleware's
+    # bind/unbind lifecycle and not about some earlier test's leak
+    # (Copilot #497 review).
+    structlog.contextvars.clear_contextvars()
+
+    app = _build_app(max_bytes=1024)
+
+    async with _client(app) as ac:
+        response = await ac.post(
+            "/api/v1/extract",
+            content=b"x" * 2048,
+            headers={"content-type": "multipart/form-data; boundary=b"},
+        )
+
+    assert response.status_code == 413
+    # After the rejection path completes, ``request_id`` must NOT remain
+    # on the current task's contextvars.
+    assert "request_id" not in structlog.contextvars.get_contextvars()
+
+
+async def test_rejection_restores_prior_request_id_contextvar(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #377 (Copilot #497 review): when ``RequestIdMiddleware`` is
+    upstream, it binds ``request_id`` in ``structlog.contextvars`` before
+    delegating, and expects that binding to survive until its own
+    ``finally`` unbinds it. If this middleware unconditionally unbound
+    ``request_id`` after the rejection emit, the upstream middleware's
+    binding would be wiped early, losing correlation for any further
+    logging between ``await self._reject(...)`` and the upstream
+    ``finally``.
+
+    The fix uses ``bound_contextvars`` so the prior value is saved on
+    enter and restored on exit (not unconditionally unbound). This test
+    binds a sentinel ``request_id`` before the request, exercises the
+    rejection path, and asserts the sentinel survives afterwards.
+    """
+    import structlog
+
+    from app.api import upload_size_limit_middleware as mw_module
+
+    structlog.contextvars.clear_contextvars()
+    spy = _SpyLogger()
+    monkeypatch.setattr(mw_module, "_logger", spy)
+
+    sentinel = "deadbeef" * 4  # 32-char hex, the expected format
+    structlog.contextvars.bind_contextvars(request_id=sentinel)
+    try:
+        app = _build_app(max_bytes=1024)
+
+        async with _client(app) as ac:
+            response = await ac.post(
+                "/api/v1/extract",
+                content=b"x" * 2048,
+                headers={"content-type": "multipart/form-data; boundary=b"},
+            )
+
+        assert response.status_code == 413
+        # After the middleware returns, the prior binding must be
+        # restored, not wiped.
+        assert structlog.contextvars.get_contextvars().get("request_id") == sentinel
+    finally:
+        structlog.contextvars.clear_contextvars()
