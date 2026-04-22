@@ -21,7 +21,8 @@ from app.api.deps import get_probe_cache, get_skill_manifest
 from app.api.probe_cache import ProbeCache
 from app.features.extraction.skills import SkillManifest
 from app.main import app
-from tests.conftest import FakeProbe, make_skill
+from tests._support.skill_factory import make_skill
+from tests.conftest import FakeProbe
 
 # ---------------------------------------------------------------------------
 # Helpers
