@@ -2,10 +2,25 @@
 
 Each error code produces one Python file per class (error + params if any).
 Generated files are committed but never edited by hand.
+
+Also exposes a ``__main__`` entry point (issue #372) so the module can be
+invoked as ``python -m scripts.generate`` from any shell with no reliance
+on a fragile inline ``python -c '...'`` string. ``task errors:generate``
+and the local developer loop now call ``python -m scripts.generate``
+directly. The ``scripts.generate_all`` wrapper from issue #365 remains
+the CI entry point (``.github/workflows/ci.yml`` "Regenerate error
+contracts" step); both entry points call the same three generator
+functions defined here in the same order with the same defaults, so
+their outputs are byte-identical and ``task errors:check`` (plus CI's
+"Verify generated files are up to date" diff) catches any drift.
 """
 
+from __future__ import annotations
+
+import argparse
 import json
 import re
+import sys
 from pathlib import Path
 from typing import Any, cast
 
@@ -428,3 +443,121 @@ def generate_required_keys(errors_path: Path, output_path: Path) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(result, indent=2) + "\n")
     return output_path
+
+
+# ─── CLI entry point (issue #372) ────────────────────────────────────
+# Default paths resolved against the error-contracts package root so the
+# command "just works" when invoked from packages/error-contracts/, which
+# is the working directory both the Taskfile (`dir: packages/error-contracts`)
+# and the CI workflow (`working-directory: packages/error-contracts`) use.
+# Mirrors the default resolution in scripts.generate_all for byte-identical
+# output between the two entry points.
+_ERROR_CONTRACTS_DIR = Path(__file__).resolve().parents[1]
+_REPO_ROOT = _ERROR_CONTRACTS_DIR.parents[1]
+_DEFAULT_ERRORS_YAML = _ERROR_CONTRACTS_DIR / "errors.yaml"
+_DEFAULT_PYTHON_DIR = (
+    _REPO_ROOT / "apps" / "backend" / "app" / "exceptions" / "_generated"
+)
+_DEFAULT_TS_PATH = _ERROR_CONTRACTS_DIR / "src" / "generated.ts"
+_DEFAULT_REQUIRED_KEYS_PATH = _ERROR_CONTRACTS_DIR / "src" / "required-keys.json"
+
+
+def main(
+    errors_yaml: Path | None = None,
+    python_dir: Path | None = None,
+    typescript_path: Path | None = None,
+    required_keys_path: Path | None = None,
+) -> int:
+    """Regenerate Python + TypeScript + required-keys.json artifacts.
+
+    All four parameters default to the production monorepo layout. Tests
+    pass explicit ``tmp_path`` fixtures; a plain ``python -m scripts.generate``
+    call with no arguments drives the real file locations from the defaults
+    above.
+
+    Returns 0 on success. Raises ``ValueError`` (from ``load_and_validate``)
+    on malformed ``errors.yaml``; the caller's shell propagates the
+    non-zero exit. We deliberately do not catch and convert to a return
+    code — a malformed ``errors.yaml`` is a developer-facing bug and the
+    raw traceback is the most useful signal.
+
+    Kept intentionally parallel to ``scripts.generate_all.main`` so the
+    two entry points emit byte-identical artifacts; ``generate_all``
+    remains the CI entry point (issue #365), while the Taskfile and
+    local developer loop now call ``python -m scripts.generate`` directly
+    (issue #372).
+    """
+    errors_path = errors_yaml if errors_yaml is not None else _DEFAULT_ERRORS_YAML
+    py_dir = python_dir if python_dir is not None else _DEFAULT_PYTHON_DIR
+    ts_path = typescript_path if typescript_path is not None else _DEFAULT_TS_PATH
+    keys_path = (
+        required_keys_path
+        if required_keys_path is not None
+        else _DEFAULT_REQUIRED_KEYS_PATH
+    )
+
+    generate_python(errors_path, py_dir)
+    generate_typescript(errors_path, ts_path)
+    generate_required_keys(errors_path, keys_path)
+
+    sys.stdout.write("Generated all error contract files\n")
+    return 0
+
+
+def _parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Regenerate Python exception classes, TypeScript types, and "
+            "required-keys.json from errors.yaml."
+        ),
+    )
+    parser.add_argument(
+        "--errors-yaml",
+        type=Path,
+        default=None,
+        help="Path to errors.yaml (defaults to packages/error-contracts/errors.yaml).",
+    )
+    parser.add_argument(
+        "--python-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Directory to write generated Python exception modules "
+            "(defaults to apps/backend/app/exceptions/_generated). "
+            "Override is intended for tests writing to tmp_path: the "
+            "generated __init__.py and _registry.py emit hard-coded "
+            "`app.exceptions._generated.*` import paths, so artifacts "
+            "written elsewhere won't be importable without renaming."
+        ),
+    )
+    parser.add_argument(
+        "--typescript-path",
+        type=Path,
+        default=None,
+        help=(
+            "Path to write the generated TypeScript module "
+            "(defaults to packages/error-contracts/src/generated.ts)."
+        ),
+    )
+    parser.add_argument(
+        "--required-keys-path",
+        type=Path,
+        default=None,
+        help=(
+            "Path to write required-keys.json "
+            "(defaults to packages/error-contracts/src/required-keys.json)."
+        ),
+    )
+    return parser.parse_args(argv)
+
+
+if __name__ == "__main__":
+    args = _parse_args(sys.argv[1:])
+    sys.exit(
+        main(
+            errors_yaml=args.errors_yaml,
+            python_dir=args.python_dir,
+            typescript_path=args.typescript_path,
+            required_keys_path=args.required_keys_path,
+        )
+    )

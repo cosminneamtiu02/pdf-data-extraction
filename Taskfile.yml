@@ -219,10 +219,13 @@ tasks:
       - src/generated.ts
       - src/required-keys.json
     cmds:
-      # Single shared entry point; .github/workflows/ci.yml calls the same
-      # `python -m scripts.generate_all` so local and CI generation can never
-      # drift. See issue #365 for the deduplication context.
-      - python3 {{.TIMEOUT_WRAPPER}} 120 -- uv run --with pyyaml python -m scripts.generate_all
+      # Proper argparse-based CLI entry point on scripts.generate (issue #372);
+      # replaces the legacy inline `python -c '...'` block that used to live
+      # here. .github/workflows/ci.yml still calls `python -m scripts.generate_all`
+      # which shares the same three generator functions defined in
+      # scripts/generate.py, so local and CI output remain byte-identical
+      # (issue #365 deduplication guarantee preserved).
+      - python3 {{.TIMEOUT_WRAPPER}} 120 -- uv run --with pyyaml python -m scripts.generate
 
   errors:test:
     desc: Run error-contracts package tests (codegen + validator); CI parity with .github/workflows/ci.yml error-contracts job
