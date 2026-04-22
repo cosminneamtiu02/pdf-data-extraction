@@ -29,10 +29,28 @@ class OllamaHealthProbe:
     """Lightweight probe that checks Ollama reachability and model availability.
 
     Constructed with the full tags URL (built by the caller in the DI
-    factory), the configured model tag to look for, and an optional
-    pre-built ``httpx.AsyncClient`` (test seam). If no client is
-    provided, one is created with a short timeout so a hung Ollama does
-    not back up the readiness check.
+    factory), the configured model tag to look for, and optionally an
+    ``httpx.AsyncClient`` (the probe builds one internally when omitted;
+    see the constructor signature). Production wiring shares the
+    ``OllamaGemmaProvider``'s client so both components reuse a single
+    connection pool — under 1 Hz Kubernetes-style readiness polling this
+    halves DNS lookups, TLS handshakes, and connection churn against
+    Ollama (issue #392). Two entry points converge on the same
+    ``app.api.deps.get_ollama_health_probe_for_app`` factory so there is
+    a single source of truth:
+    ``app.api.deps.get_ollama_health_probe`` resolves the probe at
+    request time (e.g. ``/ready`` handler), and ``app.main._lifespan``
+    (via ``_install_provider_and_probe``) resolves it eagerly on startup
+    so the shared client is bound before the first request. Either entry
+    lands the same provider/validator/probe instances on ``app.state``.
+
+    Ownership semantics: when ``http_client`` is injected, the probe does
+    NOT close it on ``aclose()`` — the provider (or whichever caller
+    constructed it) owns the lifecycle. When ``http_client`` is omitted,
+    the probe falls back to constructing its own short-timeout client and
+    closes it on ``aclose()``. This preserves the standalone-probe
+    construction path used by lifespan integration tests and by any
+    future caller that wants a self-contained probe.
     """
 
     def __init__(
@@ -45,9 +63,18 @@ class OllamaHealthProbe:
     ) -> None:
         self._tags_url = tags_url
         self._expected_model = expected_model
-        self._http_client = http_client or httpx.AsyncClient(
-            timeout=httpx.Timeout(timeout_seconds),
-        )
+        # Precompute once (Copilot-review #488): ``check()`` runs on every
+        # readiness poll (typically 1 Hz under k8s), so reuse the same
+        # ``httpx.Timeout`` instance in both the owned-client constructor
+        # and the per-request override path rather than re-allocating per
+        # call. Mirrors the pattern in ``OllamaGemmaProvider._timeout``.
+        self._timeout = httpx.Timeout(timeout_seconds)
+        if http_client is None:
+            self._http_client = httpx.AsyncClient(timeout=self._timeout)
+            self._owns_client = True
+        else:
+            self._http_client = http_client
+            self._owns_client = False
 
     async def check(self) -> bool:
         """Ping ``/api/tags`` and confirm the configured model is installed.
@@ -58,7 +85,17 @@ class OllamaHealthProbe:
         response shape, or missing model yields ``False``.
         """
         try:
-            response = await self._http_client.get(self._tags_url)
+            # Pass per-request ``timeout=`` even on the injected-client
+            # path. Under production DI the provider client's default is
+            # tuned for inference latency (``Settings.ollama_timeout_seconds``,
+            # typically 30s), which would let ``/ready`` hang far longer
+            # than ``Settings.ollama_probe_timeout_seconds`` intends. A
+            # per-request override keeps readiness polling bounded
+            # regardless of who owns the client (issue #392 follow-up).
+            response = await self._http_client.get(
+                self._tags_url,
+                timeout=self._timeout,
+            )
             response.raise_for_status()
         except httpx.HTTPError:
             _logger.debug("ollama_probe_failed", url=self._tags_url, exc_info=True)
@@ -88,8 +125,17 @@ class OllamaHealthProbe:
         return False
 
     async def aclose(self) -> None:
-        """Close the underlying HTTP client."""
-        await self._http_client.aclose()
+        """Close the underlying HTTP client if the probe owns it.
+
+        When the client was injected (production DI — shared with
+        ``OllamaGemmaProvider``), closing would tear down sockets the
+        provider still wants to use; the provider closes its own client
+        during lifespan shutdown. Only the standalone-construction path
+        (no ``http_client`` kwarg) closes here. Safe to call repeatedly —
+        httpx's ``AsyncClient.aclose()`` is idempotent in 0.28.x.
+        """
+        if self._owns_client:
+            await self._http_client.aclose()
 
 
 def _extract_model_names(body: object) -> list[str]:
