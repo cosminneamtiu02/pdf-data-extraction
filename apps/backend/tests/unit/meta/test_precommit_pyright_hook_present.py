@@ -36,11 +36,10 @@ When this test fails, pick one of:
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import yaml
 
-_REPO_ROOT = Path(__file__).resolve().parents[5]
+from tests._paths import REPO_ROOT as _REPO_ROOT
+
 _PRECOMMIT_PATH = _REPO_ROOT / ".pre-commit-config.yaml"
 
 _PYRIGHT_HOOK_ID = "pyright"

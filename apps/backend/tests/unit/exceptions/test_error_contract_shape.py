@@ -5,11 +5,10 @@ CONFLICT, RATE_LIMITED) and against generated Python artifacts drifting from
 the YAML source of truth.
 """
 
-from pathlib import Path
-
 import yaml
 
 from app.exceptions._generated._registry import ERROR_CLASSES
+from tests._paths import REPO_ROOT
 
 EXPECTED_CODES = {
     "NOT_FOUND",
@@ -43,7 +42,6 @@ PRUNED_CODES = {
     "WIDGET_NAME_TOO_LONG",
 }
 
-REPO_ROOT = Path(__file__).resolve().parents[5]
 ERRORS_YAML = REPO_ROOT / "packages" / "error-contracts" / "errors.yaml"
 GENERATED_DIR = REPO_ROOT / "apps" / "backend" / "app" / "exceptions" / "_generated"
 

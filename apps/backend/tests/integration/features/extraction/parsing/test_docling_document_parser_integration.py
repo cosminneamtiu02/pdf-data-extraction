@@ -25,9 +25,10 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import shutil
-from pathlib import Path
 
 import pytest
+
+from tests._paths import FIXTURES_DIR
 
 pytestmark = pytest.mark.slow
 
@@ -41,9 +42,7 @@ _PYMUPDF_AVAILABLE = importlib.util.find_spec("pymupdf") is not None
 # `pymupdf`, fixture PDFs) so `task test:slow` on a dev machine without
 # `brew install tesseract` reports a clear skip reason instead of a failure.
 _TESSERACT_AVAILABLE = shutil.which("tesseract") is not None
-# parents: [0]=parsing [1]=extraction [2]=features [3]=integration [4]=tests
-# so parents[4] is apps/backend/tests, which is where fixtures live.
-_FIXTURES_DIR = Path(__file__).resolve().parents[4] / "fixtures" / "pdfs"
+_FIXTURES_DIR = FIXTURES_DIR / "pdfs"
 _NATIVE_FIXTURE = _FIXTURES_DIR / "native_two_page.pdf"
 _SCANNED_FIXTURE = _FIXTURES_DIR / "scanned_one_page.pdf"
 

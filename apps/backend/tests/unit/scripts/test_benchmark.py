@@ -28,6 +28,7 @@ from scripts.benchmark import (
     main,
     parse_args,
 )
+from tests._paths import BACKEND_DIR as _BACKEND_DIR
 
 # ---------------------------------------------------------------------------
 # Percentile computation
@@ -662,6 +663,6 @@ def test_pyright_strict_passes_on_benchmark_module() -> None:
         capture_output=True,
         text=True,
         check=False,
-        cwd=str(Path(__file__).resolve().parents[3]),  # apps/backend/
+        cwd=str(_BACKEND_DIR),  # apps/backend/
     )
     assert result.returncode == 0, f"pyright errors:\n{result.stdout}\n{result.stderr}"

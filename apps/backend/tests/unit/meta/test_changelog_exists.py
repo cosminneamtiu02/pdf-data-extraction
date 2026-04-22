@@ -19,11 +19,10 @@ naturally as real releases get cut.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
-_REPO_ROOT = Path(__file__).resolve().parents[5]
+from tests._paths import REPO_ROOT as _REPO_ROOT
+
 _CHANGELOG_PATH = _REPO_ROOT / "CHANGELOG.md"
 _MISSING_CHANGELOG_MESSAGE = (
     f"Expected CHANGELOG.md at {_CHANGELOG_PATH}. "

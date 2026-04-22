@@ -60,13 +60,12 @@ from httpx import ASGITransport, AsyncClient
 
 from app.core.config import Settings
 from app.main import create_app
+from tests import _paths
 
 pytestmark = pytest.mark.slow
 
 
-# parents: [0]=extraction [1]=features [2]=integration [3]=tests
-# so parents[3] is apps/backend/tests, which is where fixtures live.
-_FIXTURES_DIR = Path(__file__).resolve().parents[3] / "fixtures" / "pdfs"
+_FIXTURES_DIR = _paths.FIXTURES_DIR / "pdfs"
 _FIXTURE_PDF = _FIXTURES_DIR / "native_two_page.pdf"
 
 _DOCLING_AVAILABLE = importlib.util.find_spec("docling") is not None

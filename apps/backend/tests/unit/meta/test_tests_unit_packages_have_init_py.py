@@ -26,7 +26,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-_TESTS_UNIT_ROOT = Path(__file__).resolve().parents[1]
+from tests._paths import TESTS_UNIT_DIR as _TESTS_UNIT_ROOT
+
 _SKIPPED_DIRECTORY_NAMES = frozenset({"__pycache__"})
 
 
@@ -47,18 +48,18 @@ def _unit_test_package_dirs() -> list[Path]:
 
 
 def test_tests_unit_root_is_discoverable() -> None:
-    """Sanity-check that the walked path is the real ``tests/unit`` directory.
+    """Sanity-check that ``TESTS_UNIT_DIR`` still resolves to ``tests/unit``.
 
-    If ``_TESTS_UNIT_ROOT`` ever drifts (for example, because this file is
-    moved to a different depth in the tree), the subsequent assertion could
-    silently pass against an unrelated directory. Anchor the walk to a known
-    landmark — ``tests/unit/__init__.py`` itself — so a structural refactor
-    turns this into a loud failure instead of a silent pass.
+    If the helper in ``tests/_paths.py`` ever drifts (for example, because
+    the repo-root marker or the derived constants change), the subsequent
+    ``__init__.py``-coverage assertion could silently pass against an
+    unrelated directory. Anchor the walk to two known landmarks — the
+    directory name and ``tests/unit/__init__.py`` itself — so a structural
+    refactor turns this into a loud failure instead of a silent pass.
     """
     assert _TESTS_UNIT_ROOT.name == "unit", (
-        f"Expected parents[1] to be the 'unit' directory, got "
-        f"{_TESTS_UNIT_ROOT!s}. If this file has moved, update the "
-        f"_TESTS_UNIT_ROOT parents[] index."
+        f"Expected TESTS_UNIT_DIR to be the 'unit' directory, got "
+        f"{_TESTS_UNIT_ROOT!s}. Check tests/_paths.py for drift."
     )
     assert (_TESTS_UNIT_ROOT / "__init__.py").is_file(), (
         f"Expected {_TESTS_UNIT_ROOT}/__init__.py to exist as the package "

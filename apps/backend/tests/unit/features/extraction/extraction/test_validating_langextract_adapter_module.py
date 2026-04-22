@@ -28,23 +28,10 @@ from app.features.extraction.extraction._validating_langextract_adapter import (
 from app.features.extraction.extraction.extraction_engine import (
     _ValidatingLangExtractAdapter as AdapterReExported,
 )
+from tests._paths import EXTRACTION_ROOT as _EXTRACTION_ROOT
 
-_ENGINE_PATH = (
-    Path(__file__).resolve().parents[5]
-    / "app"
-    / "features"
-    / "extraction"
-    / "extraction"
-    / "extraction_engine.py"
-)
-_ADAPTER_PATH = (
-    Path(__file__).resolve().parents[5]
-    / "app"
-    / "features"
-    / "extraction"
-    / "extraction"
-    / "_validating_langextract_adapter.py"
-)
+_ENGINE_PATH = _EXTRACTION_ROOT / "extraction" / "extraction_engine.py"
+_ADAPTER_PATH = _EXTRACTION_ROOT / "extraction" / "_validating_langextract_adapter.py"
 
 
 def _top_level_class_names(path: Path) -> list[str]:

@@ -41,7 +41,8 @@ from typing import Any, Final
 
 import yaml
 
-_REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[5]
+from tests._paths import REPO_ROOT as _REPO_ROOT
+
 _CI_WORKFLOW_PATH: Final[Path] = _REPO_ROOT / ".github" / "workflows" / "ci.yml"
 
 

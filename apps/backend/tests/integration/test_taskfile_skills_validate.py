@@ -8,14 +8,12 @@ behavior of the script itself is covered by the unit tests in
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any, cast
 
 import yaml
 
-# `parents[4]` resolves to the repo root:
-# parents[0]=integration → [1]=tests → [2]=backend → [3]=apps → [4]=<repo>.
-_REPO_ROOT = Path(__file__).resolve().parents[4]
+from tests._paths import REPO_ROOT as _REPO_ROOT
+
 _TASKFILE = _REPO_ROOT / "Taskfile.yml"
 
 

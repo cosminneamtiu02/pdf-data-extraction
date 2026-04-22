@@ -37,8 +37,8 @@ from typing import Any, Final, cast
 
 import yaml
 
-# _REPO_ROOT: tests/unit/meta/<file> -> meta -> unit -> tests -> backend -> apps -> repo
-_REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[5]
+from tests._paths import REPO_ROOT as _REPO_ROOT
+
 _TASKFILE: Final[Path] = _REPO_ROOT / "Taskfile.yml"
 _TIMEOUT_WRAPPER: Final[Path] = _REPO_ROOT / "infra" / "taskfile" / "with_timeout.py"
 

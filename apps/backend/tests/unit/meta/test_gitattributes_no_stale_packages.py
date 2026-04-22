@@ -20,6 +20,8 @@ import re
 from pathlib import Path
 from typing import Final
 
+from tests._paths import REPO_ROOT as _REPO_ROOT
+
 # Matches the first glob metacharacter in a `.gitattributes` pattern.
 # `.gitattributes` uses fnmatch-style globs, so `*`, `?`, and a `[` that
 # opens a character class all terminate the literal path prefix. Splitting
@@ -27,9 +29,6 @@ from typing import Final
 # `path/?name` or `path/[abc]dir/file` as literal filesystem paths.
 _GLOB_METACHARS: Final[re.Pattern[str]] = re.compile(r"[*?\[]")
 
-# parents[5] walks: this file -> meta/ -> unit/ -> tests/ -> backend/ ->
-# apps/ -> repo root. Mirrors the convention used by sibling meta tests.
-_REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[5]
 _GITATTRIBUTES: Final[Path] = _REPO_ROOT / ".gitattributes"
 
 # Paths that are allowed to appear in `.gitattributes` even when they do

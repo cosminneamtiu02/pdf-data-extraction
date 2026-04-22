@@ -47,11 +47,9 @@ from typing import Final
 
 import pytest
 
-# parents[5] walks: this file -> docker/ -> unit/ -> tests/ -> backend/ ->
-# apps/ -> repo root. Same convention as
-# `tests/unit/docker/test_dockerignore_at_repo_root.py`.
-_REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[5]
-_DOCKERFILE_PATH: Final[Path] = _REPO_ROOT / "infra" / "docker" / "backend.Dockerfile"
+from tests._paths import REPO_ROOT
+
+_DOCKERFILE_PATH: Final[Path] = REPO_ROOT / "infra" / "docker" / "backend.Dockerfile"
 
 # Path fragments (relative to the build context, which is the repo root) that
 # identify each category of COPY. A line is classified by substring match on
