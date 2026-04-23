@@ -99,8 +99,9 @@ _STALE_CLIENT_ACLOSE_TIMEOUT_SECONDS = 2.0
 #   * unknown / future Ollama options do not leak into the payload without a
 #     deliberate code change (and a matching test),
 #   * the ``generate()`` path is unaffected — it never receives caller kwargs,
-#     so the module-level ``_DEFAULT_SAMPLING_OPTIONS`` baseline (below)
-#     remains in force for validator retries.
+#     so the per-provider ``_default_sampling_options`` baseline built from
+#     ``Settings.ollama_temperature`` (issue #384) remains in force for
+#     validator retries.
 #
 # Sampling keys only (seed, temperature, top_p, top_k, num_ctx, num_predict,
 # repeat_penalty, mirostat family). Streaming / format / keep_alive / raw are
@@ -121,13 +122,17 @@ _OLLAMA_SAMPLING_OPTION_KEYS: frozenset[str] = frozenset(
     },
 )
 
+
 # Default sampling options applied when the caller does not override them.
-# Pinning ``temperature=0`` keeps the validator-retry determinism contract from
-# issue #136 intact for callers (including the ``generate()`` path and plain
-# ``infer()`` with no kwargs). This is a module-level constant, not a
-# ``Settings``-backed field — operators who need to change the baseline do so
-# here, not via env var. Caller overrides win — see ``_merge_sampling_options``.
-_DEFAULT_SAMPLING_OPTIONS: dict[str, Any] = {"temperature": 0}
+# ``temperature`` is seeded from ``Settings.ollama_temperature`` at provider
+# construction time (issue #384) rather than hardcoded — operators can now
+# tune the baseline via env var. The default value of that Settings field is
+# ``0.0``, which preserves the validator-retry determinism contract from
+# issue #136 for any deployment that does not override it. This helper builds
+# the per-instance baseline once in ``__init__``; ``_merge_sampling_options``
+# layers caller overrides on top (see below).
+def _build_default_sampling_options(settings: Settings) -> dict[str, Any]:
+    return {"temperature": settings.ollama_temperature}
 
 
 def _build_generate_url(base_url: str) -> str:
@@ -138,28 +143,31 @@ def build_tags_url(base_url: str) -> str:
     return f"{base_url.rstrip('/')}/api/tags"
 
 
-def _merge_sampling_options(**kwargs: Any) -> tuple[dict[str, Any], list[str]]:
+def _merge_sampling_options(
+    baseline: dict[str, Any],
+    **kwargs: Any,
+) -> tuple[dict[str, Any], list[str]]:
     """Return the merged Ollama ``options`` dict plus the ignored-kwarg key list.
 
     Splits the raw LangExtract-forwarded kwargs dict into two buckets:
 
     * keys in ``_OLLAMA_SAMPLING_OPTION_KEYS`` whose value is not ``None``
-      are copied over the ``_DEFAULT_SAMPLING_OPTIONS`` baseline (caller
-      wins) and returned as the first element of the tuple. An allowlisted
-      key whose value IS ``None`` is treated as "not provided" — the
-      default is preserved rather than being clobbered with ``None``.
-      Forwarding ``null`` to Ollama would break the determinism contract
-      for ``temperature`` and risks a server-side 400 for keys Ollama
-      validates (e.g. ``seed``),
+      are copied over the *baseline* (caller wins) and returned as the
+      first element of the tuple. An allowlisted key whose value IS
+      ``None`` is treated as "not provided" — the baseline is preserved
+      rather than being clobbered with ``None``. Forwarding ``null`` to
+      Ollama would break the determinism contract for ``temperature`` and
+      risks a server-side 400 for keys Ollama validates (e.g. ``seed``),
     * keys NOT in the allowlist are collected into a list and returned as
       the second element so the caller can log them for observability
       (issue #385: operators need to see drift when LangExtract forwards
       something new).
 
-    The default baseline is copied rather than mutated so concurrent
-    ``infer()`` calls do not race on a shared dict.
+    The baseline is copied rather than mutated so concurrent ``infer()``
+    calls do not race on a shared dict. ``baseline`` is the per-provider
+    default built from ``Settings.ollama_temperature`` (issue #384).
     """
-    options: dict[str, Any] = dict(_DEFAULT_SAMPLING_OPTIONS)
+    options: dict[str, Any] = dict(baseline)
     ignored: list[str] = []
     for key, value in kwargs.items():
         if key in _OLLAMA_SAMPLING_OPTION_KEYS:
@@ -175,19 +183,28 @@ def _build_payload(
     prompt: str,
     *,
     sampling_options: dict[str, Any] | None = None,
+    default_sampling_options: dict[str, Any],
 ) -> dict[str, Any]:
     # ``format="json"`` engages Ollama's native JSON-constrained decoding so the
     # server returns well-formed JSON on the first attempt instead of forcing
     # ``StructuredOutputValidator`` to re-prompt for parse errors on every
     # request. ``options`` pins sampling parameters; without overrides it keeps
-    # the module-level ``_DEFAULT_SAMPLING_OPTIONS`` baseline (``temperature=0``
-    # from issue #136) so validator retries repeat from a stable baseline
-    # rather than drifting between attempts. When the caller supplies
+    # the per-provider ``default_sampling_options`` baseline — seeded from
+    # ``Settings.ollama_temperature`` (issue #384), defaulting to ``0.0`` so
+    # validator retries repeat from a stable baseline rather than drifting
+    # between attempts (issue #136). When the caller supplies
     # ``sampling_options`` (the ``infer()`` path on a LangExtract-forwarded
     # kwarg — issue #385), those values replace the baseline per-key. The
     # validator still enforces our downstream schema shape, but it no longer
     # pays the malformed-output retry cost on the happy path.
-    options = sampling_options if sampling_options is not None else dict(_DEFAULT_SAMPLING_OPTIONS)
+    # Defensive copy on both branches: Ollama won't mutate the options dict,
+    # but the caller-supplied ``sampling_options`` might be a long-lived dict
+    # retained elsewhere — never let request-local wiring share a reference
+    # with it. Symmetric with the ``dict(default_sampling_options)`` copy
+    # that protects the shared per-provider baseline.
+    options = (
+        dict(sampling_options) if sampling_options is not None else dict(default_sampling_options)
+    )
     return {
         "model": model,
         "prompt": prompt,
@@ -246,6 +263,17 @@ class OllamaGemmaProvider(BaseLanguageModel):
         self._timeout_seconds = effective_settings.ollama_timeout_seconds
         self._timeout = httpx.Timeout(self._timeout_seconds)
         self._validator = effective_validator
+        # ``Settings.ollama_temperature`` (issue #384) seeds the sampling
+        # baseline for BOTH the ``generate()`` path (which never receives
+        # caller kwargs) and the ``infer()`` path (which layers
+        # LangExtract-forwarded overrides on top). Built once here so every
+        # request reuses the same snapshot instead of re-reading Settings on
+        # the hot path — the dict is copied at the point of use in
+        # ``_build_payload`` / ``_merge_sampling_options`` so in-place mutation
+        # cannot leak across requests.
+        self._default_sampling_options: dict[str, Any] = _build_default_sampling_options(
+            effective_settings,
+        )
         # `http_client` is eagerly created (matching the long-standing contract
         # that `.http_client` is a plain attribute) OR taken from `http_client`
         # if injected. `_get_http_client` rebuilds it when the running event
@@ -502,9 +530,15 @@ class OllamaGemmaProvider(BaseLanguageModel):
         # ``sampling_options`` is threaded through from ``infer()`` so
         # LangExtract-forwarded sampling kwargs land in the Ollama payload
         # (issue #385). When ``None`` (the ``generate()`` path), ``_build_payload``
-        # falls back to the module-level default sampling options, including
-        # ``temperature=0``.
-        payload = _build_payload(self._model, prompt, sampling_options=sampling_options)
+        # falls back to the per-provider baseline built from
+        # ``Settings.ollama_temperature`` (issue #384), defaulting to
+        # ``temperature=0.0``.
+        payload = _build_payload(
+            self._model,
+            prompt,
+            sampling_options=sampling_options,
+            default_sampling_options=self._default_sampling_options,
+        )
         try:
             response = await client.post(self._generate_url, json=payload)
             response.raise_for_status()
@@ -654,7 +688,10 @@ class OllamaGemmaProvider(BaseLanguageModel):
         ``ollama_provider_ignored_kwargs`` event so operators can see drift
         and add it to the allowlist deliberately if it turns out to matter.
         """
-        sampling_options, ignored_keys = _merge_sampling_options(**kwargs)
+        sampling_options, ignored_keys = _merge_sampling_options(
+            self._default_sampling_options,
+            **kwargs,
+        )
         if ignored_keys:
             _logger.debug(
                 "ollama_provider_ignored_kwargs",

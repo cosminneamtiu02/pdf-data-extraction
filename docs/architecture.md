@@ -125,6 +125,17 @@ composition-root boundary under `app/api/` is gated by the AST scan at
 See [ADR-014](decisions.md#adr-014-appapi-as-the-composition-root-2026-04-18)
 for the rationale and enforcement details.
 
+The `api-feature-surface` contract (issue #379) is a companion gate that
+narrows the composition-root exception further: even inside the three
+allowlisted files, `app.api` may only reach the extraction feature's
+public surface (`deps`, `router`, `schemas`, `skills`) OR an explicitly
+enumerated `ignore_imports` carve-out. The AST companion
+`test_dynamic_import_containment.py::test_api_imports_respect_feature_public_surface`
+mirrors the invariant for dynamic imports, and
+`test_api_feature_surface_carveouts_mirror_import_linter_contract` pins
+the INI and the AST constants to the same set of sanctioned edges so
+they cannot drift apart.
+
 C3 (Docling) permits three files inside `app/features/extraction/parsing/`:
 `docling_document_parser.py` (the public coordinator),
 `_real_docling_converter_adapter.py` (lazy-imports Docling to build the real
