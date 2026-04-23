@@ -1,7 +1,9 @@
 """Hygiene checks on `infra/docker/backend.Dockerfile`.
 
-Static assertions about the backend runtime image's Dockerfile — kept in
-the backend test tree so they run inside the canonical `task check` gate.
+Static assertions about the backend runtime image's Dockerfile — kept
+in this infra hygiene tree (issue #400) so they live next to the
+Dockerfile they assert on rather than inside the backend unit-test
+tree. `task check` runs them via the `check:hygiene` gate.
 Catches drift of hardening invariants the repo has agreed to across PRs
 so a future copy-paste does not silently regress the posture.
 
@@ -30,7 +32,7 @@ import re
 from pathlib import Path
 from typing import Final
 
-from ._linter_subprocess import REPO_ROOT
+from ._paths import REPO_ROOT
 
 _BACKEND_DOCKERFILE: Final[Path] = REPO_ROOT / "infra" / "docker" / "backend.Dockerfile"
 
