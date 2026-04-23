@@ -14,7 +14,7 @@ from app.api.errors import register_exception_handlers
 from app.api.health_router import router as health_router
 from app.api.middleware import configure_middleware
 from app.api.probe_cache import ProbeCache
-from app.core.config import Settings
+from app.core.config import Settings, load_settings
 from app.core.logging import configure_logging
 from app.exceptions import SkillValidationFailedError
 from app.features.extraction.intelligence.ollama_health_probe import (
@@ -301,7 +301,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     `application.state.settings` so `get_settings` (and every dependency
     that depends on it) reads it back through the FastAPI request path.
     """
-    resolved_settings = settings or Settings()  # type: ignore[reportCallIssue]  # pydantic-settings loads fields from env
+    resolved_settings = settings or load_settings()
 
     # Compute the production flag once and reuse it for every prod-only
     # branch (JSON logging + hidden ``/docs`` / ``/redoc`` / ``/openapi.json``).
