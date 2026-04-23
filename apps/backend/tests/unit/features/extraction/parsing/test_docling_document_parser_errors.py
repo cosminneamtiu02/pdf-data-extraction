@@ -16,7 +16,6 @@ No real Docling, no real PyMuPDF, no real PDFs.
 from __future__ import annotations
 
 import asyncio
-import sys
 import time
 import types
 from dataclasses import dataclass, field
@@ -521,7 +520,16 @@ def _install_fake_pymupdf(
     monkeypatch: pytest.MonkeyPatch,
     fake_mod: types.ModuleType,
 ) -> None:
-    """Inject ``fake_mod`` so ``importlib.import_module("pymupdf")`` returns it."""
+    """Inject ``fake_mod`` so ``importlib.import_module("pymupdf")`` returns it.
+
+    Patches ONLY ``parser_mod.importlib.import_module`` — the parser's sole
+    entry point for resolving ``pymupdf``. We deliberately do NOT mutate
+    ``sys.modules``: if a previous test (or the host process) has already
+    imported real ``pymupdf``, evicting it from ``sys.modules`` and
+    reinstating it at teardown creates a subtle ordering dependency where
+    any sibling fixture that touches ``pymupdf`` during the test sees the
+    fake. See issue #403.
+    """
     real_import_module = parser_mod.importlib.import_module
 
     def _importer(name: str, *args: Any, **kwargs: Any) -> Any:
@@ -530,7 +538,38 @@ def _install_fake_pymupdf(
         return real_import_module(name, *args, **kwargs)
 
     monkeypatch.setattr(parser_mod.importlib, "import_module", _importer)
-    monkeypatch.setitem(sys.modules, "pymupdf", fake_mod)
+
+
+def test_install_fake_pymupdf_does_not_mutate_sys_modules(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression guard for issue #403.
+
+    ``_install_fake_pymupdf`` must rely solely on the ``importlib.import_module``
+    patch. Mutating ``sys.modules["pymupdf"]`` would create ordering-dependent
+    cross-test interference: any sibling fixture that looks up ``pymupdf``
+    through ``sys.modules`` (rather than through the patched import function)
+    would see the fake during the test and the real module on teardown.
+
+    The parser's preflight resolves ``pymupdf`` exclusively via
+    ``importlib.import_module("pymupdf")``, so patching that single call site
+    is sufficient; ``sys.modules`` must stay untouched.
+    """
+    import sys as _sys
+
+    sentinel = object()
+    pre_state = _sys.modules.get("pymupdf", sentinel)
+
+    fake_mod = _build_fake_pymupdf_module()
+    _install_fake_pymupdf(monkeypatch, fake_mod)
+
+    # The helper must not have touched ``sys.modules["pymupdf"]``.
+    post_state = _sys.modules.get("pymupdf", sentinel)
+    assert post_state is pre_state
+
+    # The importlib patch alone must route ``pymupdf`` to the fake, exactly
+    # matching how the parser resolves the dependency.
+    assert parser_mod.importlib.import_module("pymupdf") is fake_mod
 
 
 def test_default_preflight_raises_pdf_invalid_on_file_data_error(
