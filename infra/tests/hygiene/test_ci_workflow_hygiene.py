@@ -1,10 +1,12 @@
 """Hygiene checks on `.github/workflows/ci.yml`.
 
-Static assertions about CI workflow steps — kept in the backend test tree
-so they run inside the canonical `task check` gate. Catches drift of
-hardening invariants the repo has agreed to across PRs (#190 SHA-pinning,
-#212 persist-credentials narrowing, etc.) so a future copy-paste does not
-silently regress the posture.
+Static assertions about CI workflow steps — kept in this infra hygiene
+tree (issue #400) so they live next to the workflows they assert on
+rather than inside the backend unit-test tree. `task check` runs them
+via the `check:hygiene` gate. Catches drift of hardening invariants the
+repo has agreed to across PRs (#190 SHA-pinning, #212 persist-credentials
+narrowing, etc.) so a future copy-paste does not silently regress the
+posture.
 """
 
 from __future__ import annotations
@@ -14,7 +16,7 @@ from typing import Any, Final
 
 import yaml
 
-from ._linter_subprocess import REPO_ROOT
+from ._paths import REPO_ROOT
 
 _CI_WORKFLOW: Final[Path] = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 

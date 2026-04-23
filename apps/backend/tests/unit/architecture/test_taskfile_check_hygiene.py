@@ -32,6 +32,7 @@ _REQUIRED_DIRECT_GATES: Final[tuple[str, ...]] = (
     "check:arch",
     "skills:validate",
     "check:test",
+    "check:hygiene",
     "check:errors",
 )
 
