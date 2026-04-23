@@ -6,6 +6,7 @@ import structlog
 
 from app.features.extraction.coordinates.char_range import CharRange
 from app.features.extraction.coordinates.offset_index import OffsetIndex
+from app.features.extraction.coordinates.offset_index_entry import OffsetIndexEntry
 from app.features.extraction.coordinates.sub_block_matcher import SubBlockMatcher
 from app.features.extraction.extraction.raw_extraction import RawExtraction
 from app.features.extraction.parsing.parsed_document import ParsedDocument
@@ -127,6 +128,20 @@ class SpanResolver:
 
         start_lookup = offset_index.lookup(start_offset)
         end_lookup = offset_index.lookup(end_offset - 1)
+        if start_lookup is not None and end_lookup is None:
+            # Issue #382: LangExtract sometimes reports `end_offset` a few chars
+            # past the exclusive end of the start block, so `end_offset - 1`
+            # lands in the separator gap that immediately follows the block and
+            # `OffsetIndex.lookup` returns None even though the span is
+            # genuinely grounded at the block boundary. When the overshoot is
+            # bounded by the next block's start (not hallucinated well past all
+            # blocks), clamp the end lookup to the start block's last inclusive
+            # offset so the single-block grounded path is taken.
+            end_lookup = _retry_end_lookup_at_block_boundary(
+                offset_index=offset_index,
+                start_offset=start_offset,
+                end_offset=end_offset,
+            )
         if start_lookup is None or end_lookup is None:
             _logger.info(
                 "span_resolver_hallucinated_offsets",
@@ -205,6 +220,75 @@ class SpanResolver:
             reason="matcher_failed",
         )
         return _whole_block_bbox(block)
+
+
+def _retry_end_lookup_at_block_boundary(
+    *,
+    offset_index: OffsetIndex,
+    start_offset: int,
+    end_offset: int,
+) -> tuple[str, int] | None:
+    """Retry the end lookup when ``end_offset - 1`` falls into the gap right
+    after the start block (issue #382).
+
+    Returns an ``OffsetIndex.lookup`` result for the start block's last
+    inclusive offset when:
+
+    - there is a start entry containing ``start_offset``; and
+    - ``end_offset - 1`` is past the start entry's exclusive end but before
+      the next (non-empty) entry begins — i.e. the overshoot is bounded by
+      the adjacent separator gap and is not a span reaching past all blocks.
+
+    Returns ``None`` otherwise, preserving the hallucinated-offsets behavior
+    guarded by the existing tests for end offsets that overshoot well past
+    the last block.
+    """
+    start_entry = _entry_containing(offset_index, start_offset)
+    if start_entry is None:
+        return None
+    next_entry = _next_content_entry_after(offset_index, start_entry)
+    if next_entry is None:
+        # No bounded gap — end_offset could be anywhere past the last block,
+        # which is a genuine hallucination and must stay ungrounded.
+        return None
+    if end_offset - 1 < start_entry.end:
+        # The original end lookup would have succeeded; nothing to clamp.
+        return None
+    if end_offset - 1 >= next_entry.start:
+        # Overshoot crosses into (or past) the next content block. If the
+        # original end lookup still returned None, the span is hallucinated
+        # past multiple blocks — leave it alone.
+        return None
+    # Clamp end_offset - 1 down to the start block's last inclusive offset.
+    return offset_index.lookup(start_entry.end - 1)
+
+
+def _entry_containing(
+    offset_index: OffsetIndex,
+    offset: int,
+) -> OffsetIndexEntry | None:
+    for entry in offset_index.entries:
+        if entry.start <= offset < entry.end:
+            return entry
+    return None
+
+
+def _next_content_entry_after(
+    offset_index: OffsetIndex,
+    target: OffsetIndexEntry,
+) -> OffsetIndexEntry | None:
+    # Skip zero-width entries (empty-text blocks) — they have no characters
+    # the clamp could legally reach, so the gap after ``target`` is bounded by
+    # the next entry with positive width.
+    passed_target = False
+    for entry in offset_index.entries:
+        if passed_target:
+            if entry.start < entry.end:
+                return entry
+            continue
+        if entry is target:
+            passed_target = True
+    return None
 
 
 def _synthesize_missing(name: str) -> ExtractedField:
