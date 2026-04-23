@@ -366,6 +366,48 @@ def test_hallucinated_end_offset_past_block_returns_grounded_false() -> None:
     assert result[0].source == "inferred"
 
 
+def test_single_char_span_end_in_adjacent_separator_gap_resolves_to_start_block() -> None:
+    # Issue #382: LangExtract sometimes reports `end_offset` one (or a few)
+    # chars past the last inclusive offset of the start block, so `end_offset
+    # - 1` lands in the separator gap that immediately follows the block. The
+    # start side resolves normally, but `OffsetIndex.lookup(end_offset - 1)`
+    # returns `None` because the offset is past the block's exclusive end,
+    # kicking a span that is genuinely grounded in the start block into the
+    # hallucinated-offsets branch. The resolver must recognize this
+    # block-boundary overshoot — bounded by the immediately-following next
+    # block's start — and clamp the end lookup to the start block's last
+    # inclusive offset so the single-block grounded path is taken.
+    resolver = SpanResolver()
+    b0 = _block(block_id="b0", text="abcde", bbox=(0, 0, 50, 10))
+    b1 = _block(block_id="b1", text="fghij", bbox=(0, 20, 50, 30))
+    doc = _doc(b0, b1)
+    # b0 [0,5), separator gap [5,7) (two chars — matches default "\n\n"),
+    # b1 [7,12).
+    index = _index((0, 5, "b0"), (7, 12, "b1"))
+    # end_offset=6 is one past b0's exclusive end (5); end_offset - 1 = 5 is
+    # in the separator gap. The value "e" is b0's last character.
+    raw = RawExtraction(
+        field_name="last_char",
+        value="e",
+        char_offset_start=4,
+        char_offset_end=6,
+        grounded=True,
+        attempts=1,
+    )
+
+    result = resolver.resolve([raw], index, doc, ["last_char"])
+
+    field = result[0]
+    assert field.grounded is True
+    assert field.source == "document"
+    assert field.status == FieldStatus.extracted
+    assert len(field.bbox_refs) == 1
+    # Single-block resolution: whole-block bbox for b0 (glyph-level geometry
+    # is still unavailable per issue #151).
+    ref = field.bbox_refs[0]
+    assert (ref.page, ref.x0, ref.y0, ref.x1, ref.y1) == (1, 0.0, 0.0, 50.0, 10.0)
+
+
 def test_hallucinated_offsets_emit_info_log() -> None:
     resolver = SpanResolver()
     block = _block(block_id="b0", text="hello")

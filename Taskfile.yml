@@ -39,7 +39,7 @@ tasks:
 
   # ── Check (Claude runs this before declaring done) ───────────
   check:
-    desc: Run ALL checks — lint, types, architecture, skills, tests, error contracts
+    desc: Run ALL checks — lint, types, architecture, skills, tests, infra hygiene, error contracts
     # Every required gate is enumerated here as a direct `task: <name>` edge
     # (issue #215). Do NOT collapse a gate into another task's cmds list:
     # reaching architecture/lint/etc. only via a sibling hides it from this
@@ -52,6 +52,7 @@ tasks:
       - task: check:arch
       - task: skills:validate
       - task: check:test
+      - task: check:hygiene
       - task: check:errors
 
   check:lint:
@@ -90,6 +91,18 @@ tasks:
       - task: test:unit
       - task: test:integration
       - task: test:contract
+
+  check:hygiene:
+    desc: Run Docker / CI / Dependabot workflow hygiene tests (infra/tests/hygiene/)
+    # Static assertions about files outside apps/backend/ (Dockerfile,
+    # workflows). Relocated out of apps/backend/tests/unit/architecture/
+    # per issue #400 so the backend unit-test tree no longer mixes in
+    # targets outside its scope. Runs from the backend dir so it inherits
+    # that venv's pytest + pyyaml rather than requiring a second uv
+    # environment for three YAML-parsing tests.
+    dir: "{{.BACKEND_DIR}}"
+    cmds:
+      - python3 {{.TIMEOUT_WRAPPER}} 120 -- uv run pytest ../../infra/tests/hygiene/ -v
 
   check:errors:
     desc: Fail on generated error contract drift vs errors.yaml and run error-contracts tests
