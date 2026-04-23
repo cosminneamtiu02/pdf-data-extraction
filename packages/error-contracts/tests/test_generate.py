@@ -542,6 +542,212 @@ def test_generate_required_keys_is_deterministic_across_param_key_order(
     assert json_forward.read_bytes() == json_swapped.read_bytes()
 
 
+# Sorted-output regression tests for issue #380.
+#
+# The byte-identical-across-reorderings tests above prove the generator is a
+# pure function of the YAML content (reordering the YAML keys doesn't change
+# the output). They do NOT prove the output is *alphabetically* sorted — a
+# generator that swapped `sorted(...)` for `sorted(..., reverse=True)` would
+# still satisfy byte-identical-across-reorderings while drifting every
+# existing artifact on the first regenerate.
+#
+# Issue #380 explicitly called for "iterate `sorted(errors)` in every
+# generator". These tests pin that specific contract: the TS `ERROR_CODES`
+# array, the `ErrorCode` union, the `ErrorParamsByCode` interface keys, the
+# `HTTP_STATUS_BY_CODE` map keys, and the JSON `keys` list + `params_by_key`
+# map keys + each per-code param list must all be in ascending alphabetical
+# order. Without this, future refactors that preserve "deterministic" but
+# lose "sorted" would slip through the existing swap-test.
+_SORTED_OUTPUT_YAML = """
+version: 1
+errors:
+  ZULU_ERROR:
+    http_status: 500
+    description: Last alphabetic
+    params:
+      zeta: string
+      alpha: string
+  ALPHA_ERROR:
+    http_status: 400
+    description: First alphabetic
+    params: {}
+  MIKE_ERROR:
+    http_status: 422
+    description: Middle alphabetic
+    params:
+      omega: integer
+      bravo: string
+"""
+
+
+def test_generate_typescript_emits_error_codes_in_sorted_order(tmp_path: Path):
+    """The TS ``ERROR_CODES`` array, ``ErrorCode`` union, ``ErrorParamsByCode``
+    interface, and ``HTTP_STATUS_BY_CODE`` map must all enumerate error codes
+    in ascending alphabetical order (issue #380). The byte-identical-across-
+    reorderings tests above only guarantee determinism as a function of YAML
+    key order; this test pins the stronger invariant that the sort key is
+    alphabetical ascending — so a refactor swapping `sorted(...)` for
+    `sorted(..., reverse=True)` or any other stable total order would fail.
+    """
+    from scripts.generate import generate_typescript
+
+    errors_path = _write_yaml(tmp_path, "errors.yaml", _SORTED_OUTPUT_YAML)
+    ts_path = generate_typescript(errors_path, tmp_path / "generated.ts")
+    content = ts_path.read_text()
+
+    expected_codes_sorted = ["ALPHA_ERROR", "MIKE_ERROR", "ZULU_ERROR"]
+
+    # ERROR_CODES array positions
+    codes_array_start = content.find("ERROR_CODES")
+    codes_array_end = content.find("as const", codes_array_start)
+    codes_slice = content[codes_array_start:codes_array_end]
+    positions = [codes_slice.find(f'"{code}"') for code in expected_codes_sorted]
+    assert all(p != -1 for p in positions), (
+        f"ERROR_CODES missing one of {expected_codes_sorted}: positions={positions}"
+    )
+    assert positions == sorted(positions), (
+        f"ERROR_CODES must be alphabetically sorted (issue #380). "
+        f"Codes {expected_codes_sorted} appeared at positions {positions} — "
+        f"not monotonically increasing.\nSlice:\n{codes_slice}"
+    )
+
+    # ErrorCode union variants (`| "CODE"` lines)
+    union_start = content.find("export type ErrorCode")
+    union_end = content.find(";", union_start)
+    assert union_start != -1, "ErrorCode union marker not found in generated output"
+    assert union_end != -1, (
+        "ErrorCode union terminator (';') not found in generated output"
+    )
+    union_slice = content[union_start:union_end]
+    union_positions = [union_slice.find(f'"{code}"') for code in expected_codes_sorted]
+    assert all(p != -1 for p in union_positions), (
+        f"expected every code in {expected_codes_sorted} to appear in the ErrorCode "
+        f"union slice; got positions={union_positions}\nSlice:\n{union_slice}"
+    )
+    assert union_positions == sorted(union_positions), (
+        f"ErrorCode union variants must be alphabetically sorted (issue #380). "
+        f"Got positions {union_positions} in slice:\n{union_slice}"
+    )
+
+    # ErrorParamsByCode interface keys
+    iface_start = content.find("export interface ErrorParamsByCode")
+    iface_end = content.find("}\n", iface_start)
+    assert iface_start != -1, (
+        "ErrorParamsByCode interface marker not found in generated output"
+    )
+    assert iface_end != -1, (
+        "ErrorParamsByCode interface terminator ('}\\n') not found in generated output"
+    )
+    iface_slice = content[iface_start:iface_end]
+    iface_positions = [iface_slice.find(f"  {code}:") for code in expected_codes_sorted]
+    assert all(p != -1 for p in iface_positions), (
+        f"expected every code in {expected_codes_sorted} to appear in the "
+        f"ErrorParamsByCode interface slice; got positions={iface_positions}\n"
+        f"Slice:\n{iface_slice}"
+    )
+    assert iface_positions == sorted(iface_positions), (
+        f"ErrorParamsByCode interface keys must be alphabetically sorted "
+        f"(issue #380). Got positions {iface_positions} in slice:\n{iface_slice}"
+    )
+
+    # HTTP_STATUS_BY_CODE map keys
+    http_start = content.find("HTTP_STATUS_BY_CODE")
+    http_end = content.find("};", http_start)
+    assert http_start != -1, "HTTP_STATUS_BY_CODE marker not found in generated output"
+    assert http_end != -1, (
+        "HTTP_STATUS_BY_CODE terminator ('};') not found in generated output"
+    )
+    http_slice = content[http_start:http_end]
+    http_positions = [http_slice.find(f"  {code}:") for code in expected_codes_sorted]
+    assert all(p != -1 for p in http_positions), (
+        f"expected every code in {expected_codes_sorted} to appear in the "
+        f"HTTP_STATUS_BY_CODE slice; got positions={http_positions}\n"
+        f"Slice:\n{http_slice}"
+    )
+    assert http_positions == sorted(http_positions), (
+        f"HTTP_STATUS_BY_CODE map keys must be alphabetically sorted "
+        f"(issue #380). Got positions {http_positions} in slice:\n{http_slice}"
+    )
+
+
+def test_generate_typescript_emits_params_in_sorted_order(tmp_path: Path):
+    """Within each ``ErrorParamsByCode`` entry, param fields must be
+    alphabetically sorted (PR #309 review follow-up, pinned here for #380
+    so the sorted-key invariant is locked at both the error-code and
+    param-name levels).
+    """
+    from scripts.generate import generate_typescript
+
+    errors_path = _write_yaml(tmp_path, "errors.yaml", _SORTED_OUTPUT_YAML)
+    ts_path = generate_typescript(errors_path, tmp_path / "generated.ts")
+    content = ts_path.read_text()
+
+    # ZULU_ERROR params: YAML order is `zeta, alpha`; sorted is `alpha, zeta`.
+    zulu_line_start = content.find("ZULU_ERROR: {")
+    zulu_line_end = content.find("};", zulu_line_start)
+    zulu_slice = content[zulu_line_start:zulu_line_end]
+    alpha_pos = zulu_slice.find("alpha:")
+    zeta_pos = zulu_slice.find("zeta:")
+    assert 0 < alpha_pos < zeta_pos, (
+        f"ZULU_ERROR params must be alphabetically sorted: expected `alpha` "
+        f"before `zeta` (issue #380). Got slice:\n{zulu_slice}"
+    )
+
+    # MIKE_ERROR params: YAML order is `omega, bravo`; sorted is `bravo, omega`.
+    mike_line_start = content.find("MIKE_ERROR: {")
+    mike_line_end = content.find("};", mike_line_start)
+    mike_slice = content[mike_line_start:mike_line_end]
+    bravo_pos = mike_slice.find("bravo:")
+    omega_pos = mike_slice.find("omega:")
+    assert 0 < bravo_pos < omega_pos, (
+        f"MIKE_ERROR params must be alphabetically sorted: expected `bravo` "
+        f"before `omega` (issue #380). Got slice:\n{mike_slice}"
+    )
+
+
+def test_generate_required_keys_emits_keys_in_sorted_order(tmp_path: Path):
+    """The ``required-keys.json`` top-level ``keys`` list and the
+    ``params_by_key`` map keys must both be in ascending alphabetical order.
+    Each per-code param list must also be sorted. Issue #380 called this out
+    explicitly; pinning the invariant here so a future refactor that keeps
+    the output deterministic but breaks the sort (reverse, length-based,
+    etc.) fails fast rather than silently drifting every translation file.
+    """
+    from scripts.generate import generate_required_keys
+
+    errors_path = _write_yaml(tmp_path, "errors.yaml", _SORTED_OUTPUT_YAML)
+    json_path = generate_required_keys(errors_path, tmp_path / "required-keys.json")
+    payload = json.loads(json_path.read_text())
+
+    keys = payload["keys"]
+    assert keys == sorted(keys), (
+        f"required-keys.json `keys` list must be alphabetically sorted "
+        f"(issue #380). Got: {keys}"
+    )
+
+    params_by_key = payload["params_by_key"]
+    params_keys = list(params_by_key.keys())
+    assert params_keys == sorted(params_keys), (
+        f"required-keys.json `params_by_key` keys must be alphabetically "
+        f"sorted (issue #380). Got: {params_keys}"
+    )
+
+    # ZULU_ERROR param names: YAML order is `zeta, alpha`; sorted is
+    # `alpha, zeta`. Pins the param-level sort contract.
+    assert params_by_key["ZULU_ERROR"] == ["alpha", "zeta"], (
+        f"ZULU_ERROR params must be alphabetically sorted in "
+        f"required-keys.json (issue #380). Got: "
+        f"{params_by_key['ZULU_ERROR']}"
+    )
+    # MIKE_ERROR param names: YAML order is `omega, bravo`; sorted is
+    # `bravo, omega`.
+    assert params_by_key["MIKE_ERROR"] == ["bravo", "omega"], (
+        f"MIKE_ERROR params must be alphabetically sorted in "
+        f"required-keys.json (issue #380). Got: "
+        f"{params_by_key['MIKE_ERROR']}"
+    )
+
+
 # Provenance-in-docstring regression test for issue #373.
 #
 # The TypeScript generator output begins with:
