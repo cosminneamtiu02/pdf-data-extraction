@@ -40,6 +40,7 @@ three gaps:
 from __future__ import annotations
 
 import ast
+import configparser
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Final
@@ -93,6 +94,79 @@ _API_COMPOSITION_ROOT_FILES: Final[frozenset[str]] = frozenset(
         "probe_cache.py",
     },
 )
+
+# Public-surface allowlist for `app.api` -> `app.features.extraction` imports
+# (issue #379). The import-linter `api-feature-surface` contract in
+# `apps/backend/architecture/import-linter-contracts.ini` encodes the same
+# policy statically; this AST-scan mirror catches dynamic imports
+# (`importlib.import_module("app.features.extraction.service")`) that the
+# static graph cannot see, and keeps the policy visible in Python where the
+# surface set can be enumerated cleanly.
+#
+# "Public surface" = the four extraction-feature submodules the issue names
+# as the sanctioned reach for composition-root wiring:
+#   - `app.features.extraction.deps` (DI factories)
+#   - `app.features.extraction.router` (FastAPI router to include)
+#   - `app.features.extraction.schemas` (request/response models)
+#   - `app.features.extraction.skills` (public surface that re-exports
+#     SkillManifest, SkillLoader, SkillDoclingConfig, etc.)
+#
+# Any import of `app.features.extraction.<X>` where `<X>` is NOT in this set
+# and the source file is NOT carved out in `_API_FEATURE_CARVEOUT_IMPORTS`
+# is an offender. Same dotted-boundary semantics as the sibling composition-
+# root scan: `deps` matches `app.features.extraction.deps` and
+# `app.features.extraction.deps.X` submodules, but NOT `app.features.extraction.depsish`.
+_API_FEATURE_PUBLIC_SURFACE: Final[frozenset[str]] = frozenset(
+    {
+        "app.features.extraction.deps",
+        "app.features.extraction.router",
+        "app.features.extraction.schemas",
+        "app.features.extraction.skills",
+    },
+)
+
+# Acknowledged carve-outs: today's composition-root files reach into
+# feature-internal submodules to wire the DI graph. Each entry below mirrors
+# a line in the `ignore_imports` block of the `api-feature-surface` contract
+# — adding a new carve-out here requires the matching INI line, and vice
+# versa. Keys are RELATIVE POSIX paths from `_API_ROOT` (same shape as
+# `_API_COMPOSITION_ROOT_FILES`); values are frozensets of the exact dotted
+# feature-module names whose import is tolerated despite not being on the
+# public surface. A wildcard approach ("carve out every non-surface import
+# in deps.py") was rejected because it would hide new imports under an
+# existing umbrella — the explicit list IS the review signal.
+#
+# Long-term direction (per issue #379): move concrete pipeline-component
+# wiring out of `app.api.deps` into `app.features.extraction.deps`, so
+# `app.api` only reaches through the public surface and this map becomes
+# empty. Until that refactor lands, the carve-outs below make the status
+# quo explicit and gate further drift.
+_API_FEATURE_CARVEOUT_IMPORTS: Final[dict[str, frozenset[str]]] = {
+    "deps.py": frozenset(
+        {
+            "app.features.extraction.annotation.pdf_annotator",
+            "app.features.extraction.coordinates.span_resolver",
+            "app.features.extraction.coordinates.text_concatenator",
+            "app.features.extraction.extraction.extraction_engine",
+            "app.features.extraction.intelligence.correction_prompt_builder",
+            "app.features.extraction.intelligence.intelligence_provider",
+            "app.features.extraction.intelligence.ollama_gemma_provider",
+            "app.features.extraction.intelligence.ollama_health_probe",
+            "app.features.extraction.intelligence.structured_output_validator",
+            "app.features.extraction.parsing.docling_document_parser",
+            "app.features.extraction.parsing.document_parser",
+            "app.features.extraction.service",
+            "app.features.extraction.skills.skill_manifest",
+        },
+    ),
+    "probe_cache.py": frozenset(
+        {
+            # TYPE_CHECKING-guarded, but import-linter and the AST collector
+            # both see it as a static import.
+            "app.features.extraction.intelligence.ollama_health_probe",
+        },
+    ),
+}
 
 _CONTAINED_PACKAGES: Final[dict[str, frozenset[str]]] = {
     # Entries are RELATIVE POSIX paths keyed as
@@ -558,6 +632,42 @@ def _is_api_composition_root_file(py_file: Path, api_root: Path) -> bool:
     """
     rel = py_file.relative_to(api_root).as_posix()
     return rel in _API_COMPOSITION_ROOT_FILES
+
+
+def _is_api_feature_import_allowed(
+    rel_path: str,
+    dotted_target: str,
+    *,
+    public_surface: frozenset[str] = _API_FEATURE_PUBLIC_SURFACE,
+    carveouts: dict[str, frozenset[str]] = _API_FEATURE_CARVEOUT_IMPORTS,
+) -> bool:
+    """Return True iff `dotted_target` is a sanctioned `app.api` -> features import.
+
+    An import is sanctioned when either:
+
+    * ``dotted_target`` is on the public surface (``deps``, ``router``,
+      ``schemas``, ``skills``) — matched by dotted boundary so
+      ``app.features.extraction.skills.skill_manifest`` counts as a reach
+      into the ``skills`` public surface, while ``app.features.extraction.skillsish``
+      (hypothetical) would not.
+    * ``dotted_target`` is listed verbatim in ``carveouts[rel_path]`` — an
+      explicitly acknowledged composition-root exception.
+
+    Issue #379: pairs with the import-linter ``api-feature-surface`` contract
+    in ``apps/backend/architecture/import-linter-contracts.ini``. The INI
+    contract enforces the invariant statically; this predicate enforces it
+    dynamically so ``importlib.import_module("app.features.extraction.service")``
+    inside a composition-root file cannot slip the gate.
+
+    `rel_path` is the relative POSIX path from ``_API_ROOT`` — the same
+    shape ``_is_api_composition_root_file`` uses as its allowlist key —
+    so a future subdir namesake cannot inherit a carve-out entry via
+    basename collision.
+    """
+    for surface in public_surface:
+        if dotted_target == surface or dotted_target.startswith(surface + "."):
+            return True
+    return dotted_target in carveouts.get(rel_path, frozenset())
 
 
 def test_extraction_does_not_import_from_sibling_features() -> None:
@@ -1654,4 +1764,198 @@ def test_iter_containment_py_files_skips_nonexistent_root(tmp_path: Path) -> Non
     assert pairs, "extant root must yield at least one py file"
     assert all(root == extant for root, _ in pairs), (
         f"missing root must be skipped, not yield anything: got roots {[r for r, _ in pairs]!r}"
+    )
+
+
+def test_api_imports_respect_feature_public_surface() -> None:
+    """Issue #379: `app.api` feature imports must be on the public surface OR a listed carve-out.
+
+    Pairs with the `api-feature-surface` import-linter contract in
+    `apps/backend/architecture/import-linter-contracts.ini`. The INI
+    contract enforces the invariant statically; this AST walk catches
+    dynamic imports (``importlib.import_module("app.features.extraction.service")``)
+    that the static graph cannot see, and keeps the "no silent drift of
+    feature-internal wiring into `app.api`" invariant honest against both
+    mechanisms.
+
+    Walks every `.py` file under `app/api/` — this scope deliberately
+    covers both the three composition-root files (where carve-outs live)
+    and every other file under `app/api/` (where the feature-import
+    ban is absolute via the companion
+    ``test_api_feature_imports_are_confined_to_composition_root`` scan).
+    A non-composition-root file with any feature import fails the sibling
+    scan; this test focuses on the stricter predicate for the composition-
+    root files themselves: even they must reach only the public surface
+    (`deps`, `router`, `schemas`, `skills`) OR an explicit
+    ``_API_FEATURE_CARVEOUT_IMPORTS`` edge.
+
+    Adding a new carve-out requires:
+      1. A new line in the `ignore_imports` block of the INI contract, AND
+      2. A matching entry in ``_API_FEATURE_CARVEOUT_IMPORTS``.
+
+    Keeping both in sync is the review signal — forgetting either
+    surfaces loudly (INI-only: this test fails; test-only: `task check:arch`
+    fails on the import-linter run).
+    """
+    offenders: list[str] = []
+    for py_file in _API_ROOT.rglob("*.py"):
+        rel = py_file.relative_to(_API_ROOT).as_posix()
+        source = py_file.read_text(encoding="utf-8")
+
+        feature_imports: set[str] = set()
+        feature_imports.update(
+            dotted
+            for dotted in _collect_static_dotted_imports(source)
+            if _target_matches_package(dotted, "app.features")
+        )
+        feature_imports.update(
+            target
+            for target in _collect_dynamic_import_targets(source)
+            if _target_matches_package(target, "app.features")
+        )
+        offenders.extend(
+            f"{rel} imports {dotted} (not on public surface "
+            f"{sorted(_API_FEATURE_PUBLIC_SURFACE)} and not in carve-out)"
+            for dotted in feature_imports
+            if not _is_api_feature_import_allowed(rel, dotted)
+        )
+
+    assert not offenders, (
+        "Issue #379: `app.api` may only reach the extraction feature via the "
+        f"public surface {sorted(_API_FEATURE_PUBLIC_SURFACE)} or an explicit "
+        "`_API_FEATURE_CARVEOUT_IMPORTS` entry (mirrored by the "
+        "`api-feature-surface` import-linter contract). Offenders:\n"
+        + "\n".join(f"  - {o}" for o in offenders)
+    )
+
+
+def test_api_feature_surface_predicate_flags_synthetic_non_surface_import() -> None:
+    """Issue #379: the predicate must fire on a synthetic non-surface feature import.
+
+    Companion to ``test_api_imports_respect_feature_public_surface``. The
+    filesystem walk passes vacuously if today's `app/api/` tree happens to
+    match the public-surface + carve-out union exactly, so if a future
+    regression weakens `_is_api_feature_import_allowed` to "always True"
+    the real walk would not catch it. This test feeds the predicate a
+    synthetic composition-root file (``deps.py``) gaining a non-surface,
+    non-carved-out feature import and asserts the predicate returns False.
+    """
+    # A hypothetical new feature submodule not on the public surface and
+    # not in the composition-root carve-out list today.
+    synthetic_target = "app.features.extraction.billing.invoicer"
+    # Synthesize a predicate call against a composition-root file (`deps.py`
+    # is allowlisted by the sibling composition-root scan, but its non-
+    # surface imports are narrowed by this predicate).
+    allowed = _is_api_feature_import_allowed("deps.py", synthetic_target)
+    assert not allowed, (
+        f"predicate wrongly permitted a non-surface, non-carved-out import: "
+        f"{synthetic_target!r} should not be allowed from deps.py"
+    )
+
+    # Positive control: a public-surface reach must be allowed for ANY file,
+    # including one without a carve-out entry at all.
+    surface_target = "app.features.extraction.schemas.extract_request"
+    assert _is_api_feature_import_allowed("middleware.py", surface_target), (
+        f"predicate wrongly forbade a public-surface import: {surface_target!r} "
+        "should be allowed from any `app/api/` file"
+    )
+
+    # Carve-out control: a listed carve-out must be allowed only for the
+    # file it is carved out in, not a basename namesake in a subdir. Mirrors
+    # the subdir-namesake guard for the composition-root allowlist.
+    carved_target = "app.features.extraction.service"
+    assert _is_api_feature_import_allowed("deps.py", carved_target), (
+        f"predicate wrongly forbade a listed carve-out: {carved_target!r} from deps.py"
+    )
+    assert not _is_api_feature_import_allowed("schemas/deps.py", carved_target), (
+        f"predicate wrongly permitted a carve-out inherited via basename "
+        f"collision: {carved_target!r} from schemas/deps.py must be rejected"
+    )
+
+
+def test_api_feature_surface_carveouts_mirror_import_linter_contract() -> None:
+    """Issue #379: the carve-out map must match the INI contract's ignore_imports.
+
+    The `api-feature-surface` import-linter contract in
+    `apps/backend/architecture/import-linter-contracts.ini` enumerates
+    every permitted `app.api.*` -> `app.features.*` edge in its
+    `ignore_imports` block. This test parses that block and asserts it is
+    exactly the set produced by combining ``_API_FEATURE_PUBLIC_SURFACE``
+    (edges on the public surface that `app.api` actually uses today) and
+    ``_API_FEATURE_CARVEOUT_IMPORTS`` (composition-root exceptions).
+
+    Why pin this? The INI and the AST scan both encode the same invariant
+    but in different languages. If the two drift — e.g. a reviewer adds a
+    new INI carve-out without updating ``_API_FEATURE_CARVEOUT_IMPORTS`` —
+    the INI stops catching static regressions in the "covered" parts of
+    the tree (unmatched alerting is a warning, not a gate), or the AST
+    scan refuses a legitimately-carved-out edge at runtime. The test
+    fails loudly on any drift so both sides stay the single source of
+    truth for the same invariant.
+    """
+    contracts_ini = BACKEND_DIR / "architecture" / "import-linter-contracts.ini"
+    parser = configparser.ConfigParser()
+    parser.read(contracts_ini)
+
+    section = "importlinter:contract:api-feature-surface"
+    assert parser.has_section(section), (
+        f"issue #379: INI contract `{section}` missing; must be added alongside the AST-scan gate"
+    )
+    raw = parser.get(section, "ignore_imports")
+
+    ini_edges: set[tuple[str, str]] = set()
+    for raw_line in raw.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        assert "->" in line, (
+            f"malformed `ignore_imports` line in `{section}`: {line!r}; "
+            "each entry must be `source -> target`"
+        )
+        left, right = line.split("->", 1)
+        ini_edges.add((left.strip(), right.strip()))
+
+    # Build the expected set from the AST-side constants. `app.api` source
+    # module names derive from file rel-paths by stripping `.py` and
+    # replacing `/` with `.` — the standard dotted-module shape.
+    expected_edges: set[tuple[str, str]] = set()
+    for rel_path, targets in _API_FEATURE_CARVEOUT_IMPORTS.items():
+        source_module = "app.api." + rel_path.removesuffix(".py").replace("/", ".")
+        expected_edges.update((source_module, target) for target in targets)
+
+    # Public-surface edges used in production today. Not every surface
+    # submodule is imported by `app.api`, so enumerate the edges by reading
+    # the three composition-root files. Mirrors the drift-guard the dead-
+    # carve-out check applies to C3-C6, but scoped to this contract.
+    surface_edges: set[tuple[str, str]] = set()
+    for rel in _API_COMPOSITION_ROOT_FILES:
+        py_file = _API_ROOT / rel
+        source = py_file.read_text(encoding="utf-8")
+        source_module = "app.api." + rel.removesuffix(".py").replace("/", ".")
+        for dotted in _collect_static_dotted_imports(source):
+            if not _target_matches_package(dotted, "app.features"):
+                continue
+            # Only surface-matched edges go here; carve-outs already covered above.
+            for surface in _API_FEATURE_PUBLIC_SURFACE:
+                if dotted == surface or dotted.startswith(surface + "."):
+                    surface_edges.add((source_module, dotted))
+                    break
+    expected_edges.update(surface_edges)
+
+    # Ignore public-surface edges that might match BOTH a surface prefix AND a
+    # carve-out entry (defensive; the current state has no such overlap).
+    missing_from_ini = expected_edges - ini_edges
+    extra_in_ini = ini_edges - expected_edges
+
+    assert not missing_from_ini, (
+        "issue #379: AST-side carve-outs / public-surface edges exist that "
+        f"the INI `{section}` does not list. Add these to `ignore_imports`:\n"
+        + "\n".join(f"  - {src} -> {tgt}" for src, tgt in sorted(missing_from_ini))
+    )
+    assert not extra_in_ini, (
+        f"issue #379: INI `{section}` lists `ignore_imports` edges that are not "
+        "in the AST-side public-surface / carve-out set. Either remove them from "
+        "the INI (if the corresponding file no longer imports them) or add them "
+        "to `_API_FEATURE_PUBLIC_SURFACE` / `_API_FEATURE_CARVEOUT_IMPORTS`:\n"
+        + "\n".join(f"  - {src} -> {tgt}" for src, tgt in sorted(extra_in_ini))
     )
