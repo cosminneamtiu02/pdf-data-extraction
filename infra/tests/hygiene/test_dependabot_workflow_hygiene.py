@@ -1,9 +1,10 @@
 """Workflow-file hygiene checks that apply to every Dependabot CI path.
 
 Static assertions about `.github/workflows/*.yml` that catch drift in the
-rules CLAUDE.md codifies for Dependabot handling. Kept here (in the backend
-test tree) so they run inside the canonical `task check` gate rather than
-relying on GitHub-side linting.
+rules CLAUDE.md codifies for Dependabot handling. Kept in this infra
+hygiene tree (issue #400) so they live next to the workflows they assert
+on rather than inside the backend unit-test tree. `task check` runs them
+via the `check:hygiene` gate rather than relying on GitHub-side linting.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from typing import Any, Final
 import pytest
 import yaml
 
-from ._linter_subprocess import REPO_ROOT
+from ._paths import REPO_ROOT
 
 _WORKFLOWS_DIR: Final[Path] = REPO_ROOT / ".github" / "workflows"
 

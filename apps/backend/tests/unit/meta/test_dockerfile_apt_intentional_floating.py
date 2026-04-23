@@ -97,7 +97,8 @@ def _runtime_stage_line_range(lines: list[str]) -> tuple[int, int]:
     stage's apt installs are discarded at the end of the multi-stage build,
     so a `=<version>` pin there does not ship with the image and is outside
     this policy. Scoping the apt-install scan to the runtime stage matches
-    `tests/unit/architecture/test_dockerfile_hygiene.py::_runtime_stage_text`
+    `infra/tests/hygiene/test_dockerfile_hygiene.py::_runtime_stage_text`
+    (relocated out of `apps/backend/tests/unit/architecture/` per issue #400)
     and keeps this module's docstring (which talks about the *runtime*-stage
     install) honest.
     """
