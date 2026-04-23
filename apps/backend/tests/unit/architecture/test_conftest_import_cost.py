@@ -20,6 +20,7 @@ import ast
 import os
 import subprocess
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Final
 
@@ -28,15 +29,57 @@ from ._linter_subprocess import BACKEND_DIR
 _CONFTEST_PATH: Final[Path] = BACKEND_DIR / "tests" / "conftest.py"
 
 
+def _iter_module_scope_imports(tree: ast.Module) -> Iterator[ast.Import | ast.ImportFrom]:
+    """Yield every Import/ImportFrom that binds a name at module scope.
+
+    Descends into top-level compound statements (If/Try/TryStar/With/For/
+    While/Match) because their bodies execute at module scope in Python —
+    names bound inside them are visible at module scope. Function,
+    async-function, and class bodies DO create their own lexical scopes and
+    are skipped so a deliberately-lazy ``import heavy_mod`` inside a
+    fixture body is not flagged by this gate (PR #524 review). Mirrors
+    ``_iter_module_scope_imports`` in ``test_dynamic_import_containment.py``
+    so the same descent policy applies to both containment gates.
+    """
+    try_star_type: type[ast.AST] | None = getattr(ast, "TryStar", None)
+    stack: list[ast.stmt] = list(tree.body)
+    while stack:
+        node = stack.pop(0)
+        if isinstance(node, ast.Import | ast.ImportFrom):
+            yield node
+            continue
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            continue
+        if isinstance(node, ast.If):
+            stack[:0] = list(node.body) + list(node.orelse)
+        elif isinstance(node, ast.Try):
+            handlers: list[ast.stmt] = [s for h in node.handlers for s in h.body]
+            stack[:0] = list(node.body) + handlers + list(node.orelse) + list(node.finalbody)
+        elif try_star_type is not None and isinstance(node, try_star_type):
+            handlers = [s for h in node.handlers for s in h.body]  # type: ignore[attr-defined]  # TryStar exposes handlers like Try
+            stack[:0] = (
+                list(node.body)  # type: ignore[attr-defined]
+                + handlers
+                + list(node.orelse)  # type: ignore[attr-defined]
+                + list(node.finalbody)  # type: ignore[attr-defined]
+            )
+        elif isinstance(node, ast.With | ast.AsyncWith):
+            stack[:0] = list(node.body)
+        elif isinstance(node, ast.For | ast.AsyncFor | ast.While):
+            stack[:0] = list(node.body) + list(node.orelse)
+        elif isinstance(node, ast.Match):
+            stack[:0] = [s for c in node.cases for s in c.body]
+
+
 def _collect_static_dotted_imports(source: str) -> set[str]:
-    """Return every dotted module name referenced by a top-level import."""
+    """Return every dotted module name referenced by a module-scope import."""
     tree = ast.parse(source)
     names: set[str] = set()
-    for node in ast.walk(tree):
+    for node in _iter_module_scope_imports(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 names.add(alias.name)
-        elif isinstance(node, ast.ImportFrom) and node.module is not None and node.level == 0:
+        elif node.module is not None and node.level == 0:
             names.add(node.module)
     return names
 
@@ -105,3 +148,46 @@ def test_importing_conftest_does_not_load_extraction_skills_package() -> None:
         f"app.features.extraction.skills; leaked modules: {leaked_repr} "
         "(issue #354)"
     )
+
+
+def test_collect_static_dotted_imports_skips_imports_inside_function_body() -> None:
+    """Lazy imports inside a fixture body MUST NOT be flagged as module-scope.
+
+    PR #524 review: the previous ``ast.walk`` implementation descended into
+    function bodies, so a fixture that did ``import heavy_mod`` lazily
+    inside its body was flagged even though the whole point of the lazy
+    import is to avoid the module-scope tax. The module-scope visitor now
+    used by ``_collect_static_dotted_imports`` correctly skips function and
+    method bodies.
+    """
+    source = (
+        "def fixture_maker() -> object:\n"
+        "    import app.features.extraction.skills\n"
+        "    return None\n"
+    )
+    assert "app.features.extraction.skills" not in _collect_static_dotted_imports(source)
+
+
+def test_collect_static_dotted_imports_catches_module_scope_import() -> None:
+    """A plain module-scope import IS still flagged (control case)."""
+    source = "import app.features.extraction.skills\n"
+    assert "app.features.extraction.skills" in _collect_static_dotted_imports(source)
+
+
+def test_collect_static_dotted_imports_catches_conditional_module_scope_import() -> None:
+    """A module-scope ``try: import X`` at top level IS flagged.
+
+    Compound statements (``try``/``if``/``with``/``for``/``match``) don't
+    introduce a new lexical scope in Python — a name bound inside their
+    body is visible at module scope. So the visitor must descend into
+    them, matching the policy of ``_iter_module_scope_imports`` in the
+    sibling ``test_dynamic_import_containment.py``.
+    """
+    source = "try:\n    import app.features.extraction.skills\nexcept ImportError:\n    pass\n"
+    assert "app.features.extraction.skills" in _collect_static_dotted_imports(source)
+
+
+def test_collect_static_dotted_imports_skips_imports_inside_class_body() -> None:
+    """Class-body imports are local to the class scope and MUST NOT be flagged."""
+    source = "class _Holder:\n    import app.features.extraction.skills as _skills_mod\n"
+    assert "app.features.extraction.skills" not in _collect_static_dotted_imports(source)
