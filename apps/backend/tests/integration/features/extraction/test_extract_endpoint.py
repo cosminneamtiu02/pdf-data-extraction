@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import email.parser
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 
 import yaml
@@ -18,14 +19,12 @@ from httpx import ASGITransport, AsyncClient
 from app.api.deps import get_extraction_service
 from app.core.config import Settings
 from app.exceptions import IntelligenceTimeoutError
-from app.features.extraction.extraction_result import ExtractionResult
-from app.features.extraction.schemas.bounding_box_ref import BoundingBoxRef
-from app.features.extraction.schemas.extract_response import ExtractResponse
-from app.features.extraction.schemas.extracted_field import ExtractedField
-from app.features.extraction.schemas.extraction_metadata import ExtractionMetadata
-from app.features.extraction.schemas.field_status import FieldStatus
 from app.features.extraction.service import ExtractionService
 from app.main import create_app
+from tests._support.extraction_fixtures import make_canned_result as _make_canned_result
+
+if TYPE_CHECKING:
+    from app.features.extraction.extraction_result import ExtractionResult
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -53,32 +52,6 @@ def _write_valid_skill(base: Path) -> None:
 
 def _settings(skills_dir: Path, **overrides) -> Settings:
     return Settings(skills_dir=skills_dir, app_env="development", **overrides)  # type: ignore[reportCallIssue]
-
-
-def _make_canned_result(
-    *,
-    annotated_pdf_bytes: bytes | None = None,
-) -> ExtractionResult:
-    field = ExtractedField(
-        name="number",
-        value="INV-001",
-        status=FieldStatus.extracted,
-        source="document",
-        grounded=True,
-        bbox_refs=[BoundingBoxRef(page=1, x0=10.0, y0=20.0, x1=100.0, y1=30.0)],
-    )
-    metadata = ExtractionMetadata(
-        page_count=1,
-        duration_ms=500,
-        attempts_per_field={"number": 1},
-    )
-    response = ExtractResponse(
-        skill_name="invoice",
-        skill_version=1,
-        fields={"number": field},
-        metadata=metadata,
-    )
-    return ExtractionResult(response=response, annotated_pdf_bytes=annotated_pdf_bytes)
 
 
 def _stub_service(result: ExtractionResult | None = None, *, side_effect=None) -> ExtractionService:
