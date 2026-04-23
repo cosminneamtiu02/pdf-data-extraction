@@ -1,10 +1,13 @@
-"""Opt-in test helpers that would otherwise force heavy imports at conftest load.
+"""Cross-tree test-support helpers.
 
-Lives under ``tests/_support/`` (not ``tests/conftest.py``) so that only the
-test modules that actually need a helper pay the import cost of the
-production packages the helper depends on. Centralising these in
-``conftest.py`` forced every test file pytest discovers to load the
-transitive closure of every helper's dependencies -- a real drag on unit
-test startup for tests that only touch coordinates, schemas, or the core
-logger (issue #354).
+Modules under ``tests/_support/`` host helpers that are shared across
+multiple test levels (unit, integration, contract) and cannot live in a
+single ``conftest.py`` because they must be importable by name, not
+injected via fixtures. Keep this tree small and narrowly scoped: if a
+helper is only needed by one test file, inline it there instead.
+
+Originally populated by issue #354 to keep ``tests/conftest.py`` from
+eagerly pulling the extraction-skills package into every pytest session
+— the ``make_skill`` helper lives here rather than being auto-injected,
+so only tests that actually exercise skills pay the import cost.
 """
