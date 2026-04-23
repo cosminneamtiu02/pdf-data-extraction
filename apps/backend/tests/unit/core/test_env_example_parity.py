@@ -10,11 +10,21 @@ converts each name to ``UPPER_SNAKE_CASE`` with the class's ``env_prefix``
 applied, and asserts that a matching ``KEY=`` line exists at the start of a
 line in ``.env.example``. Any field that is intentionally not environment-
 configurable must be added to ``_WAIVED_FIELDS`` with a comment explaining why.
+
+Also asserts the env-var namespaces of :class:`Settings` and
+:class:`BenchmarkSettings` are collision-free (issue #376). Two settings
+classes share the same ``.env`` file; if a future field on :class:`Settings`
+resolved to the same fully-prefixed env-var name as a field on
+:class:`BenchmarkSettings` (e.g. ``Settings.bench_url`` vs
+``BenchmarkSettings.url``), a single env var would silently configure two
+different things. The collision test below locks in the current safe state
+(``BENCH_*`` prefix vs unprefixed) so that drift is caught at CI time.
 """
 
 from __future__ import annotations
 
 import re
+from collections import defaultdict
 from pathlib import Path
 
 from pydantic_settings import BaseSettings
@@ -86,4 +96,41 @@ def test_env_example_has_no_unknown_keys() -> None:
         f".env.example declares keys not found on any settings class: {unknown}. "
         "Either remove the stale keys or add the matching field to a "
         "BaseSettings subclass in _SETTINGS_CLASSES."
+    )
+
+
+def test_settings_classes_env_namespaces_do_not_collide() -> None:
+    """No env-var name is claimed by more than one settings class (issue #376).
+
+    :class:`Settings` and :class:`BenchmarkSettings` both load from the
+    shared ``.env`` file. :class:`BenchmarkSettings` uses
+    ``env_prefix='BENCH_'`` while :class:`Settings` uses no prefix, so
+    today the two namespaces are disjoint. If a future field on
+    :class:`Settings` named ``bench_url`` were added (resolving to
+    ``BENCH_URL``) it would silently collide with
+    :class:`BenchmarkSettings.url` (also ``BENCH_URL``) and a single env
+    var would configure two different things. Likewise, dropping
+    ``env_prefix`` on :class:`BenchmarkSettings` would collapse every
+    benchmark field into the main-``Settings`` namespace.
+
+    The assertion walks both classes' ``model_fields``, computes each
+    field's fully-prefixed env-var name, and fails with a readable
+    summary if the same name is claimed by more than one ``(class,
+    field)`` pair.
+    """
+    claimed: dict[str, list[str]] = defaultdict(list)
+    for cls in _SETTINGS_CLASSES:
+        prefix_raw = cls.model_config.get("env_prefix") or ""
+        prefix = str(prefix_raw).upper()
+        for name in cls.model_fields:
+            if name in _WAIVED_FIELDS:
+                continue
+            env_key = f"{prefix}{name.upper()}"
+            claimed[env_key].append(f"{cls.__name__}.{name}")
+    collisions = {env_key: owners for env_key, owners in claimed.items() if len(owners) > 1}
+    assert collisions == {}, (
+        "Settings/BenchmarkSettings env-var namespaces collide — the same "
+        f"env var maps to multiple (class, field) owners: {collisions}. "
+        "Either rename the offending field on one class, or adjust "
+        "env_prefix so the two namespaces remain disjoint."
     )
