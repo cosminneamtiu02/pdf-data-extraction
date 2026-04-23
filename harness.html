@@ -1,0 +1,683 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PDF Extraction Iteration Harness</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --panel-2: #1e232c;
+    --border: #2a313d;
+    --text: #e8ecf1;
+    --muted: #8a94a6;
+    --accent: #6ea8ff;
+    --accent-2: #3a6fd8;
+    --green: #2fbf71;
+    --yellow: #d9b03a;
+    --red: #e5524b;
+    --bbox: #ffce3a;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); color: var(--text); font-family: -apple-system, "Segoe UI", Roboto, sans-serif; font-size: 14px; }
+  button { background: var(--accent-2); color: white; border: 0; padding: 8px 14px; border-radius: 4px; cursor: pointer; font-size: 13px; }
+  button:hover:not(:disabled) { background: var(--accent); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.ghost { background: var(--panel-2); border: 1px solid var(--border); }
+  input[type=text], input[type=number], textarea {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+    padding: 6px 8px; border-radius: 4px; font: inherit; width: 100%;
+  }
+  label { color: var(--muted); font-size: 12px; display: block; margin-bottom: 4px; }
+  h1, h2, h3 { margin: 0 0 12px 0; font-weight: 600; }
+  h1 { font-size: 20px; }
+  h2 { font-size: 16px; }
+  .hidden { display: none !important; }
+  .screen { display: none; padding: 24px; }
+  .screen.active { display: block; }
+  .row { display: flex; gap: 12px; align-items: center; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 16px; margin-bottom: 16px; }
+  .muted { color: var(--muted); }
+  .small { font-size: 12px; }
+
+  /* Start screen */
+  #start-screen .card { max-width: 520px; margin: 80px auto; }
+  .field { margin-bottom: 14px; }
+  .radio-group label { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; cursor: pointer; color: var(--text); font-size: 14px; }
+
+  /* Progress */
+  #progress-screen .card { max-width: 640px; margin: 80px auto; text-align: center; }
+  .spinner { display: inline-block; width: 36px; height: 36px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #progress-log { margin-top: 16px; text-align: left; max-height: 280px; overflow: auto; font-family: ui-monospace, Menlo, monospace; font-size: 12px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 10px; }
+  #progress-log div { padding: 2px 0; color: var(--muted); }
+  #progress-log div.err { color: var(--red); }
+
+  /* Review screen layout */
+  #review-screen { padding: 0; height: 100vh; display: flex; flex-direction: column; }
+  #review-header { border-bottom: 1px solid var(--border); padding: 10px 18px; display: flex; justify-content: space-between; align-items: center; background: var(--panel); }
+  #review-header .title { display: flex; gap: 14px; align-items: baseline; }
+  #review-body { display: flex; flex: 1; min-height: 0; }
+  #pdf-panel { flex: 1.4; overflow: auto; background: #101217; padding: 12px; }
+  #fields-panel { flex: 1; border-left: 1px solid var(--border); overflow: auto; padding: 16px; background: var(--panel); }
+  #pdf-container { position: relative; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+  .page-wrap { position: relative; box-shadow: 0 4px 14px rgba(0,0,0,0.4); }
+  .page-wrap canvas { display: block; }
+  .bbox {
+    position: absolute; border: 2px solid var(--bbox); background: rgba(255,206,58,0.08); pointer-events: none;
+    transition: box-shadow 0.3s ease, background-color 0.3s ease;
+  }
+  .bbox.flash { box-shadow: 0 0 0 6px rgba(255,206,58,0.5); background: rgba(255,206,58,0.35); }
+
+  /* Field rows */
+  .field-row { background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 10px; margin-bottom: 10px; cursor: pointer; }
+  .field-row:hover { border-color: var(--accent-2); }
+  .field-row.no-bbox { cursor: default; opacity: 0.85; }
+  .field-row .name { margin-bottom: 6px; }
+  .field-row .io { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .field-row .bbox-label { font-size: 11px; color: var(--muted); margin-top: 4px; }
+  .field-row .diff { border-color: var(--yellow); }
+  .field-row .row-actions { display: flex; justify-content: flex-end; margin-top: 6px; gap: 6px; }
+  .field-row .delete-btn { background: transparent; color: var(--red); border: 1px solid var(--red); padding: 2px 8px; font-size: 12px; }
+
+  /* Summary */
+  #summary-screen .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; }
+  .cell { padding: 14px 10px; text-align: center; border-radius: 4px; border: 1px solid var(--border); cursor: pointer; font-family: ui-monospace, Menlo, monospace; }
+  .cell.green { background: rgba(47,191,113,0.18); border-color: var(--green); }
+  .cell.yellow { background: rgba(217,176,58,0.18); border-color: var(--yellow); }
+  .cell.red { background: rgba(229,82,75,0.18); border-color: var(--red); }
+
+  /* Modal */
+  .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,0.55); display: flex; align-items: center; justify-content: center; z-index: 50; }
+  .modal { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 22px; min-width: 360px; }
+</style>
+</head>
+<body>
+
+<!-- Start screen -->
+<section id="start-screen" class="screen active">
+  <div class="card">
+    <h1>PDF Extraction Iteration Harness</h1>
+    <p class="muted small">Runs live in <code>iterations/run-N/</code>. Source PDFs in <code>data/&lt;id&gt;/source.pdf</code>.</p>
+
+    <div class="field">
+      <label>Mode</label>
+      <div class="radio-group">
+        <label><input type="radio" name="mode" value="data_only" checked /> Data only (JSON)</label>
+        <label><input type="radio" name="mode" value="data_and_annotated" /> Data + annotated PDF</label>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Skill name</label>
+      <input id="skill-name" type="text" placeholder="invoice" />
+    </div>
+
+    <div class="field">
+      <label>Skill version</label>
+      <input id="skill-version" type="number" min="1" step="1" value="1" />
+    </div>
+
+    <div class="row" style="margin-top: 18px;">
+      <button id="start-btn">Start run</button>
+      <span id="pdf-count" class="muted small"></span>
+    </div>
+  </div>
+</section>
+
+<!-- Progress screen -->
+<section id="progress-screen" class="screen">
+  <div class="card">
+    <h1>Running inference…</h1>
+    <div class="spinner"></div>
+    <div style="margin-top: 12px;">
+      <span class="muted">Elapsed</span>
+      <strong id="elapsed">0.0s</strong>
+      &nbsp;·&nbsp;
+      <span class="muted">PDFs</span>
+      <strong id="pdf-progress">0 / 0</strong>
+    </div>
+    <div id="progress-log"></div>
+  </div>
+</section>
+
+<!-- Per-PDF review -->
+<section id="review-screen" class="screen">
+  <div id="review-header">
+    <div class="title">
+      <strong>Run <span id="header-run"></span></strong>
+      <span class="muted">·</span>
+      <span>PDF <span id="header-pdf"></span></span>
+      <span class="muted">(<span id="header-index"></span> / <span id="header-total"></span>)</span>
+      <span class="muted">·</span>
+      <span class="muted small">inference: <span id="header-timing"></span>ms</span>
+    </div>
+    <div class="row">
+      <button class="ghost" id="prev-btn">← Prev</button>
+      <button class="ghost" id="next-btn">Next →</button>
+      <button class="ghost" id="to-summary-btn">Summary</button>
+    </div>
+  </div>
+  <div id="review-body">
+    <div id="pdf-panel"><div id="pdf-container"></div></div>
+    <div id="fields-panel">
+      <div class="row" style="justify-content: space-between; align-items: center; margin-bottom: 12px;">
+        <h2 style="margin: 0;">Fields</h2>
+        <button class="ghost" id="add-field-btn">+ Add row</button>
+      </div>
+      <div id="field-rows"></div>
+    </div>
+  </div>
+</section>
+
+<!-- Summary -->
+<section id="summary-screen" class="screen">
+  <div class="card">
+    <h1>Run <span id="summary-run"></span> — Summary</h1>
+    <div class="row" style="gap: 24px;">
+      <div>
+        <div class="muted small">Total wall-clock</div>
+        <div style="font-size: 20px;" id="summary-total"></div>
+      </div>
+      <div>
+        <div class="muted small">Avg per PDF</div>
+        <div style="font-size: 20px;" id="summary-avg"></div>
+      </div>
+      <div>
+        <div class="muted small">Counts</div>
+        <div style="font-size: 16px;" id="summary-counts"></div>
+      </div>
+    </div>
+  </div>
+  <div class="card">
+    <h2>PDFs</h2>
+    <div class="grid" id="summary-grid"></div>
+  </div>
+  <div class="card">
+    <h2>Run comments</h2>
+    <textarea id="run-comments" rows="4" placeholder="Notes about the whole run — what changed vs the previous iteration, ideas for the next skill revision, etc."></textarea>
+    <div class="row" style="margin-top: 12px; justify-content: space-between;">
+      <button class="ghost" id="back-to-review-btn">← Back to review</button>
+      <button id="export-btn">Export feedback.json</button>
+    </div>
+  </div>
+</section>
+
+<!-- Export modal -->
+<div id="export-modal" class="modal-bg hidden">
+  <div class="modal">
+    <h2>Export feedback</h2>
+    <p class="muted small">Include source PDFs in the download?</p>
+    <div class="row" style="margin-top: 16px; justify-content: flex-end; gap: 8px;">
+      <button class="ghost" id="export-cancel-btn">Cancel</button>
+      <button class="ghost" id="export-no-pdfs-btn">No — JSON only</button>
+      <button id="export-with-pdfs-btn">Yes — include PDFs</button>
+    </div>
+  </div>
+</div>
+
+<!-- pdf.js ESM from CDN -->
+<script type="module">
+  import * as pdfjsLib from "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.6.82/build/pdf.min.mjs";
+  pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.6.82/build/pdf.worker.min.mjs";
+  window.__pdfjsLib = pdfjsLib;
+  window.dispatchEvent(new Event("pdfjs-ready"));
+</script>
+
+<script>
+"use strict";
+
+// ---------- State ----------
+const state = {
+  runId: null,
+  mode: "data_only",
+  skillName: "",
+  skillVersion: 1,
+  pdfIds: [],
+  resultsByPdf: {},       // pdf_id -> {fields, timing_ms, error}
+  expectedByPdf: {},      // pdf_id -> {fields: [{name,value}]}
+  currentIndex: 0,
+  pageViewports: [],      // per-page {width, height, pageHeightPts}
+  elapsedTimer: null,
+};
+
+// ---------- DOM helpers ----------
+const $ = sel => document.querySelector(sel);
+const $$ = sel => Array.from(document.querySelectorAll(sel));
+function show(screenId) {
+  $$(".screen").forEach(s => s.classList.remove("active"));
+  $(`#${screenId}`).classList.add("active");
+}
+
+// ---------- Start screen ----------
+$("#start-btn").addEventListener("click", async () => {
+  state.mode = document.querySelector('input[name="mode"]:checked').value;
+  state.skillName = $("#skill-name").value.trim();
+  state.skillVersion = parseInt($("#skill-version").value, 10) || 1;
+  if (!state.skillName) { alert("skill name required"); return; }
+
+  const resp = await fetch("/harness/runs", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      mode: state.mode, skill_name: state.skillName, skill_version: state.skillVersion,
+    }),
+  });
+  if (!resp.ok) { alert("create run failed: " + await resp.text()); return; }
+  const { run_id } = await resp.json();
+  state.runId = run_id;
+
+  // Fetch PDF list
+  const pdfResp = await fetch(`/harness/runs/${run_id}/pdfs`);
+  const pdfs = await pdfResp.json();
+  state.pdfIds = pdfs.map(p => p.pdf_id);
+  if (state.pdfIds.length === 0) {
+    alert("No PDFs found in data/. Add data/000/source.pdf, data/001/source.pdf, … and retry.");
+    return;
+  }
+
+  beginInference();
+});
+
+// Show PDF count on the start screen
+(async () => {
+  try {
+    const resp = await fetch("/harness/runs/0/pdfs"); // run_id unused for list
+    if (resp.ok) {
+      const pdfs = await resp.json();
+      $("#pdf-count").textContent = `${pdfs.length} PDF(s) detected in data/`;
+    }
+  } catch {}
+})();
+
+// ---------- Inference / progress ----------
+function beginInference() {
+  show("progress-screen");
+  $("#progress-log").innerHTML = "";
+  $("#pdf-progress").textContent = `0 / ${state.pdfIds.length}`;
+
+  const startMs = performance.now();
+  clearInterval(state.elapsedTimer);
+  state.elapsedTimer = setInterval(() => {
+    const s = ((performance.now() - startMs) / 1000).toFixed(1);
+    $("#elapsed").textContent = s + "s";
+  }, 100);
+
+  const source = new EventSource(`/harness/runs/${state.runId}/infer`, { });
+  // NOTE: POST via EventSource isn't supported by default; the backend
+  // accepts POST but EventSource issues GET. We switch to a fetch-based
+  // streaming consumer below to avoid changing the endpoint verb.
+  source.close();
+
+  streamInference(startMs);
+}
+
+async function streamInference(startMs) {
+  const resp = await fetch(`/harness/runs/${state.runId}/infer`, { method: "POST" });
+  if (!resp.ok || !resp.body) {
+    appendLog("infer request failed", true);
+    return;
+  }
+  const reader = resp.body.getReader();
+  const dec = new TextDecoder("utf-8");
+  let buf = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    // SSE frames: "data: {...}\n\n"
+    let idx;
+    while ((idx = buf.indexOf("\n\n")) !== -1) {
+      const frame = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      const line = frame.split("\n").find(l => l.startsWith("data:"));
+      if (!line) continue;
+      const payload = JSON.parse(line.slice(5).trim());
+      handleSseEvent(payload);
+    }
+  }
+}
+
+function appendLog(msg, isErr) {
+  const d = document.createElement("div");
+  d.textContent = msg;
+  if (isErr) d.className = "err";
+  $("#progress-log").appendChild(d);
+  $("#progress-log").scrollTop = $("#progress-log").scrollHeight;
+}
+
+function handleSseEvent(ev) {
+  if (ev.type === "start") {
+    appendLog(`starting: ${ev.total} PDFs`);
+  } else if (ev.type === "pdf_start") {
+    appendLog(`→ ${ev.pdf_id} (${ev.index + 1}/${ev.total})`);
+    $("#pdf-progress").textContent = `${ev.index} / ${ev.total}`;
+  } else if (ev.type === "pdf_done") {
+    if (ev.error) {
+      appendLog(`  ✗ ${ev.pdf_id} — ${ev.error}`, true);
+    } else {
+      appendLog(`  ✓ ${ev.pdf_id} — ${ev.timing_ms}ms`);
+    }
+    $("#pdf-progress").textContent = `${ev.index + 1} / ${ev.total}`;
+  } else if (ev.type === "done") {
+    clearInterval(state.elapsedTimer);
+    appendLog(`done: total ${ev.total_ms}ms, avg ${ev.avg_ms}ms`);
+    finishInference();
+  }
+}
+
+async function finishInference() {
+  // Pre-fetch all results and expected files so review navigation is instant.
+  for (const pdfId of state.pdfIds) {
+    const [r, e] = await Promise.all([
+      fetch(`/harness/runs/${state.runId}/results/${pdfId}`).then(r => r.json()),
+      fetch(`/harness/runs/${state.runId}/expected/${pdfId}`).then(r => r.json()),
+    ]);
+    state.resultsByPdf[pdfId] = r;
+    state.expectedByPdf[pdfId] = e;
+  }
+  state.currentIndex = 0;
+  await renderReview();
+  show("review-screen");
+}
+
+// ---------- Review screen ----------
+$("#prev-btn").addEventListener("click", async () => {
+  if (state.currentIndex > 0) { state.currentIndex--; await renderReview(); }
+});
+$("#next-btn").addEventListener("click", async () => {
+  if (state.currentIndex < state.pdfIds.length - 1) { state.currentIndex++; await renderReview(); }
+  else { showSummary(); }
+});
+$("#to-summary-btn").addEventListener("click", () => showSummary());
+
+async function renderReview() {
+  const pdfId = state.pdfIds[state.currentIndex];
+  $("#header-run").textContent = state.runId;
+  $("#header-pdf").textContent = pdfId;
+  $("#header-index").textContent = state.currentIndex + 1;
+  $("#header-total").textContent = state.pdfIds.length;
+  const r = state.resultsByPdf[pdfId];
+  $("#header-timing").textContent = r?.timing_ms ?? "?";
+
+  await renderPdf(pdfId);
+  renderFieldRows(pdfId);
+}
+
+async function renderPdf(pdfId) {
+  const container = $("#pdf-container");
+  container.innerHTML = "";
+  state.pageViewports = [];
+
+  // pdf.js is loaded as a module above; wait for readiness.
+  if (!window.__pdfjsLib) {
+    await new Promise(res => window.addEventListener("pdfjs-ready", res, { once: true }));
+  }
+  const pdfjsLib = window.__pdfjsLib;
+
+  const loadingTask = pdfjsLib.getDocument(`/harness/runs/${state.runId}/pdfs/${pdfId}/source`);
+  const pdf = await loadingTask.promise;
+  const scale = 1.4;
+
+  for (let p = 1; p <= pdf.numPages; p++) {
+    const page = await pdf.getPage(p);
+    const viewport = page.getViewport({ scale });
+    const pageHeightPts = page.view[3] - page.view[1]; // height in PDF points
+    state.pageViewports.push({ scale, width: viewport.width, height: viewport.height, pageHeightPts });
+
+    const wrap = document.createElement("div");
+    wrap.className = "page-wrap";
+    wrap.dataset.page = String(p);
+    wrap.style.width = viewport.width + "px";
+    wrap.style.height = viewport.height + "px";
+
+    const canvas = document.createElement("canvas");
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    wrap.appendChild(canvas);
+    container.appendChild(wrap);
+
+    const ctx = canvas.getContext("2d");
+    await page.render({ canvasContext: ctx, viewport, canvas }).promise;
+  }
+
+  drawBoxes(pdfId);
+}
+
+function drawBoxes(pdfId) {
+  // Clear old boxes
+  $$(".bbox").forEach(e => e.remove());
+  const fields = (state.resultsByPdf[pdfId]?.fields) || [];
+  fields.forEach((f, i) => {
+    if (!f.bbox) return;
+    const vp = state.pageViewports[f.bbox.page - 1];
+    if (!vp) return;
+    const wrap = document.querySelector(`.page-wrap[data-page="${f.bbox.page}"]`);
+    if (!wrap) return;
+    // backend stores bottom-left-origin x,y,w,h in PDF points. Convert:
+    // canvas-y = (pageHeightPts - (y + h)) * scale
+    const scale = vp.scale;
+    const box = document.createElement("div");
+    box.className = "bbox";
+    box.dataset.fieldIndex = String(i);
+    box.style.left = (f.bbox.x * scale) + "px";
+    box.style.top = ((vp.pageHeightPts - (f.bbox.y + f.bbox.h)) * scale) + "px";
+    box.style.width = (f.bbox.w * scale) + "px";
+    box.style.height = (f.bbox.h * scale) + "px";
+    wrap.appendChild(box);
+  });
+}
+
+function renderFieldRows(pdfId) {
+  const container = $("#field-rows");
+  container.innerHTML = "";
+
+  const r = state.resultsByPdf[pdfId] || { fields: [] };
+  const exp = state.expectedByPdf[pdfId] || { fields: [] };
+  const expByName = new Map(exp.fields.map(f => [f.name, f.value ?? ""]));
+
+  // Union of all field names; output field order first, then any extras from expected.
+  const rowKeys = [];
+  const seen = new Set();
+  for (const f of r.fields) { rowKeys.push({ name: f.name, bbox: f.bbox, output: f.value ?? "" }); seen.add(f.name); }
+  for (const f of exp.fields) {
+    if (!seen.has(f.name)) { rowKeys.push({ name: f.name, bbox: null, output: "" }); seen.add(f.name); }
+  }
+
+  rowKeys.forEach((row, i) => {
+    const expected = expByName.get(row.name) ?? "";
+    const rowEl = buildFieldRow({ name: row.name, output: row.output, expected, bbox: row.bbox, index: i, pdfId });
+    container.appendChild(rowEl);
+  });
+}
+
+function buildFieldRow({ name, output, expected, bbox, index, pdfId }) {
+  const row = document.createElement("div");
+  row.className = "field-row" + (bbox ? "" : " no-bbox");
+  row.innerHTML = `
+    <div class="name">
+      <label>Field name</label>
+      <input type="text" class="in-name" value="${escapeAttr(name)}" />
+    </div>
+    <div class="io">
+      <div>
+        <label>Output (read-only)</label>
+        <input type="text" class="in-output" value="${escapeAttr(output)}" readonly />
+      </div>
+      <div>
+        <label>Expected</label>
+        <input type="text" class="in-expected" value="${escapeAttr(expected)}" />
+      </div>
+    </div>
+    <div class="bbox-label">${bbox ? `bbox · page ${bbox.page}` : "no bbox"}</div>
+    <div class="row-actions">
+      <button class="delete-btn">Delete row</button>
+    </div>
+  `;
+
+  row.addEventListener("click", ev => {
+    // Ignore clicks that are inside inputs/buttons — those are edits.
+    if (ev.target.closest("input, button")) return;
+    if (!bbox) return;
+    scrollToBoxAndFlash(bbox);
+  });
+
+  const nameInput = row.querySelector(".in-name");
+  const expectedInput = row.querySelector(".in-expected");
+  const deleteBtn = row.querySelector(".delete-btn");
+
+  const debouncedSave = debounce(() => saveExpected(pdfId), 300);
+  nameInput.addEventListener("input", debouncedSave);
+  expectedInput.addEventListener("input", debouncedSave);
+  deleteBtn.addEventListener("click", () => {
+    row.remove();
+    saveExpected(pdfId);
+  });
+
+  return row;
+}
+
+function scrollToBoxAndFlash(bbox) {
+  const vp = state.pageViewports[bbox.page - 1];
+  if (!vp) return;
+  const wrap = document.querySelector(`.page-wrap[data-page="${bbox.page}"]`);
+  if (!wrap) return;
+  const top = wrap.offsetTop + ((vp.pageHeightPts - (bbox.y + bbox.h)) * vp.scale);
+  $("#pdf-panel").scrollTo({ top: top - 80, behavior: "smooth" });
+  const boxEls = wrap.querySelectorAll(".bbox");
+  boxEls.forEach(b => {
+    // Match by geometry roughly — easier than threading indices.
+    const left = parseFloat(b.style.left);
+    const bt = parseFloat(b.style.top);
+    if (Math.abs(left - bbox.x * vp.scale) < 1 && Math.abs(bt - (vp.pageHeightPts - (bbox.y + bbox.h)) * vp.scale) < 1) {
+      b.classList.add("flash");
+      setTimeout(() => b.classList.remove("flash"), 1000);
+    }
+  });
+}
+
+$("#add-field-btn").addEventListener("click", () => {
+  const pdfId = state.pdfIds[state.currentIndex];
+  const row = buildFieldRow({ name: "", output: "", expected: "", bbox: null, index: -1, pdfId });
+  $("#field-rows").appendChild(row);
+});
+
+async function saveExpected(pdfId) {
+  const rows = $$("#field-rows .field-row");
+  const fields = rows.map(r => ({
+    name: r.querySelector(".in-name").value,
+    value: r.querySelector(".in-expected").value,
+  }));
+  const body = { fields };
+  state.expectedByPdf[pdfId] = body;
+  await fetch(`/harness/runs/${state.runId}/expected/${pdfId}`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+// ---------- Summary screen ----------
+function showSummary() {
+  $("#summary-run").textContent = state.runId;
+
+  // Compute stats locally from cached state.
+  let total = 0, green = 0, yellow = 0, red = 0;
+  const cells = [];
+  for (const pdfId of state.pdfIds) {
+    const r = state.resultsByPdf[pdfId] || { fields: [], timing_ms: 0 };
+    const e = state.expectedByPdf[pdfId] || { fields: [] };
+    total += r.timing_ms || 0;
+    const status = classifyPdf(r, e);
+    if (status === "green") green++;
+    else if (status === "yellow") yellow++;
+    else red++;
+    cells.push({ pdfId, status, timing: r.timing_ms || 0 });
+  }
+  const avg = state.pdfIds.length ? Math.round(total / state.pdfIds.length) : 0;
+  $("#summary-total").textContent = `${total} ms`;
+  $("#summary-avg").textContent = `${avg} ms`;
+  $("#summary-counts").innerHTML = `
+    <span style="color: var(--green)">${green} green</span> ·
+    <span style="color: var(--yellow)">${yellow} yellow</span> ·
+    <span style="color: var(--red)">${red} red</span>
+  `;
+
+  const grid = $("#summary-grid");
+  grid.innerHTML = "";
+  cells.forEach((c, i) => {
+    const el = document.createElement("div");
+    el.className = "cell " + c.status;
+    el.innerHTML = `<div><strong>${c.pdfId}</strong></div><div class="small muted">${c.timing}ms</div>`;
+    el.addEventListener("click", async () => {
+      state.currentIndex = i;
+      await renderReview();
+      show("review-screen");
+    });
+    grid.appendChild(el);
+  });
+  show("summary-screen");
+}
+
+function classifyPdf(r, e) {
+  const outputByName = new Map((r.fields || []).map(f => [f.name, f.value ?? ""]));
+  const expectedByName = new Map((e.fields || []).map(f => [f.name, f.value ?? ""]));
+  const names = new Set([...outputByName.keys(), ...expectedByName.keys()]);
+  if (names.size === 0) return "red";
+  let anyEmpty = false, anyMismatch = false;
+  for (const n of names) {
+    const o = outputByName.get(n) ?? "";
+    const x = expectedByName.get(n) ?? "";
+    if (!n || !o || !x) anyEmpty = true;
+    if (o !== x) anyMismatch = true;
+  }
+  if (anyEmpty) return "red";
+  if (anyMismatch) return "yellow";
+  return "green";
+}
+
+$("#back-to-review-btn").addEventListener("click", () => show("review-screen"));
+
+// ---------- Export ----------
+$("#export-btn").addEventListener("click", () => {
+  $("#export-modal").classList.remove("hidden");
+});
+$("#export-cancel-btn").addEventListener("click", () => $("#export-modal").classList.add("hidden"));
+$("#export-no-pdfs-btn").addEventListener("click", () => doExport(false));
+$("#export-with-pdfs-btn").addEventListener("click", () => doExport(true));
+
+async function doExport(includePdfs) {
+  $("#export-modal").classList.add("hidden");
+  const body = {
+    include_pdfs: includePdfs,
+    run_comments: $("#run-comments").value,
+    per_pdf_notes: {},
+  };
+  const resp = await fetch(`/harness/runs/${state.runId}/export`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) { alert("export failed: " + await resp.text()); return; }
+  const blob = await resp.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = includePdfs ? `feedback-run-${state.runId}.zip` : `feedback-run-${state.runId}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ---------- Utils ----------
+function debounce(fn, ms) {
+  let t;
+  return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+}
+function escapeAttr(s) {
+  return String(s ?? "").replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
+}
+</script>
+
+</body>
+</html>

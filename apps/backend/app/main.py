@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, cast
 
 import structlog
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
 
 from app.api.deps import get_ollama_health_probe_for_app
 from app.api.errors import register_exception_handlers
@@ -26,6 +27,8 @@ from app.features.extraction.skills import (
     SkillLoader,
     SkillManifest,
 )
+from app.harness.paths import project_root
+from app.harness.router import router as harness_router
 
 if TYPE_CHECKING:
     from types import SimpleNamespace
@@ -360,6 +363,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     application.include_router(health_router)
     application.include_router(extraction_router, prefix="/api/v1")
+    application.include_router(harness_router)
+
+    # Serve the iteration harness HTML same-origin so the UI can call
+    # ``/harness/...`` without CORS plumbing. The file lives at the
+    # project root (one level above ``apps/``) so developers edit it in
+    # place without needing a build step.
+    _harness_html_path = project_root() / "harness.html"
+
+    @application.get("/harness.html", include_in_schema=False)
+    async def _serve_harness_html() -> FileResponse:  # pyright: ignore[reportUnusedFunction]  # FastAPI wires it via the decorator
+        return FileResponse(_harness_html_path, media_type="text/html")
 
     return application
 
