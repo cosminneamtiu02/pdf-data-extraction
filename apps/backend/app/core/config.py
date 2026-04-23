@@ -322,4 +322,6 @@ def load_settings() -> Settings:
     ``extraction_engine.py``) can call ``load_settings()`` with no inline
     pragma, and the justification lives in exactly one place (issue #378).
     """
-    return Settings()  # type: ignore[reportCallIssue]  # pydantic-settings populates fields from env / .env / defaults
+    # pydantic-settings populates fields from env / .env / defaults at
+    # runtime, even though pyright cannot prove that through BaseSettings.
+    return Settings()  # type: ignore[reportCallIssue]
