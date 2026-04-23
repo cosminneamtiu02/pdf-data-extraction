@@ -14,7 +14,7 @@ import pytest
 from app.exceptions import SkillNotFoundError
 from app.features.extraction.skills import skill_manifest as skill_manifest_module
 from app.features.extraction.skills.skill_manifest import SkillManifest
-from tests.conftest import make_skill
+from tests._support.skill_factory import make_skill
 
 
 class _SpyLogger:

@@ -4,7 +4,7 @@ import pytest
 
 from app.exceptions import SkillNotFoundError
 from app.features.extraction.skills.skill_manifest import SkillManifest
-from tests.conftest import make_skill
+from tests._support.skill_factory import make_skill
 
 
 @pytest.fixture
@@ -77,10 +77,11 @@ def test_populated_manifest_is_empty_false(manifest: SkillManifest) -> None:
 def test_make_skill_helper_produces_valid_skill() -> None:
     """Guard against silent ``make_skill`` breakage across test modules.
 
-    ``make_skill`` lives in ``tests/conftest.py`` and is imported by
-    unit and integration tests; if its shape drifts from ``Skill``'s
-    runtime invariants, the callers surface misleading errors. This
-    test is the canonical check so breakage shows up here first.
+    ``make_skill`` lives in ``tests/_support/skill_factory.py`` and is
+    imported by unit and integration tests; if its shape drifts from
+    ``Skill``'s runtime invariants, the callers surface misleading
+    errors. This test is the canonical check so breakage shows up here
+    first.
     """
     skill = make_skill("invoice", 7)
     assert skill.name == "invoice"

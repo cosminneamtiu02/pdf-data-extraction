@@ -19,7 +19,7 @@ from app.api.health_router import health, ready
 from app.api.schemas.not_ready_response import NotReadyResponse
 from app.api.schemas.ready_response import ReadyResponse
 from app.features.extraction.skills import SkillManifest
-from tests.conftest import make_skill
+from tests._support.skill_factory import make_skill
 
 # ---------------------------------------------------------------------------
 # Fakes

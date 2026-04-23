@@ -1,23 +1,25 @@
-"""Shared test fixtures and fakes used across unit and integration tests."""
+"""Shared test fixtures and fakes used across unit and integration tests.
+
+Kept deliberately skinny -- this module loads for every test file pytest
+collects, so any import here is a tax paid by the entire suite (issue
+#354). Helpers whose construction needs production-module imports live
+under ``tests/_support/`` and are imported explicitly by the test
+modules that actually use them.
+"""
 
 from __future__ import annotations
-
-from typing import Any
-
-from app.features.extraction.skills import Skill, SkillDoclingConfig, SkillExample
-from app.features.extraction.skills.deep_freeze import deep_freeze_mapping
 
 
 class FakeProbeExhausted(BaseException):
     """Raised by ``FakeProbe.check`` when scripted results are exhausted.
 
-    Subclasses ``BaseException`` — *not* ``Exception`` — deliberately.
+    Subclasses ``BaseException`` -- *not* ``Exception`` -- deliberately.
 
     Production code paths that consume ``probe.check()`` (``ProbeCache.is_ready``
     and ``app.main._lifespan``) wrap the call in a broad ``except Exception``
     so that any unexpected ``Exception`` subclass is degraded into a cached
     ``False`` instead of propagating and turning ``/ready`` into a 500 (issue
-    #144). That guard is load-bearing for the ``/ready`` contract — but it
+    #144). That guard is load-bearing for the ``/ready`` contract -- but it
     would silently swallow an ``AssertionError`` from an exhausted ``FakeProbe``,
     converting a misconfigured test into a green ``False`` result instead of a
     loud pytest failure.
@@ -59,29 +61,3 @@ class FakeProbe:
         result = self._results[self.call_count]
         self.call_count += 1
         return result
-
-
-def make_skill(name: str, version: int) -> Skill:
-    """Construct a minimal valid ``Skill`` for test fixtures.
-
-    Lives here (not in ``tests/unit/features/extraction/skills/...``) because
-    multiple test modules across unit and integration need it — keeping it
-    co-located with ``test_skill_manifest.py`` forced cross-test imports
-    that coupled unrelated files to that module's private helper.
-    """
-    output_schema: dict[str, Any] = {
-        "type": "object",
-        "properties": {"number": {"type": "string"}},
-        "required": ["number"],
-    }
-    # Deep-freeze to match production `Skill.from_schema` behaviour so
-    # accidental in-test mutations fail the same way they would at runtime.
-    return Skill(
-        name=name,
-        version=version,
-        description=None,
-        prompt="Extract header fields.",
-        examples=(SkillExample(input="INV-1", output={"number": "INV-1"}),),
-        output_schema=deep_freeze_mapping(output_schema),
-        docling_config=SkillDoclingConfig(),
-    )
