@@ -60,6 +60,39 @@ def test_settings_ollama_probe_timeout_default() -> None:
     assert s.ollama_probe_timeout_seconds == 5.0
 
 
+# -- ollama_temperature validation (issue #384) ---------------------------
+
+
+def test_settings_ollama_temperature_default() -> None:
+    """ollama_temperature defaults to 0.0 so the pre-issue-#384 behavior
+    (deterministic sampling for validator retries, issue #136) is preserved
+    for any deployment that does not override the field.
+    """
+    s = Settings()
+    assert s.ollama_temperature == 0.0
+
+
+def test_settings_ollama_temperature_accepts_override() -> None:
+    """Non-default sampling temperatures in the supported range must load."""
+    s = Settings(ollama_temperature=0.7)
+    assert s.ollama_temperature == 0.7
+
+
+def test_settings_ollama_temperature_negative_rejected() -> None:
+    """Negative sampling temperatures are not meaningful; fail at load."""
+    with pytest.raises(ValidationError):
+        Settings(ollama_temperature=-0.1)
+
+
+def test_settings_ollama_temperature_above_upper_bound_rejected() -> None:
+    """Temperatures above Ollama's 2.0 cap would be rejected by the server
+    with a 400 at runtime; fail fast at config load so operators see the
+    misconfiguration before the first request.
+    """
+    with pytest.raises(ValidationError):
+        Settings(ollama_temperature=2.5)
+
+
 # -- ollama_base_url validation (issue #64) --------------------------------
 
 
