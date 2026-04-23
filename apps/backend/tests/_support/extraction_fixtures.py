@@ -16,6 +16,8 @@ the contract layer and most integration tests.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from app.features.extraction.extraction_result import ExtractionResult
 from app.features.extraction.schemas.bounding_box_ref import BoundingBoxRef
 from app.features.extraction.schemas.extract_response import ExtractResponse
@@ -23,7 +25,16 @@ from app.features.extraction.schemas.extracted_field import ExtractedField
 from app.features.extraction.schemas.extraction_metadata import ExtractionMetadata
 from app.features.extraction.schemas.field_status import FieldStatus
 
-_DEFAULT_BBOX = BoundingBoxRef(page=1, x0=10.0, y0=20.0, x1=100.0, y1=30.0)
+
+def _default_bbox() -> BoundingBoxRef:
+    """Construct a fresh default ``BoundingBoxRef`` per call.
+
+    A module-level singleton would be reused across every caller, and
+    ``BoundingBoxRef`` is a mutable Pydantic model — mutation in one test
+    could leak into subsequent calls. Building a new instance per call
+    isolates fixtures from each other.
+    """
+    return BoundingBoxRef(page=1, x0=10.0, y0=20.0, x1=100.0, y1=30.0)
 
 
 def make_canned_result(  # noqa: PLR0913  # each field maps to a distinct knob; merging loses call-site clarity
@@ -41,21 +52,26 @@ def make_canned_result(  # noqa: PLR0913  # each field maps to a distinct knob; 
 
     All arguments are keyword-only so adding a new knob is backward-
     compatible. When ``bbox_refs`` is ``None`` the helper falls back to a
-    single-bbox default; pass ``[]`` explicitly to produce an ungrounded
-    field with no bounding boxes.
+    single-bbox default and produces a grounded, document-sourced field;
+    pass ``[]`` explicitly to produce an ungrounded, inferred field with
+    no bounding boxes. ``grounded`` and ``source`` are always derived
+    from whether any refs were supplied so the two shapes stay in lock-
+    step with the extraction pipeline's invariant.
 
     The returned object exercises the same field/metadata/response
     shape the extraction router emits on success; callers override just
     the field name and page count they need for their specific skill
     fixture.
     """
-    refs = [_DEFAULT_BBOX] if bbox_refs is None else bbox_refs
+    refs = [_default_bbox()] if bbox_refs is None else bbox_refs
+    grounded = bool(refs)
+    source: Literal["document", "inferred"] = "document" if grounded else "inferred"
     field = ExtractedField(
         name=field_name,
         value=field_value,
         status=FieldStatus.extracted,
-        source="document",
-        grounded=True,
+        source=source,
+        grounded=grounded,
         bbox_refs=refs,
     )
     metadata = ExtractionMetadata(

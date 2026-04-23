@@ -68,10 +68,13 @@ def test_make_canned_result_annotated_pdf_bytes_are_attached() -> None:
 
 
 def test_make_canned_result_explicit_empty_bbox_refs_ungrounded_field() -> None:
-    """Passing ``bbox_refs=[]`` overrides the default single-bbox fallback."""
+    """Passing ``bbox_refs=[]`` yields an explicitly ungrounded, inferred field."""
     result = make_canned_result(bbox_refs=[])
 
-    assert result.response.fields["number"].bbox_refs == []
+    field = result.response.fields["number"]
+    assert field.bbox_refs == []
+    assert field.grounded is False
+    assert field.source == "inferred"
 
 
 def test_make_canned_result_custom_bbox_refs_are_used_as_is() -> None:
