@@ -52,7 +52,7 @@ from typing import TYPE_CHECKING, Any, cast
 import langextract
 from langextract.core.data import AnnotatedDocument, ExampleData, Extraction
 
-from app.core.config import Settings
+from app.core.config import Settings, load_settings
 from app.features.extraction.extraction._validating_langextract_adapter import (
     _ValidatingLangExtractAdapter,  # pyright: ignore[reportPrivateUsage]
     # ^ The adapter and this module are co-owners of the LangExtract
@@ -92,7 +92,7 @@ class ExtractionEngine:
         # env variables, matching the rest of the service.
         settings = self._settings
         if settings is None:
-            settings = Settings()  # type: ignore[reportCallIssue]  # pydantic-settings loads fields from env
+            settings = load_settings()
             self._settings = settings
         return settings.ollama_timeout_seconds
 
