@@ -1,16 +1,19 @@
 """Unit tests for ``scripts.benchmark`` — local latency benchmark script.
 
-Covers the sixteen unit scenarios in PDFX-E007-F005: percentile computation
-(happy path, single value, empty), report formatting (per-fixture table,
-memory section, NFR comparison), fixture discovery (all present, one
-missing, all missing), CLI parsing (--help, defaults, overrides, validation),
-warm-up discard, and pyright strict pass.
+Covers the PDFX-E007-F005 unit scenarios: percentile computation (happy path,
+single value, empty), report formatting (per-fixture table, memory section,
+NFR comparison), fixture discovery (all present, one missing, all missing),
+CLI parsing (--help, defaults, overrides, validation), and warm-up discard.
+
+The pyright-strict-on-benchmark-module check was relocated to
+``tests/integration/scripts/test_benchmark_pyright_strict.py`` under issue
+#398 because spinning up a pyright subprocess cold-starts in 5-15 s and
+blew the <10 s unit-suite budget enshrined in CLAUDE.md's Testing Rules.
 """
 
 from __future__ import annotations
 
 import io
-import subprocess
 import sys
 from pathlib import Path
 
@@ -648,20 +651,3 @@ def test_warmup_discard_removes_first_value() -> None:
     # p50 should be near 5.0, not skewed by the 60.0 outlier
     p50 = compute_percentile(warmed, 50)
     assert p50 < 10.0
-
-
-# ---------------------------------------------------------------------------
-# Pyright strict
-# ---------------------------------------------------------------------------
-
-
-def test_pyright_strict_passes_on_benchmark_module() -> None:
-    """pyright --strict reports zero errors on scripts/benchmark.py."""
-    result = subprocess.run(
-        [sys.executable, "-m", "pyright", "--pythonversion", "3.13", "scripts/benchmark.py"],
-        capture_output=True,
-        text=True,
-        check=False,
-        cwd=str(Path(__file__).resolve().parents[3]),  # apps/backend/
-    )
-    assert result.returncode == 0, f"pyright errors:\n{result.stdout}\n{result.stderr}"
