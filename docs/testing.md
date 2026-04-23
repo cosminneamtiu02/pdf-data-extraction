@@ -106,6 +106,12 @@ Three levels, all mandatory for every feature. E2E is optional-slow.
   `test_degraded_contract.py`). See Section 3 above for the per-file
   role split. New contract tests land in the file whose role they
   match; add a new file if the slice is genuinely new.
+- Infra hygiene: `infra/tests/hygiene/` — static assertions about files
+  outside `apps/backend/` (Dockerfile, GitHub Actions workflows,
+  Dependabot config). Run via `task check:hygiene`, which is wired
+  into `task check` as a direct gate. Relocated here per issue #400
+  so the backend unit-test tree no longer carries targets outside
+  its own scope.
 
 ## Pre-commit / Pre-push / CI
 
