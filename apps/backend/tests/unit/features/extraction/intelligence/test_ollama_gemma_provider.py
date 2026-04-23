@@ -122,13 +122,17 @@ def _build_settings(
     model: str = "gemma4:e2b",
     timeout_seconds: float = 30.0,
     max_retries: int = 3,
+    temperature: float | None = None,
 ) -> Settings:
-    return Settings(
-        ollama_base_url=base_url,
-        ollama_model=model,
-        ollama_timeout_seconds=timeout_seconds,
-        structured_output_max_retries=max_retries,
-    )
+    kwargs: dict[str, Any] = {
+        "ollama_base_url": base_url,
+        "ollama_model": model,
+        "ollama_timeout_seconds": timeout_seconds,
+        "structured_output_max_retries": max_retries,
+    }
+    if temperature is not None:
+        kwargs["ollama_temperature"] = temperature
+    return Settings(**kwargs)
 
 
 def _build_validator(settings: Settings) -> StructuredOutputValidator:
@@ -231,6 +235,59 @@ async def test_generate_payload_includes_format_json_and_zero_temperature() -> N
     assert payload["format"] == "json"
     assert isinstance(payload["options"], dict)
     assert payload["options"]["temperature"] == 0
+
+
+async def test_generate_payload_honors_ollama_temperature_from_settings() -> None:
+    """Regression guard for issue #384.
+
+    ``Settings.ollama_temperature`` is the operator knob for sampling
+    temperature on the ``/api/generate`` baseline. Before the fix,
+    ``_build_payload`` hardcoded ``options={"temperature": 0}`` with no way
+    to tune it short of editing source — skill authors who wanted
+    non-deterministic sampling (e.g. for creative inferred descriptions) had
+    no runtime path to set it. The fix threads the Settings value through
+    the provider into the default sampling options so the payload carries
+    the configured temperature instead of a hardcoded zero. The
+    ``infer()``-path allowlist (issue #385) still lets LangExtract callers
+    override per-call if they want a different value for a specific batch.
+    """
+    fake = _FakeAsyncClient(
+        post_outcomes=[_FakeResponse(body={"response": '{"name":"Alice"}'})],
+    )
+    settings = _build_settings(temperature=0.7)
+    provider = _build_provider(settings=settings, fake_client=fake)
+
+    await provider.generate("hi", _NAME_STRING_SCHEMA)
+
+    _, payload = fake.post_calls[0]
+    assert payload["options"]["temperature"] == 0.7
+
+
+async def test_generate_payload_preserves_zero_temperature_default_from_settings() -> None:
+    """Regression guard for issue #384: default Settings preserve the legacy
+    ``temperature=0`` baseline.
+
+    When operators do not override ``ollama_temperature``, the payload must
+    still carry ``temperature == 0.0`` so the existing determinism contract
+    from issue #136 (``test_generate_payload_includes_format_json_and_zero_temperature``)
+    continues to hold. This guards against a future change that defaults the
+    Settings field to anything other than 0.0 and silently destabilizes
+    ``StructuredOutputValidator``'s retry-from-stable-baseline invariant.
+    """
+    fake = _FakeAsyncClient(
+        post_outcomes=[_FakeResponse(body={"response": '{"name":"Alice"}'})],
+    )
+    # Explicit default Settings construction (no ``temperature=`` override),
+    # so the assertion pins the value read from Settings, not a module-level
+    # constant.
+    settings = _build_settings()
+    assert settings.ollama_temperature == 0.0
+    provider = _build_provider(settings=settings, fake_client=fake)
+
+    await provider.generate("hi", _NAME_STRING_SCHEMA)
+
+    _, payload = fake.post_calls[0]
+    assert payload["options"]["temperature"] == 0.0
 
 
 async def test_generate_strips_trailing_slash_from_base_url() -> None:
