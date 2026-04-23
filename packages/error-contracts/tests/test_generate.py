@@ -614,8 +614,16 @@ def test_generate_typescript_emits_error_codes_in_sorted_order(tmp_path: Path):
     # ErrorCode union variants (`| "CODE"` lines)
     union_start = content.find("export type ErrorCode")
     union_end = content.find(";", union_start)
+    assert union_start != -1, "ErrorCode union marker not found in generated output"
+    assert union_end != -1, (
+        "ErrorCode union terminator (';') not found in generated output"
+    )
     union_slice = content[union_start:union_end]
     union_positions = [union_slice.find(f'"{code}"') for code in expected_codes_sorted]
+    assert all(p != -1 for p in union_positions), (
+        f"expected every code in {expected_codes_sorted} to appear in the ErrorCode "
+        f"union slice; got positions={union_positions}\nSlice:\n{union_slice}"
+    )
     assert union_positions == sorted(union_positions), (
         f"ErrorCode union variants must be alphabetically sorted (issue #380). "
         f"Got positions {union_positions} in slice:\n{union_slice}"
@@ -624,8 +632,19 @@ def test_generate_typescript_emits_error_codes_in_sorted_order(tmp_path: Path):
     # ErrorParamsByCode interface keys
     iface_start = content.find("export interface ErrorParamsByCode")
     iface_end = content.find("}\n", iface_start)
+    assert iface_start != -1, (
+        "ErrorParamsByCode interface marker not found in generated output"
+    )
+    assert iface_end != -1, (
+        "ErrorParamsByCode interface terminator ('}\\n') not found in generated output"
+    )
     iface_slice = content[iface_start:iface_end]
     iface_positions = [iface_slice.find(f"  {code}:") for code in expected_codes_sorted]
+    assert all(p != -1 for p in iface_positions), (
+        f"expected every code in {expected_codes_sorted} to appear in the "
+        f"ErrorParamsByCode interface slice; got positions={iface_positions}\n"
+        f"Slice:\n{iface_slice}"
+    )
     assert iface_positions == sorted(iface_positions), (
         f"ErrorParamsByCode interface keys must be alphabetically sorted "
         f"(issue #380). Got positions {iface_positions} in slice:\n{iface_slice}"
@@ -634,8 +653,17 @@ def test_generate_typescript_emits_error_codes_in_sorted_order(tmp_path: Path):
     # HTTP_STATUS_BY_CODE map keys
     http_start = content.find("HTTP_STATUS_BY_CODE")
     http_end = content.find("};", http_start)
+    assert http_start != -1, "HTTP_STATUS_BY_CODE marker not found in generated output"
+    assert http_end != -1, (
+        "HTTP_STATUS_BY_CODE terminator ('};') not found in generated output"
+    )
     http_slice = content[http_start:http_end]
     http_positions = [http_slice.find(f"  {code}:") for code in expected_codes_sorted]
+    assert all(p != -1 for p in http_positions), (
+        f"expected every code in {expected_codes_sorted} to appear in the "
+        f"HTTP_STATUS_BY_CODE slice; got positions={http_positions}\n"
+        f"Slice:\n{http_slice}"
+    )
     assert http_positions == sorted(http_positions), (
         f"HTTP_STATUS_BY_CODE map keys must be alphabetically sorted "
         f"(issue #380). Got positions {http_positions} in slice:\n{http_slice}"
