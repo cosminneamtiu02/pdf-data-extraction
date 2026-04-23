@@ -20,7 +20,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-_EXTRACTION_ROOT = Path(__file__).resolve().parents[5] / "app" / "features" / "extraction"
+from tests._paths import EXTRACTION_ROOT as _EXTRACTION_ROOT
 
 # LangExtract imports are permitted only in the engine file itself, the
 # adjacent validating adapter module (issue #228 split), and in the

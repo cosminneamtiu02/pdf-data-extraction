@@ -18,7 +18,7 @@ import ast
 import re
 from pathlib import Path
 
-_EXTRACTION_ROOT = Path(__file__).resolve().parents[5] / "app" / "features" / "extraction"
+from tests._paths import EXTRACTION_ROOT as _EXTRACTION_ROOT
 
 _MODEL_TAG_PATTERN = re.compile(r"gemma\d", re.IGNORECASE)
 

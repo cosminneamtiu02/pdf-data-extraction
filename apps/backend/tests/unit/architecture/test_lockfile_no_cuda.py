@@ -15,9 +15,10 @@ a bloated artifact.
 from __future__ import annotations
 
 import tomllib
-from pathlib import Path
 
-_LOCKFILE_PATH = Path(__file__).resolve().parents[3] / "uv.lock"
+from tests._paths import BACKEND_DIR
+
+_LOCKFILE_PATH = BACKEND_DIR / "uv.lock"
 
 # Package name prefixes we forbid from the lockfile. The entries are the 18
 # CUDA/NVIDIA packages that vanished after the pytorch-cpu index override; all

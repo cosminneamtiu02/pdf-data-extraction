@@ -26,7 +26,6 @@ import ast
 import asyncio
 import hashlib
 import inspect
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import pymupdf
@@ -36,6 +35,7 @@ from app.features.extraction.annotation.pdf_annotator import PdfAnnotator
 from app.features.extraction.schemas.bounding_box_ref import BoundingBoxRef
 from app.features.extraction.schemas.extracted_field import ExtractedField
 from app.features.extraction.schemas.field_status import FieldStatus
+from tests._paths import EXTRACTION_ROOT
 
 if TYPE_CHECKING:
     from types import TracebackType
@@ -453,12 +453,11 @@ def _collect_root_imports(source: str) -> set[str]:
 
 
 def test_pymupdf_imports_are_confined_to_pdf_annotator() -> None:
-    extraction_root = Path(__file__).resolve().parents[5] / "app" / "features" / "extraction"
-    assert extraction_root.is_dir(), f"extraction feature root not found at {extraction_root}"
+    assert EXTRACTION_ROOT.is_dir(), f"extraction feature root not found at {EXTRACTION_ROOT}"
 
     offenders: list[str] = []
-    for py_file in extraction_root.rglob("*.py"):
-        relative = py_file.relative_to(extraction_root).as_posix()
+    for py_file in EXTRACTION_ROOT.rglob("*.py"):
+        relative = py_file.relative_to(EXTRACTION_ROOT).as_posix()
         roots = _collect_root_imports(py_file.read_text())
         if roots & _FITZ_ROOTS and relative not in _ALLOWED_FITZ_IMPORTERS:
             offenders.append(relative)

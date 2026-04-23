@@ -25,12 +25,12 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
-from pathlib import Path
 
 from pydantic_settings import BaseSettings
 
 from app.core.config import Settings
 from scripts import BenchmarkSettings
+from tests._paths import BACKEND_DIR as _BACKEND_ROOT
 
 # Fields that intentionally do NOT appear in ``.env.example``. Empty today;
 # add entries with an inline comment explaining the waiver if the need ever
@@ -43,12 +43,6 @@ _WAIVED_FIELDS: frozenset[str] = frozenset()
 # ``os.environ`` and onto pydantic-settings.
 _SETTINGS_CLASSES: tuple[type[BaseSettings], ...] = (Settings, BenchmarkSettings)
 
-# ``apps/backend/tests/unit/core/test_env_example_parity.py``
-#   parents[0] = ``apps/backend/tests/unit/core/``
-#   parents[1] = ``apps/backend/tests/unit/``
-#   parents[2] = ``apps/backend/tests/``
-#   parents[3] = ``apps/backend/``
-_BACKEND_ROOT = Path(__file__).resolve().parents[3]
 _ENV_EXAMPLE = _BACKEND_ROOT / ".env.example"
 
 

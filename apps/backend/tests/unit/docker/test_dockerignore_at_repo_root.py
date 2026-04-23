@@ -24,12 +24,10 @@ from typing import Final
 
 import pytest
 
-# parents[5] walks: this file -> docker/ -> unit/ -> tests/ -> backend/ ->
-# apps/ -> repo root. This mirrors the convention used by
-# `tests/unit/architecture/_linter_subprocess.REPO_ROOT`.
-_REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[5]
-_ROOT_DOCKERIGNORE: Final[Path] = _REPO_ROOT / ".dockerignore"
-_MISPLACED_DOCKERIGNORE: Final[Path] = _REPO_ROOT / "apps" / "backend" / ".dockerignore"
+from tests._paths import REPO_ROOT
+
+_ROOT_DOCKERIGNORE: Final[Path] = REPO_ROOT / ".dockerignore"
+_MISPLACED_DOCKERIGNORE: Final[Path] = REPO_ROOT / "apps" / "backend" / ".dockerignore"
 
 # Exclusions that MUST appear in the root .dockerignore. These are the
 # directories/globs whose inclusion in the build context either bloats the

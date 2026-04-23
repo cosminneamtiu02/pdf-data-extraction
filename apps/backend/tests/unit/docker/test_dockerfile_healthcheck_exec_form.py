@@ -27,11 +27,9 @@ import re
 from pathlib import Path
 from typing import Final
 
-# parents[5] walks: this file -> docker/ -> unit/ -> tests/ -> backend/ ->
-# apps/ -> repo root. Mirrors the convention used by the sibling
-# `test_dockerignore_at_repo_root` module.
-_REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[5]
-_DOCKERFILE_PATH: Final[Path] = _REPO_ROOT / "infra" / "docker" / "backend.Dockerfile"
+from tests._paths import REPO_ROOT
+
+_DOCKERFILE_PATH: Final[Path] = REPO_ROOT / "infra" / "docker" / "backend.Dockerfile"
 
 
 def _read_dockerfile_text() -> str:

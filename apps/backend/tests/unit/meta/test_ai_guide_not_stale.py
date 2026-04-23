@@ -21,11 +21,10 @@ instead of silencing the test.
 
 from __future__ import annotations
 
-from pathlib import Path
+from tests._paths import EXTRACTION_ROOT as _EXTRACTION_FEATURE_DIR
+from tests._paths import REPO_ROOT as _REPO_ROOT
 
-_REPO_ROOT = Path(__file__).resolve().parents[5]
 _AI_GUIDE_PATH = _REPO_ROOT / "docs" / "ai-guide.md"
-_EXTRACTION_FEATURE_DIR = _REPO_ROOT / "apps" / "backend" / "app" / "features" / "extraction"
 
 # Phrases copied verbatim from the stale ai-guide.md at commit-of-issue-#367.
 # Each entry is a lowercased substring; matching is case-insensitive.

@@ -38,6 +38,7 @@ from app.features.extraction.parsing.docling_document_parser import (
 )
 from app.features.extraction.parsing.document_parser import DocumentParser
 from app.features.extraction.parsing.parsed_document import ParsedDocument
+from tests._paths import EXTRACTION_ROOT as _EXTRACTION_ROOT
 
 
 def _noop_preflight(_pdf_bytes: bytes) -> int:
@@ -655,9 +656,6 @@ def test_default_pdf_preflight_raises_domain_error_when_pymupdf_not_installed(
 # ---------------------------------------------------------------------------
 # Containment: docling imports live only in docling_document_parser.py
 # ---------------------------------------------------------------------------
-
-
-_EXTRACTION_ROOT = Path(__file__).resolve().parents[5] / "app" / "features" / "extraction"
 
 
 def _collect_files_referencing_docling() -> set[Path]:

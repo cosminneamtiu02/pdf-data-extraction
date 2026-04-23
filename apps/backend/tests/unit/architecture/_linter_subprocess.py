@@ -31,6 +31,8 @@ import tempfile
 from pathlib import Path
 from typing import Final
 
+from tests import _paths
+
 # errno values that indicate `os.link` itself is unsupported or refused,
 # rather than a generic I/O fault. On those errnos we fall back to a
 # normal byte-copy so the suite stays portable across filesystems.
@@ -45,11 +47,14 @@ _HARDLINK_UNSUPPORTED_ERRNOS: Final[frozenset[int]] = frozenset(
     }
 )
 
-# parents[5] resolves the repo root by walking five levels up from this file:
-# _linter_subprocess.py -> architecture/ -> unit/ -> tests/ -> backend/ -> apps/ -> repo
-REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[5]
-BACKEND_DIR: Final[Path] = REPO_ROOT / "apps" / "backend"
-REAL_APP_TREE: Final[Path] = BACKEND_DIR / "app"
+# Re-export the repo-root landmarks so existing importers (`from
+# tests.unit.architecture._linter_subprocess import REPO_ROOT`) keep
+# working without change. The single source of truth lives in
+# `tests/_paths.py` (issue #402) so future layout changes touch one
+# file, not eight.
+REPO_ROOT: Final[Path] = _paths.REPO_ROOT
+BACKEND_DIR: Final[Path] = _paths.BACKEND_DIR
+REAL_APP_TREE: Final[Path] = _paths.APP_DIR
 REAL_CONTRACTS_PATH: Final[Path] = BACKEND_DIR / "architecture" / "import-linter-contracts.ini"
 
 # Session cache for `copy_app_tree`. Lazily populated on first call; reused

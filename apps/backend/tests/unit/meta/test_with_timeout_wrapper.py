@@ -24,8 +24,8 @@ from pathlib import Path
 from types import ModuleType
 from typing import IO, Final
 
-# parents[5] -> tests/unit/meta -> unit -> tests -> backend -> apps -> repo
-_REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[5]
+from tests._paths import REPO_ROOT as _REPO_ROOT
+
 _WRAPPER: Final[Path] = _REPO_ROOT / "infra" / "taskfile" / "with_timeout.py"
 
 

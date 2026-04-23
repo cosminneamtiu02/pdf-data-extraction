@@ -26,7 +26,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-_REPO_ROOT = Path(__file__).resolve().parents[5]
+from tests._paths import REPO_ROOT as _REPO_ROOT
+
 _CODEOWNERS_PATH = _REPO_ROOT / ".github" / "CODEOWNERS"
 _MISSING_FILE_MESSAGE = (
     f"{_CODEOWNERS_PATH} is missing. Issue #411 requires a CODEOWNERS "
