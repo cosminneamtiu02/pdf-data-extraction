@@ -6,13 +6,14 @@ docling, pymupdf, fitz, langextract, or pydantic.
 """
 
 import ast
-from pathlib import Path
 
 import pytest
 
+from tests._paths import EXTRACTION_ROOT as _EXTRACTION_ROOT
+
 _FORBIDDEN_ROOTS = frozenset({"docling", "pymupdf", "fitz", "langextract", "pydantic"})
 
-_PARSING_DIR = Path(__file__).resolve().parents[5] / "app" / "features" / "extraction" / "parsing"
+_PARSING_DIR = _EXTRACTION_ROOT / "parsing"
 
 _ABSTRACTION_FILES = (
     "document_parser.py",

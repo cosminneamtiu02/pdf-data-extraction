@@ -30,10 +30,11 @@ import tomllib
 from pathlib import Path
 from typing import Final
 
-_REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[5]
-_BACKEND_ROOT: Final[Path] = _REPO_ROOT / "apps" / "backend"
+from tests._paths import BACKEND_DIR as _BACKEND_ROOT
+from tests._paths import REPO_ROOT as _REPO_ROOT
+from tests._paths import TESTS_DIR as _TESTS_ROOT
+
 _BACKEND_PYPROJECT: Final[Path] = _BACKEND_ROOT / "pyproject.toml"
-_TESTS_ROOT: Final[Path] = _BACKEND_ROOT / "tests"
 
 
 def _asyncio_mode_is_auto() -> bool:

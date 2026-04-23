@@ -20,13 +20,14 @@ Editing the pre-commit `rev:` alone will NOT change `apps/backend/uv.lock`.
 from __future__ import annotations
 
 import tomllib
-from pathlib import Path
 
 import yaml
 
-_REPO_ROOT = Path(__file__).resolve().parents[5]
+from tests._paths import BACKEND_DIR as _BACKEND_DIR
+from tests._paths import REPO_ROOT as _REPO_ROOT
+
 _PRECOMMIT_PATH = _REPO_ROOT / ".pre-commit-config.yaml"
-_UV_LOCK_PATH = _REPO_ROOT / "apps" / "backend" / "uv.lock"
+_UV_LOCK_PATH = _BACKEND_DIR / "uv.lock"
 
 _RUFF_PRECOMMIT_REPO_SUBSTRING = "ruff-pre-commit"
 _RUFF_PACKAGE_NAME = "ruff"

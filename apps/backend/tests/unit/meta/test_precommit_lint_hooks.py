@@ -41,7 +41,8 @@ from typing import Any, Final
 
 import yaml
 
-_REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[5]
+from tests._paths import REPO_ROOT as _REPO_ROOT
+
 _PRECOMMIT_PATH: Final[Path] = _REPO_ROOT / ".pre-commit-config.yaml"
 _YAMLLINT_CONFIG_PATH: Final[Path] = _REPO_ROOT / ".yamllint"
 _HADOLINT_CONFIG_PATH: Final[Path] = _REPO_ROOT / ".hadolint.yaml"

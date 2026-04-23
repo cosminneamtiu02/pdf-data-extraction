@@ -44,7 +44,8 @@ from typing import Any, Final, cast
 
 import yaml
 
-_REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[5]
+from tests._paths import REPO_ROOT as _REPO_ROOT
+
 _TASKFILE: Final[Path] = _REPO_ROOT / "Taskfile.yml"
 _CI_WORKFLOW: Final[Path] = _REPO_ROOT / ".github" / "workflows" / "ci.yml"
 _BACKEND_PYPROJECT: Final[Path] = _REPO_ROOT / "apps" / "backend" / "pyproject.toml"

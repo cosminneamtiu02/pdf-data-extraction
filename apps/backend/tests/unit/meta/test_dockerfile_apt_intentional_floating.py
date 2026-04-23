@@ -39,10 +39,8 @@ import re
 from pathlib import Path
 from typing import Final
 
-# parents[5] walks: this file -> meta/ -> unit/ -> tests/ -> backend/ ->
-# apps/ -> repo root. Mirrors the convention used by
-# `tests/unit/docker/test_dockerignore_at_repo_root.py`.
-_REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[5]
+from tests._paths import REPO_ROOT as _REPO_ROOT
+
 _DOCKERFILE_PATH: Final[Path] = _REPO_ROOT / "infra" / "docker" / "backend.Dockerfile"
 
 _MARKER: Final[str] = "reproducibility-boundary:digest-only"

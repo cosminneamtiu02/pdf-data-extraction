@@ -11,9 +11,9 @@ mechanically; this AST scan is the complementary enforcement mechanism.
 from __future__ import annotations
 
 import ast
-from pathlib import Path
 
-_EXTRACTION_ROOT = Path(__file__).resolve().parents[5] / "app" / "features" / "extraction"
+from tests._paths import EXTRACTION_ROOT as _EXTRACTION_ROOT
+
 _ALLOWED_FILES = frozenset(
     {
         "ollama_gemma_provider.py",
