@@ -25,6 +25,7 @@ The invariants are:
 
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
 
 import pytest
@@ -64,23 +65,28 @@ def test_repo_root_is_cwd_independent(tmp_path: Path, monkeypatch: pytest.Monkey
     """The helper must not rely on ``os.getcwd()`` to resolve the repo root.
 
     The whole point of replacing ``parents[N]`` is that the result is stable
-    regardless of where the test process was launched from. Reimport the
-    helper from a different working directory and assert the value is the
-    same — any ``os.getcwd()``-based implementation would return a different
-    path (or crash) here.
+    regardless of where the test process was launched from. Changing ``cwd``
+    on an already-imported module only asserts the cached constant doesn't
+    mutate — which would pass even for an implementation that called
+    ``os.getcwd()`` at import time. To actually exercise the resolution
+    logic under a different cwd, ``importlib.reload`` is used after
+    ``monkeypatch.chdir`` so the module-scope resolution re-executes in the
+    new working directory. Any ``os.getcwd()``-based implementation would
+    return a different path (or crash) on the reload; the ``Path(__file__)``
+    walk-up used here is immune by design.
     """
-    expected = _paths.REPO_ROOT
+    original = _paths.REPO_ROOT
     monkeypatch.chdir(tmp_path)
-    # Re-read the module-level constant via attribute access; since it was
-    # resolved at import time (not on each access), the cwd change must not
-    # affect it. Assertion ordering is `actual == expected` to keep ruff
-    # SIM300 happy (no Yoda conditions).
-    assert expected == _paths.REPO_ROOT, (
-        f"REPO_ROOT changed after chdir — expected {expected}, got "
-        f"{_paths.REPO_ROOT}. The helper is leaking cwd dependency."
-    )
-    # Sanity: cwd really did change.
+    # Sanity: cwd really did change before we reload.
     assert Path.cwd().resolve() == tmp_path.resolve()
+    # Force the module-scope resolution code to run again under the new cwd.
+    # A cwd-dependent implementation would compute a different REPO_ROOT on
+    # this reload; the current Path(__file__).resolve() walk-up does not.
+    reloaded = importlib.reload(_paths)
+    assert original == reloaded.REPO_ROOT, (
+        f"REPO_ROOT changed after chdir + reload — expected {original}, got "
+        f"{reloaded.REPO_ROOT}. The helper is leaking cwd dependency."
+    )
 
 
 def test_backend_dir_points_at_apps_backend() -> None:
