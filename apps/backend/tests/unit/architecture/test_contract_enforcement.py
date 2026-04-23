@@ -1,11 +1,12 @@
 """Meta-enforcement tests: inject violations into a scratch tree and prove contracts catch them.
 
-Scenarios U7 (third-party containment), U8 (layer DAG), and U9 (clean-slate baseline)
-from PDFX-E007-F004's verifiable spec. Each test copies `apps/backend/app` into a
-pytest tmp directory, optionally patches one source file with a forbidden import,
-copies the real contracts INI, then runs `lint-imports` as a subprocess against the
-scratch tree and asserts the expected contract broke (or, for U9, asserts nothing
-broke).
+Scenarios U7 (third-party containment) and U8 (layer DAG) from PDFX-E007-F004's
+verifiable spec. Each test copies `apps/backend/app` into a pytest tmp directory,
+patches one source file with a forbidden import, copies the real contracts INI, then
+runs `lint-imports` as a subprocess against the scratch tree and asserts the expected
+contract broke. The previous U9 clean-slate baseline was retired as redundant with
+the integration test `test_import_linter_live.py::test_lint_imports_passes_against_real_codebase`,
+which runs the linter against the real codebase (issue #397).
 
 These tests are the dynamic complement of `test_import_linter_contracts.py`,
 which only verifies the contract file's structural shape. They prove the
@@ -181,29 +182,3 @@ def test_layer_dag_catches_injected_illegal_edges(
     and schemas -> parsing.
     """
     _assert_violation_caught(case, tmp_path)
-
-
-def test_clean_scratch_tree_passes_all_contracts(tmp_path: Path) -> None:
-    """U9: the scratch-tree harness itself does not introduce violations.
-
-    If this test fails, U7 and U8 could pass for the wrong reason - the
-    builder would be injecting violations that mask the ones the tests mean
-    to exercise. This test runs lint-imports on an unmodified copy of the
-    app tree and asserts exit 0 + zero broken contracts.
-    """
-    app_tree = copy_app_tree(tmp_path)
-    assert app_tree.exists(), "scratch-tree builder did not produce `app/`"
-    contracts = copy_contracts(tmp_path)
-
-    result = run_lint_imports(tmp_path, contracts)
-
-    assert result.returncode == 0, (
-        f"lint-imports unexpectedly broke on an unmodified scratch tree.\n"
-        f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
-    )
-    assert "0 broken" in result.stdout.lower(), (
-        f"expected lint-imports to report '0 broken' on a clean scratch tree; "
-        f"the previous 'or \"broken\" not in ...' clause was permissive enough to "
-        f"pass on degenerate output that never mentions 'broken' at all (issue #399)\n"
-        f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
-    )
